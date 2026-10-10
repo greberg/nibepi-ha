@@ -1,9 +1,9 @@
 """Config and options flow for NibePi.
 
 Setup:   user (name, prefix, S2) -> price -> [tibber_warning] ->
-         [tibber_home | price_entity] -> system_s1 -> [system_s2]
+         [tibber_home | price_entity] -> system_s1 -> [system_s2] -> house
 Options: init (shared) -> [tibber_warning] -> [tibber_home | price_entity]
-         -> system_s1 -> [system_s2] -> hotwater
+         -> system_s1 -> [system_s2] -> house -> hotwater
 
 Setup asks only for what is needed to get going (price source, room
 sensors, setpoint); the options flow has everything. Both store the same
@@ -45,9 +45,14 @@ from .const import (
     CONF_NAME,
     CONF_PREFIX,
     CONF_SYSTEMS,
+    CONFIDENCE_LEVELS,
     DEFAULT_NAME,
     DEFAULT_PREFIX,
     DOMAIN,
+    HOUSE_CONSTRUCTIONS,
+    HOUSE_EMITTERS,
+    HOUSE_ERAS,
+    HOUSE_FLOORS,
     HW_COMFORT_OPTIONS,
     OPT_HW_AUTOLUX_DIFF,
     OPT_HW_AUTOLUX_TIME,
@@ -58,12 +63,24 @@ from .const import (
     OPT_HW_MIN_DROP,
     OPT_HW_MIN_TEMP,
     OPT_HW_MIN_TEMP_ENABLE,
+    OPT_HW_OPT_FLOOR,
     OPT_HW_PEAK,
     OPT_HW_PREHEAT,
     OPT_HW_PRICE_WINDOW,
     OPT_HW_USE_PRICE,
+    OPT_COMFORT_ABOVE,
+    OPT_COMFORT_BELOW,
+    OPT_COMFORT_FLOOR,
+    OPT_HOUSE_AREA,
+    OPT_HOUSE_CONSTRUCTION,
+    OPT_HOUSE_EMITTER,
+    OPT_HOUSE_ERA,
+    OPT_HOUSE_FLOORS,
+    OPT_HOUSE_SENSORS,
     OPT_INDOOR_ENTITY,
     OPT_INDOOR_FACTOR,
+    OPT_METER_ENTITY,
+    OPT_OPT_MIN_LEVEL,
     OPT_PRICE_ENTITY,
     OPT_PRICE_GUARD,
     OPT_PRICE_MIN_SPREAD,
@@ -102,6 +119,7 @@ from .const import (
     system_key,
 )
 from .logic.hotwater import COMFORT_CHOICES
+from .logic.opthistory import meter_kind
 from .logic.price import TIBBER_DOMAIN, TIBBER_SERVICE, tibber_homes, tibber_request
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,6 +156,13 @@ HW_COMFORT = SelectSelector(
 # Whole numbers in the hot water step.
 HW_INT_OPTIONS = (OPT_HW_LEARNING_RATE, OPT_HW_PREHEAT, OPT_HW_PRICE_WINDOW, OPT_HW_AUTOLUX_TIME)
 TEMPERATURE_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
+METER_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class=["power", "energy"]))
+
+
+def _choice(options: Any, key: str) -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(options=list(options), mode=SelectSelectorMode.DROPDOWN, translation_key=key)
+    )
 
 
 def _optional(key: str, current: Dict[str, Any], suggested: Any = None) -> vol.Optional:
@@ -157,7 +182,7 @@ class _NibePiSteps:
     """Price and per-system steps shared by the config and options flow.
 
     The subclass sets ``_options`` and ``_pending`` (systems still to ask)
-    and implements ``_async_finish`` and ``_full_system_step``.
+    and implements ``_async_after_house`` and sets ``_full_system_step``.
     """
 
     _options: Dict[str, Any]
@@ -337,7 +362,13 @@ class _NibePiSteps:
         return await self._async_system_step("s2", user_input)
 
     async def _async_system_step(self, system: str, user_input: Optional[Dict[str, Any]]) -> ConfigFlowResult:
+        errors: Dict[str, str] = {}
         if user_input is not None:
+            below = user_input.get(OPT_COMFORT_BELOW, SYSTEM_DEFAULTS[OPT_COMFORT_BELOW])
+            floor = user_input.get(OPT_COMFORT_FLOOR, SYSTEM_DEFAULTS[OPT_COMFORT_FLOOR])
+            if float(floor) <= float(below):
+                errors[OPT_COMFORT_FLOOR] = "comfort_floor"
+        if user_input is not None and not errors:
             for key in SYSTEM_OPTIONAL:
                 if key not in user_input:
                     self._options.pop(system_key(key, system), None)
@@ -352,6 +383,8 @@ class _NibePiSteps:
             for key, value in self._options.items()
             if key.endswith("_" + system)
         }
+        if user_input is not None:
+            current.update(user_input)
         fields: Dict[Any, Any] = {
             _optional(OPT_INDOOR_ENTITY, current): TEMPERATURE_SENSOR,
             _optional(OPT_RMU_ENTITY, current, current.get(OPT_INDOOR_ENTITY)): TEMPERATURE_SENSOR,
@@ -367,14 +400,80 @@ class _NibePiSteps:
             fields[_required(OPT_PRICE_GUARD, current, SYSTEM_DEFAULTS)] = BOOL
             fields[_required(OPT_PRICE_TEMP_LOW, current, SYSTEM_DEFAULTS)] = _number(-10, 10, 0.1)
             fields[_required(OPT_WEATHER_HOURS, current, SYSTEM_DEFAULTS)] = _number(0, 48, 1)
+            fields[_required(OPT_COMFORT_BELOW, current, SYSTEM_DEFAULTS)] = _number(0, 3, 0.1)
+            fields[_required(OPT_COMFORT_ABOVE, current, SYSTEM_DEFAULTS)] = _number(0, 5, 0.1)
+            fields[_required(OPT_COMFORT_FLOOR, current, SYSTEM_DEFAULTS)] = _number(0.2, 6, 0.1)
         return self.async_show_form(  # type: ignore[attr-defined]
             step_id="system_%s" % system,
             data_schema=vol.Schema(fields),
+            errors=errors,
             description_placeholders={"system": system.upper()},
         )
 
-    async def _async_finish(self) -> ConfigFlowResult:
+    # -- house profile and optimiser ----------------------------------------
+
+    def _location_placeholders(self) -> Dict[str, str]:
+        config = self.hass.config  # type: ignore[attr-defined]
+        return {
+            "latitude": "%.3f" % config.latitude,
+            "longitude": "%.3f" % config.longitude,
+            "elevation": "%d" % int(config.elevation or 0),
+            "time_zone": str(config.time_zone),
+        }
+
+    def _meter_error(self, entity_id: str) -> Optional[str]:
+        """None when the meter's unit and class are usable (or not known yet)."""
+        state = self.hass.states.get(entity_id)  # type: ignore[attr-defined]
+        if state is None:
+            return None  # not loaded yet; the runtime checks again
+        attrs = state.attributes
+        kind = meter_kind(
+            attrs.get("unit_of_measurement"), attrs.get("device_class"), attrs.get("state_class")
+        )
+        return None if kind is not None else "meter_unit"
+
+    async def async_step_house(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        """House profile, meter and the optimiser's confidence gate."""
+        errors: Dict[str, str] = {}
+        if user_input is not None:
+            meter = user_input.get(OPT_METER_ENTITY)
+            if meter:
+                error = self._meter_error(meter)
+                if error:
+                    errors[OPT_METER_ENTITY] = error
+            if not errors:
+                if not meter:
+                    self._options.pop(OPT_METER_ENTITY, None)
+                for key, value in user_input.items():
+                    self._options[key] = int(value) if key == OPT_HOUSE_SENSORS else value
+                return await self._async_after_house()
+        current = dict(self._options)
+        if user_input is not None:
+            current.update(user_input)
+        fields: Dict[Any, Any] = {
+            _required(OPT_HOUSE_AREA, current, SHARED_DEFAULTS): _number(30, 1000, 1),
+            _required(OPT_HOUSE_FLOORS, current, SHARED_DEFAULTS): _choice(HOUSE_FLOORS, "house_floors"),
+            _required(OPT_HOUSE_ERA, current, SHARED_DEFAULTS): _choice(HOUSE_ERAS, "house_era"),
+            _required(OPT_HOUSE_CONSTRUCTION, current, SHARED_DEFAULTS): _choice(
+                HOUSE_CONSTRUCTIONS, "house_construction"
+            ),
+            _required(OPT_HOUSE_EMITTER, current, SHARED_DEFAULTS): _choice(HOUSE_EMITTERS, "house_emitter"),
+            _required(OPT_HOUSE_SENSORS, current, SHARED_DEFAULTS): _number(1, 10, 1),
+            _optional(OPT_METER_ENTITY, current): METER_SENSOR,
+            _required(OPT_OPT_MIN_LEVEL, current, SHARED_DEFAULTS): _choice(CONFIDENCE_LEVELS, "confidence_level"),
+        }
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="house",
+            data_schema=vol.Schema(fields),
+            errors=errors,
+            description_placeholders=self._location_placeholders(),
+        )
+
+    async def _async_after_house(self) -> ConfigFlowResult:
         raise NotImplementedError
+
+    async def _async_finish(self) -> ConfigFlowResult:
+        return await self.async_step_house()
 
 
 class NibePiConfigFlow(_NibePiSteps, ConfigFlow, domain=DOMAIN):
@@ -418,7 +517,7 @@ class NibePiConfigFlow(_NibePiSteps, ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="price", data_schema=schema)
 
-    async def _async_finish(self) -> ConfigFlowResult:
+    async def _async_after_house(self) -> ConfigFlowResult:
         return self.async_create_entry(
             title=self._data[CONF_NAME], data=self._data, options=dict(self._options)
         )
@@ -477,7 +576,7 @@ class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
         )
         return self.async_show_form(step_id="init", data_schema=schema)
 
-    async def _async_finish(self) -> ConfigFlowResult:
+    async def _async_after_house(self) -> ConfigFlowResult:
         return await self.async_step_hotwater()
 
     async def async_step_hotwater(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
@@ -501,6 +600,7 @@ class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
             _required(OPT_HW_MIN_TEMP, current, SHARED_DEFAULTS): _number(20, 60, 0.5),
             _required(OPT_HW_AUTOLUX_DIFF, current, SHARED_DEFAULTS): _number(5, 50, 1),
             _required(OPT_HW_AUTOLUX_TIME, current, SHARED_DEFAULTS): _number(1, 50, 1),
+            _required(OPT_HW_OPT_FLOOR, current, SHARED_DEFAULTS): _number(30, 60, 0.5),
         }
         for key in HW_COMFORT_OPTIONS.values():
             fields[_required(key, current, SHARED_DEFAULTS)] = HW_COMFORT

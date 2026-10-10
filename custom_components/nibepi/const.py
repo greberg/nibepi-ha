@@ -138,6 +138,43 @@ def vv_store_key(entry_id: str) -> str:
     return "%s_vv_profile_%s" % (DOMAIN, entry_id)
 
 
+# Options: house profile and cost optimiser (shared). See docs/optimizer.md
+# in the workspace; the comfort band is per system (below).
+OPT_HOUSE_AREA = "house_area"
+OPT_HOUSE_FLOORS = "house_floors"
+OPT_HOUSE_ERA = "house_era"
+OPT_HOUSE_CONSTRUCTION = "house_construction"
+OPT_HOUSE_EMITTER = "house_emitter"
+OPT_HOUSE_SENSORS = "house_sensors"
+OPT_METER_ENTITY = "meter_entity"
+OPT_OPT_MIN_LEVEL = "optimizer_min_level"
+OPT_HW_OPT_FLOOR = "hw_optimizer_floor"
+
+UNKNOWN = "unknown"
+HOUSE_FLOORS = ("1", "1.5", "2", "3")
+HOUSE_ERAS = (UNKNOWN, "pre1960", "1961-1975", "1976-1990", "1991-2010", "2011-")
+HOUSE_CONSTRUCTIONS = (UNKNOWN, "light", "medium", "heavy")
+HOUSE_EMITTERS = ("radiators", "floor", "mixed")
+CONFIDENCE_LEVELS = ("low", "medium", "high")
+
+OPTIMIZER_DEFAULTS: Dict[str, Any] = {
+    OPT_HOUSE_AREA: 150.0,
+    OPT_HOUSE_FLOORS: "1.5",
+    OPT_HOUSE_ERA: UNKNOWN,
+    OPT_HOUSE_CONSTRUCTION: UNKNOWN,
+    OPT_HOUSE_EMITTER: "radiators",
+    OPT_HOUSE_SENSORS: 1,
+    OPT_OPT_MIN_LEVEL: "high",
+    OPT_HW_OPT_FLOOR: 40.0,
+}
+
+# Options: comfort band per system, around the setpoint (the optimiser's
+# target indoor temperature).
+OPT_COMFORT_BELOW = "comfort_below"
+OPT_COMFORT_ABOVE = "comfort_above"
+OPT_COMFORT_FLOOR = "comfort_floor_below"
+
+
 SHARED_DEFAULTS: Dict[str, Any] = {
     OPT_SENSOR_TIMEOUT: 60,
     OPT_PRICE_UNIT_FACTOR: 100.0,
@@ -155,6 +192,7 @@ SHARED_DEFAULTS: Dict[str, Any] = {
     OPT_SUN_CLEAR: 0.0,
     OPT_SUN_HALF_CLEAR: 0.0,
     **HW_DEFAULTS,
+    **OPTIMIZER_DEFAULTS,
 }
 
 SYSTEM_DEFAULTS: Dict[str, Any] = {
@@ -168,6 +206,9 @@ SYSTEM_DEFAULTS: Dict[str, Any] = {
     "price_normal": 0.0,
     "price_expensive": 0.0,
     "price_very_expensive": 0.0,
+    OPT_COMFORT_BELOW: 0.5,
+    OPT_COMFORT_ABOVE: 1.0,
+    OPT_COMFORT_FLOOR: 1.5,
 }
 
 

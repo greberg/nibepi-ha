@@ -56,7 +56,8 @@
         },
         "data_description": {
           "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
-          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README).",
+          "setpoint": "Även kostnadsoptimerarens mål för inomhustemperaturen."
         }
       },
       "system_s2": {
@@ -69,13 +70,38 @@
         },
         "data_description": {
           "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
-          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README).",
+          "setpoint": "Även kostnadsoptimerarens mål för inomhustemperaturen."
+        }
+      },
+      "house": {
+        "title": "Huset",
+        "description": "Kostnadsoptimeraren börjar från en modell byggd på detta och lär sig resten av historiken. Plats från Home Assistant: {latitude}, {longitude}, {elevation} m, {time_zone} (Inställningar -> System -> Allmänt).",
+        "data": {
+          "house_area": "Uppvärmd boyta (m²)",
+          "house_floors": "Våningar",
+          "house_era": "Byggår",
+          "house_construction": "Konstruktion",
+          "house_emitter": "Värmesystem",
+          "house_sensors": "Antal inomhusgivare i medelvärdet",
+          "meter_entity": "Elmätare (valfri)",
+          "optimizer_min_level": "Lägsta modellsäkerhet för att styra"
+        },
+        "data_description": {
+          "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
+          "house_construction": "Värmetröghet. Lätt: trästomme; medel: trä på betongplatta; tung: betong eller tegel.",
+          "house_emitter": "Visas med husmodellen; golvvärme reagerar långsammare än radiatorer.",
+          "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
+          "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh), oftast hela huset. Kalibrerar bara värmepumpens verkningsgrad; styr aldrig.",
+          "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
         }
       }
     },
     "error": {
       "invalid_prefix": "Ogiltigt topic-prefix (inga jokertecken).",
-      "tibber_homes_failed": "Kunde inte hämta Tibber-hemmen ({error}). Ange hemmets smeknamn i Tibber-appen, eller lämna tomt för att använda det första hemmet."
+      "tibber_homes_failed": "Kunde inte hämta Tibber-hemmen ({error}). Ange hemmets smeknamn i Tibber-appen, eller lämna tomt för att använda det första hemmet.",
+      "meter_unit": "Mätaren behöver enheten W, kW eller MW (effekt), eller uppräknande Wh, kWh eller MWh (energi).",
+      "comfort_floor": "Det hårda golvet måste ligga längre under börvärdet än komfortbandet."
     },
     "abort": {
       "already_configured": "Den här gatewayn är redan konfigurerad."
@@ -151,11 +177,17 @@
           "price_very_expensive": "Justering vid väldigt dyrt",
           "price_guard": "Sänk bara vid dyra nivåer när det är varmt nog inne",
           "price_temp_low": "Marginal över börvärdet (°C)",
-          "weather_hours": "Prognos timmar framåt"
+          "weather_hours": "Prognos timmar framåt",
+          "comfort_below": "Komfortband under börvärdet (°C)",
+          "comfort_above": "Komfortband över börvärdet (°C)",
+          "comfort_floor_below": "Hårt golv under börvärdet (°C)"
         },
         "data_description": {
           "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
-          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README).",
+          "setpoint": "Även kostnadsoptimerarens mål för inomhustemperaturen.",
+          "comfort_below": "Kostnadsoptimeraren: ingen komfortkostnad mellan börvärdet minus detta och börvärdet plus värdet nedan.",
+          "comfort_floor_below": "Under börvärdet minus detta värmer optimeraren med sin högsta förskjutning, oavsett pris."
         }
       },
       "system_s2": {
@@ -173,11 +205,39 @@
           "price_very_expensive": "Justering vid väldigt dyrt",
           "price_guard": "Sänk bara vid dyra nivåer när det är varmt nog inne",
           "price_temp_low": "Marginal över börvärdet (°C)",
-          "weather_hours": "Prognos timmar framåt"
+          "weather_hours": "Prognos timmar framåt",
+          "comfort_below": "Komfortband under börvärdet (°C)",
+          "comfort_above": "Komfortband över börvärdet (°C)",
+          "comfort_floor_below": "Hårt golv under börvärdet (°C)"
         },
         "data_description": {
           "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
-          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README).",
+          "setpoint": "Även kostnadsoptimerarens mål för inomhustemperaturen.",
+          "comfort_below": "Kostnadsoptimeraren: ingen komfortkostnad mellan börvärdet minus detta och börvärdet plus värdet nedan.",
+          "comfort_floor_below": "Under börvärdet minus detta värmer optimeraren med sin högsta förskjutning, oavsett pris."
+        }
+      },
+      "house": {
+        "title": "Huset",
+        "description": "Kostnadsoptimeraren börjar från en modell byggd på detta och lär sig resten av historiken. Plats från Home Assistant: {latitude}, {longitude}, {elevation} m, {time_zone} (Inställningar -> System -> Allmänt).",
+        "data": {
+          "house_area": "Uppvärmd boyta (m²)",
+          "house_floors": "Våningar",
+          "house_era": "Byggår",
+          "house_construction": "Konstruktion",
+          "house_emitter": "Värmesystem",
+          "house_sensors": "Antal inomhusgivare i medelvärdet",
+          "meter_entity": "Elmätare (valfri)",
+          "optimizer_min_level": "Lägsta modellsäkerhet för att styra"
+        },
+        "data_description": {
+          "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
+          "house_construction": "Värmetröghet. Lätt: trästomme; medel: trä på betongplatta; tung: betong eller tegel.",
+          "house_emitter": "Visas med husmodellen; golvvärme reagerar långsammare än radiatorer.",
+          "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
+          "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh), oftast hela huset. Kalibrerar bara värmepumpens verkningsgrad; styr aldrig.",
+          "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
         }
       },
       "hotwater": {
@@ -201,7 +261,8 @@
           "hw_comfort_cheap": "Komfortläge vid billigt",
           "hw_comfort_normal": "Komfortläge vid normalt",
           "hw_comfort_expensive": "Komfortläge vid dyrt",
-          "hw_comfort_very_expensive": "Komfortläge vid väldigt dyrt"
+          "hw_comfort_very_expensive": "Komfortläge vid väldigt dyrt",
+          "hw_optimizer_floor": "Kostnadsoptimeraren: lägsta varmvatten, BT6 (°C)"
         },
         "data_description": {
           "hw_learning_rate": "Hur mycket ett tapp flyttar det inlärda värdet för sin timme, och hur snabbt timmar utan tapp bleknar (vv_ai_learning_rate).",
@@ -211,12 +272,15 @@
           "hw_use_price": "VV-AI-styrningen lägger varje fönster i de billigaste timmarna före toppen och värmer bara under dess två billigaste timmar (eller de två sista före toppen).",
           "hw_min_temp_enable": "Med VV-AI-styrning värms BT7 under gränsen till gränsen + 4 °C. VV-AI-styrningen hindrar pumpen från att själv värma varmvatten, så låt den vara på.",
           "hw_autolux_diff": "Ett så stort fall i BT6 inom tiden nedan startar en engångshöjning (tillfällig lyx).",
-          "hw_comfort_very_cheap": "Med komfortläge efter elpris: pumpens varmvattenläge (47041) för varje prisnivå. Oförändrat: pumpens egen inställning."
+          "hw_comfort_very_cheap": "Med komfortläge efter elpris: pumpens varmvattenläge (47041) för varje prisnivå. Oförändrat: pumpens egen inställning.",
+          "hw_optimizer_floor": "Med 'Optimera varmvattenladdningar' på håller optimerarens tankplan BT6 över detta."
         }
       }
     },
     "error": {
-      "tibber_homes_failed": "Kunde inte hämta Tibber-hemmen ({error}). Ange hemmets smeknamn i Tibber-appen, eller lämna tomt för att använda det första hemmet."
+      "tibber_homes_failed": "Kunde inte hämta Tibber-hemmen ({error}). Ange hemmets smeknamn i Tibber-appen, eller lämna tomt för att använda det första hemmet.",
+      "meter_unit": "Mätaren behöver enheten W, kW eller MW (effekt), eller uppräknande Wh, kWh eller MWh (energi).",
+      "comfort_floor": "Det hårda golvet måste ligga längre under börvärdet än komfortbandet."
     }
   },
   "entity": {
@@ -380,6 +444,46 @@
         "0": "Ekonomi",
         "1": "Normal",
         "2": "Lyx"
+      }
+    },
+    "house_floors": {
+      "options": {
+        "1": "1",
+        "1.5": "1,5",
+        "2": "2",
+        "3": "3 eller fler"
+      }
+    },
+    "house_era": {
+      "options": {
+        "unknown": "Okänt",
+        "pre1960": "Före 1960",
+        "1961-1975": "1961-1975",
+        "1976-1990": "1976-1990",
+        "1991-2010": "1991-2010",
+        "2011-": "2011 eller senare"
+      }
+    },
+    "house_construction": {
+      "options": {
+        "unknown": "Okänd",
+        "light": "Lätt (trästomme)",
+        "medium": "Medel (trä på betongplatta)",
+        "heavy": "Tung (betong, tegel)"
+      }
+    },
+    "house_emitter": {
+      "options": {
+        "radiators": "Radiatorer",
+        "floor": "Golvvärme",
+        "mixed": "Båda"
+      }
+    },
+    "confidence_level": {
+      "options": {
+        "low": "Låg",
+        "medium": "Medel",
+        "high": "Hög"
       }
     }
   },

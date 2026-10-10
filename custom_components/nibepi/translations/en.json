@@ -56,7 +56,8 @@
         },
         "data_description": {
           "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
-          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README).",
+          "setpoint": "Also the cost optimiser's target indoor temperature."
         }
       },
       "system_s2": {
@@ -69,13 +70,38 @@
         },
         "data_description": {
           "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
-          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README).",
+          "setpoint": "Also the cost optimiser's target indoor temperature."
+        }
+      },
+      "house": {
+        "title": "House",
+        "description": "The cost optimiser starts from a model built from these and learns the rest from the history. Location from Home Assistant: {latitude}, {longitude}, {elevation} m, {time_zone} (Settings -> System -> General).",
+        "data": {
+          "house_area": "Heated floor area (m²)",
+          "house_floors": "Floors",
+          "house_era": "Built",
+          "house_construction": "Construction",
+          "house_emitter": "Heat emitters",
+          "house_sensors": "Indoor sensors averaged",
+          "meter_entity": "Electricity meter (optional)",
+          "optimizer_min_level": "Minimum model confidence to steer"
+        },
+        "data_description": {
+          "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
+          "house_construction": "Thermal mass. Light: timber frame; medium: timber on a concrete slab; heavy: concrete or brick.",
+          "house_emitter": "Shown with the house model; floor heating responds more slowly than radiators.",
+          "house_sensors": "How many room sensors the indoor value is an average of. One sensor in a house with several floors gets a safety margin.",
+          "meter_entity": "A power sensor (W, kW) or an energy meter counting up (Wh, kWh, MWh), usually the whole house. Only calibrates the heat pump's efficiency; never used to steer.",
+          "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do."
         }
       }
     },
     "error": {
       "invalid_prefix": "Invalid topic prefix (no wildcards).",
-      "tibber_homes_failed": "Could not list the Tibber homes ({error}). Enter the home's nickname from the Tibber app, or leave empty to use the first home."
+      "tibber_homes_failed": "Could not list the Tibber homes ({error}). Enter the home's nickname from the Tibber app, or leave empty to use the first home.",
+      "meter_unit": "The meter needs a unit of W, kW or MW (power), or Wh, kWh or MWh counting up (energy).",
+      "comfort_floor": "The hard floor must be further below the setpoint than the comfort band."
     },
     "abort": {
       "already_configured": "This gateway is already configured."
@@ -151,11 +177,17 @@
           "price_very_expensive": "Offset at very expensive",
           "price_guard": "Only lower at expensive levels while indoor is warm enough",
           "price_temp_low": "Guard margin over setpoint (°C)",
-          "weather_hours": "Forecast hours ahead"
+          "weather_hours": "Forecast hours ahead",
+          "comfort_below": "Comfort band below the setpoint (°C)",
+          "comfort_above": "Comfort band above the setpoint (°C)",
+          "comfort_floor_below": "Hard floor below the setpoint (°C)"
         },
         "data_description": {
           "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
-          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README).",
+          "setpoint": "Also the cost optimiser's target indoor temperature.",
+          "comfort_below": "Cost optimiser: no comfort penalty between setpoint minus this and setpoint plus the value above.",
+          "comfort_floor_below": "Below the setpoint minus this the optimiser heats at its highest offset, whatever the price."
         }
       },
       "system_s2": {
@@ -173,11 +205,39 @@
           "price_very_expensive": "Offset at very expensive",
           "price_guard": "Only lower at expensive levels while indoor is warm enough",
           "price_temp_low": "Guard margin over setpoint (°C)",
-          "weather_hours": "Forecast hours ahead"
+          "weather_hours": "Forecast hours ahead",
+          "comfort_below": "Comfort band below the setpoint (°C)",
+          "comfort_above": "Comfort band above the setpoint (°C)",
+          "comfort_floor_below": "Hard floor below the setpoint (°C)"
         },
         "data_description": {
           "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
-          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README).",
+          "setpoint": "Also the cost optimiser's target indoor temperature.",
+          "comfort_below": "Cost optimiser: no comfort penalty between setpoint minus this and setpoint plus the value above.",
+          "comfort_floor_below": "Below the setpoint minus this the optimiser heats at its highest offset, whatever the price."
+        }
+      },
+      "house": {
+        "title": "House",
+        "description": "The cost optimiser starts from a model built from these and learns the rest from the history. Location from Home Assistant: {latitude}, {longitude}, {elevation} m, {time_zone} (Settings -> System -> General).",
+        "data": {
+          "house_area": "Heated floor area (m²)",
+          "house_floors": "Floors",
+          "house_era": "Built",
+          "house_construction": "Construction",
+          "house_emitter": "Heat emitters",
+          "house_sensors": "Indoor sensors averaged",
+          "meter_entity": "Electricity meter (optional)",
+          "optimizer_min_level": "Minimum model confidence to steer"
+        },
+        "data_description": {
+          "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
+          "house_construction": "Thermal mass. Light: timber frame; medium: timber on a concrete slab; heavy: concrete or brick.",
+          "house_emitter": "Shown with the house model; floor heating responds more slowly than radiators.",
+          "house_sensors": "How many room sensors the indoor value is an average of. One sensor in a house with several floors gets a safety margin.",
+          "meter_entity": "A power sensor (W, kW) or an energy meter counting up (Wh, kWh, MWh), usually the whole house. Only calibrates the heat pump's efficiency; never used to steer.",
+          "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do."
         }
       },
       "hotwater": {
@@ -201,7 +261,8 @@
           "hw_comfort_cheap": "Comfort mode at cheap",
           "hw_comfort_normal": "Comfort mode at normal",
           "hw_comfort_expensive": "Comfort mode at expensive",
-          "hw_comfort_very_expensive": "Comfort mode at very expensive"
+          "hw_comfort_very_expensive": "Comfort mode at very expensive",
+          "hw_optimizer_floor": "Cost optimiser: hot water floor, BT6 (°C)"
         },
         "data_description": {
           "hw_learning_rate": "How much one draw moves the learned value of its hour, and how fast hours without draws fade (vv_ai_learning_rate).",
@@ -211,12 +272,15 @@
           "hw_use_price": "VV-AI control places each window in the cheapest hours before the peak and heats only in its two cheapest hours (or the last two before the peak).",
           "hw_min_temp_enable": "With VV-AI control, BT7 under the floor heats to the floor + 4 °C. VV-AI control keeps the pump from heating hot water on its own, so keep this on.",
           "hw_autolux_diff": "A BT6 fall this large within the time below starts a one-time increase (temporary lux).",
-          "hw_comfort_very_cheap": "With price comfort mode on, the pump's hot water comfort mode (47041) for each price level. Unchanged: the pump's own setting."
+          "hw_comfort_very_cheap": "With price comfort mode on, the pump's hot water comfort mode (47041) for each price level. Unchanged: the pump's own setting.",
+          "hw_optimizer_floor": "With 'Optimise hot water charges' on, the optimiser's tank plan keeps BT6 above this."
         }
       }
     },
     "error": {
-      "tibber_homes_failed": "Could not list the Tibber homes ({error}). Enter the home's nickname from the Tibber app, or leave empty to use the first home."
+      "tibber_homes_failed": "Could not list the Tibber homes ({error}). Enter the home's nickname from the Tibber app, or leave empty to use the first home.",
+      "meter_unit": "The meter needs a unit of W, kW or MW (power), or Wh, kWh or MWh counting up (energy).",
+      "comfort_floor": "The hard floor must be further below the setpoint than the comfort band."
     }
   },
   "entity": {
@@ -380,6 +444,46 @@
         "0": "Economy",
         "1": "Normal",
         "2": "Luxury"
+      }
+    },
+    "house_floors": {
+      "options": {
+        "1": "1",
+        "1.5": "1.5",
+        "2": "2",
+        "3": "3 or more"
+      }
+    },
+    "house_era": {
+      "options": {
+        "unknown": "Unknown",
+        "pre1960": "Before 1960",
+        "1961-1975": "1961-1975",
+        "1976-1990": "1976-1990",
+        "1991-2010": "1991-2010",
+        "2011-": "2011 or later"
+      }
+    },
+    "house_construction": {
+      "options": {
+        "unknown": "Unknown",
+        "light": "Light (timber frame)",
+        "medium": "Medium (timber on a concrete slab)",
+        "heavy": "Heavy (concrete, brick)"
+      }
+    },
+    "house_emitter": {
+      "options": {
+        "radiators": "Radiators",
+        "floor": "Floor heating",
+        "mixed": "Both"
+      }
+    },
+    "confidence_level": {
+      "options": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High"
       }
     }
   },
