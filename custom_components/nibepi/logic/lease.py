@@ -21,6 +21,13 @@ Rules implemented by ``LeaseManager.decide``:
   so two renewals can be lost before the gateway falls back).
 - A gateway lease state saying "not active" while we think we hold it
   (gateway restart, expiry) makes the next tick re-send at once.
+- After a gateway restart a previously active lease becomes a grace lease
+  with owner ``"grace"``; it is treated as ours: renewed in active mode
+  (the gateway keeps the original baseline), released otherwise.
+- A rejected request comes back as the full state with ``error`` set (an
+  active lease stays as it was). The rejected value is not retried at once:
+  "Heatpump is not ready yet." is retried after one tick interval
+  (``not_ready_retry``), other rejections after ``renew_interval``.
 
 The clock is injected so tests can drive time.
 """
@@ -33,6 +40,9 @@ from typing import Any, Callable, Mapping, Optional
 
 DEFAULT_TTL = 900
 DEFAULT_RENEW = 300
+DEFAULT_NOT_READY_RETRY = 60
+GRACE_OWNER = "grace"
+NOT_READY = "Heatpump is not ready yet."
 LEASE_MIN = -10
 LEASE_MAX = 10
 
@@ -68,6 +78,7 @@ class LeaseManager:
         clock: Optional[Callable[[], datetime]] = None,
         low: int = LEASE_MIN,
         high: int = LEASE_MAX,
+        not_ready_retry: int = DEFAULT_NOT_READY_RETRY,
     ) -> None:
         self.register = register
         self.owner = owner
@@ -79,7 +90,9 @@ class LeaseManager:
         self.held = False
         self.value: Optional[int] = None
         self.last_sent: Optional[datetime] = None
+        self.not_ready_retry = timedelta(seconds=not_ready_retry)
         self.remote: Mapping[str, Any] = {}
+        self.retry_after: Optional[datetime] = None
 
     # -- inputs ---------------------------------------------------------
 
@@ -88,15 +101,34 @@ class LeaseManager:
         self.remote = dict(state)
         active = state.get("active") is True
         owner = state.get("owner")
-        if active and owner == self.owner and not self.held:
-            # Ours from before a restart (or the gateway's grace lease).
-            self.held = True
-            value = state.get("value")
-            self.value = int(value) if isinstance(value, (int, float)) else None
-            self.last_sent = None
-        elif not active and self.held and state.get("error") is None:
+        error = state.get("error")
+        value = state.get("value")
+        remote_value = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        if error:
+            # Rejected request. Whatever the gateway holds is the truth.
+            now = self.clock()
+            wait = self.not_ready_retry if str(error).strip() == NOT_READY else self.renew_interval
+            self.retry_after = now + wait
+            if active and owner in (self.owner, GRACE_OWNER):
+                self.held = True
+                self.value = remote_value
+            elif not active:
+                self.held = False
+                self.value = None
+                self.last_sent = None
+            return
+        if active and owner in (self.owner, GRACE_OWNER):
+            if not self.held or owner == GRACE_OWNER:
+                # Ours from before a restart, or the gateway's grace lease.
+                self.held = True
+                self.value = remote_value
+                self.last_sent = None
+        elif not active and self.held:
             # Gateway dropped it (restart or expiry): re-send next tick.
             self.last_sent = None
+
+    def is_grace(self) -> bool:
+        return self.remote.get("active") is True and self.remote.get("owner") == GRACE_OWNER
 
     # -- decisions ------------------------------------------------------
 
@@ -109,6 +141,10 @@ class LeaseManager:
         if not healthy or target is None:
             return None
         value = self.clamp(target)
+        if self.retry_after is not None:
+            if self.clock() < self.retry_after:
+                return None
+            self.retry_after = None
         if not self.held or self.value != value or self.last_sent is None:
             return LeaseAction("set", value, renew=self.held and self.value == value)
         if self.clock() - self.last_sent >= self.renew_interval:

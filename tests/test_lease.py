@@ -81,6 +81,42 @@ class LeaseTest(unittest.TestCase):
         self.lease.note_remote_state({"active": False, "owner": None, "error": None})
         self.assertEqual(self.step("active", 2), LeaseAction("set", 2, renew=True))
 
+    def test_grace_lease_taken_over(self) -> None:
+        self.lease.note_remote_state({"active": True, "value": -2, "owner": "grace", "error": None})
+        self.assertTrue(self.lease.is_grace())
+        self.assertEqual(self.step("active", -2), LeaseAction("set", -2, renew=True))
+        self.lease.note_remote_state({"active": True, "value": -2, "owner": "ha", "error": None})
+        self.assertFalse(self.lease.is_grace())
+        self.clock.advance(60)
+        self.assertIsNone(self.step("active", -2))
+
+    def test_grace_lease_released_when_not_active(self) -> None:
+        self.lease.note_remote_state({"active": True, "value": -2, "owner": "grace"})
+        self.assertEqual(self.step("shadow", 0), LeaseAction("release"))
+
+    def test_not_ready_retried_after_one_tick(self) -> None:
+        self.step("active", 2)
+        self.lease.note_remote_state({"active": False, "error": "Heatpump is not ready yet."})
+        self.assertFalse(self.lease.held)
+        self.clock.advance(30)
+        self.assertIsNone(self.step("active", 2))
+        self.clock.advance(30)
+        self.assertEqual(self.step("active", 2), LeaseAction("set", 2))
+
+    def test_other_rejection_waits_renew_interval(self) -> None:
+        self.step("active", 1)
+        self.clock.advance(60)
+        self.step("active", 3)
+        # Rejected change; the old lease (value 1) stays active.
+        self.lease.note_remote_state({"active": True, "value": 1, "owner": "ha", "error": "out of limits"})
+        self.assertTrue(self.lease.held)
+        self.assertEqual(self.lease.value, 1)
+        for _ in range(4):
+            self.clock.advance(60)
+            self.assertIsNone(self.step("active", 3))
+        self.clock.advance(60)
+        self.assertEqual(self.step("active", 3), LeaseAction("set", 3))
+
     def test_payload(self) -> None:
         self.assertEqual(LeaseAction("set", -1).payload(900, "ha"), {"value": -1, "ttl": 900, "owner": "ha"})
 
