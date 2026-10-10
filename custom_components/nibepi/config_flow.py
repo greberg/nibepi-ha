@@ -210,7 +210,9 @@ class NibePiOptionsFlow(OptionsFlow):
             if key.endswith("_" + system)
         }
         fields: Dict[Any, Any] = {
-            _optional(OPT_INDOOR_ENTITY, current): EntitySelector(EntitySelectorConfig(domain="sensor")),
+            _optional(OPT_INDOOR_ENTITY, current): EntitySelector(
+                EntitySelectorConfig(domain="sensor", device_class="temperature")
+            ),
             _required(OPT_SETPOINT, current, SYSTEM_DEFAULTS): _number(5, 35, 0.1),
             _optional(OPT_SETPOINT_ENTITY, current): EntitySelector(
                 EntitySelectorConfig(domain=["input_number", "number", "sensor"])

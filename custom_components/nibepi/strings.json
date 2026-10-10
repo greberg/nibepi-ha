@@ -60,7 +60,7 @@
       "system_s1": {
         "title": "Climate system {system}",
         "data": {
-          "indoor_entity": "Indoor temperature sensor (empty = pump's BT50)",
+          "indoor_entity": "Indoor temperature sensor, e.g. Netatmo (empty = pump's BT50)",
           "setpoint": "Indoor setpoint (°C)",
           "setpoint_entity": "Setpoint entity (overrides the number)",
           "indoor_factor": "Indoor factor",
@@ -72,12 +72,15 @@
           "price_guard": "Only lower at expensive levels while indoor is warm enough",
           "price_temp_low": "Guard margin over setpoint (°C)",
           "weather_hours": "Forecast hours ahead"
+        },
+        "data_description": {
+          "indoor_entity": "Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used."
         }
       },
       "system_s2": {
         "title": "Climate system {system}",
         "data": {
-          "indoor_entity": "Indoor temperature sensor (empty = pump's BT50)",
+          "indoor_entity": "Indoor temperature sensor, e.g. Netatmo (empty = pump's BT50)",
           "setpoint": "Indoor setpoint (°C)",
           "setpoint_entity": "Setpoint entity (overrides the number)",
           "indoor_factor": "Indoor factor",
@@ -89,6 +92,9 @@
           "price_guard": "Only lower at expensive levels while indoor is warm enough",
           "price_temp_low": "Guard margin over setpoint (°C)",
           "weather_hours": "Forecast hours ahead"
+        },
+        "data_description": {
+          "indoor_entity": "Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used."
         }
       }
     }

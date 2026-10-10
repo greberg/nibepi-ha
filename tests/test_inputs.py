@@ -5,7 +5,16 @@ from datetime import timedelta
 
 import context  # noqa: F401
 from context import utc
-from logic.inputs import Reading, is_missing, is_stale, js_round, to_fixed, usable
+from logic.inputs import (
+    Reading,
+    is_missing,
+    is_stale,
+    js_round,
+    state_timestamp,
+    state_value,
+    to_fixed,
+    usable,
+)
 
 
 class StalenessTest(unittest.TestCase):
@@ -35,6 +44,28 @@ class StalenessTest(unittest.TestCase):
         self.assertIsNone(usable(Reading(20.5, self.now), self.now))
         self.assertTrue(is_missing("9999"))
         self.assertFalse(is_missing("21.5"))
+
+
+class HaStateTest(unittest.TestCase):
+    def test_state_value(self) -> None:
+        self.assertEqual(state_value("21.4"), 21.4)
+        for missing in ("unavailable", "unknown", "Unknown", "", None, "on"):
+            self.assertIsNone(state_value(missing))
+
+    def test_netatmo_unchanged_value_is_not_stale(self) -> None:
+        # Netatmo reported 21.4 every 10 minutes for two hours; the value did
+        # not change, so last_updated is two hours old but last_reported new.
+        now = utc(2026, 1, 10, 12, 0)
+        last_updated = now - timedelta(hours=2)
+        last_reported = now - timedelta(minutes=8)
+        ts = state_timestamp(last_reported, last_updated)
+        self.assertEqual(ts, last_reported)
+        self.assertIsNone(usable(Reading(21.4, ts), now, 60))
+        # Without last_reported (HA before 2024.3) last_updated is used.
+        ts = state_timestamp(None, last_updated)
+        self.assertEqual(ts, last_updated)
+        self.assertEqual(usable(Reading(21.4, ts), now, 60), "stale")
+        self.assertIsNone(state_timestamp(None, None))
 
 
 class RoundingTest(unittest.TestCase):

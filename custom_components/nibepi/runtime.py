@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfSpeed, UnitOfTemperature
+from homeassistant.const import UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers import issue_registry as ir
@@ -77,7 +77,15 @@ from .const import (
 )
 from .logic import curve
 from .logic.indoor import compute_indoor
-from .logic.inputs import Decision, ForecastPoint, PriceSlot, Reading, to_float
+from .logic.inputs import (
+    Decision,
+    ForecastPoint,
+    PriceSlot,
+    Reading,
+    state_timestamp,
+    state_value,
+    to_float,
+)
 from .logic.lease import MODE_ACTIVE, MODE_OFF, MODE_SHADOW, LeaseAction, LeaseManager
 from .logic.price import (
     TIBBER_DOMAIN,
@@ -453,9 +461,9 @@ class NibePiRuntime:
         if not entity_id:
             return self.readings.get(sys.registers["indoor"])
         state = self.hass.states.get(entity_id)
-        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        if state is None:
             return None
-        value = to_float(state.state)
+        value = state_value(state.state)
         if value is None:
             return None
         unit = state.attributes.get("unit_of_measurement")
@@ -464,8 +472,10 @@ class NibePiRuntime:
                 value = TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
             except Exception:  # noqa: BLE001 - unknown unit
                 return None
-        ts = getattr(state, "last_reported", None) or state.last_updated
-        return Reading(value, ts)
+        # last_reported: Netatmo often reports an unchanged value, which
+        # does not move last_updated.
+        ts = state_timestamp(getattr(state, "last_reported", None), state.last_updated)
+        return Reading(value, ts) if ts is not None else None
 
     def _setpoint(self, sys: SystemRuntime) -> Optional[float]:
         entity_id = self.opt(OPT_SETPOINT_ENTITY, sys.system)
@@ -473,7 +483,7 @@ class NibePiRuntime:
             state = self.hass.states.get(entity_id)
             if state is None:
                 return None
-            return to_float(state.state)
+            return state_value(state.state)
         return to_float(self.opt(OPT_SETPOINT, sys.system))
 
     def _price_level(self, now: datetime) -> Optional[PriceLevel]:

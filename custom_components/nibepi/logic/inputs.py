@@ -42,6 +42,30 @@ def is_missing(value: Any) -> bool:
     return number is None or number == 9999.0
 
 
+# Home Assistant state strings that mean "no value".
+NO_VALUE_STATES = frozenset({"unavailable", "unknown", "none", ""})
+
+
+def state_value(state: Any) -> Optional[float]:
+    """A Home Assistant state string as a number; unavailable/unknown is None."""
+    if isinstance(state, str) and state.strip().lower() in NO_VALUE_STATES:
+        return None
+    return to_float(state)
+
+
+def state_timestamp(last_reported: Any, last_updated: Any) -> Optional[datetime]:
+    """When a Home Assistant entity last reported its value.
+
+    Cloud sensors such as Netatmo poll every ~10 minutes and often report
+    the same temperature; ``last_updated``/``last_changed`` then stand
+    still and the sensor would look stale. ``last_reported`` (HA 2024.3+)
+    moves on every report, so it is preferred; the newer of the two is used
+    in case only ``last_updated`` is set.
+    """
+    stamps = [t for t in (last_reported, last_updated) if isinstance(t, datetime)]
+    return max(stamps) if stamps else None
+
+
 @dataclass(frozen=True)
 class Reading:
     """A measured value and when it was last updated (timezone aware)."""

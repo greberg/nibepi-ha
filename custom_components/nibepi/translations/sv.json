@@ -60,7 +60,7 @@
       "system_s1": {
         "title": "Klimatsystem {system}",
         "data": {
-          "indoor_entity": "Inomhusgivare (tom = pumpens BT50)",
+          "indoor_entity": "Inomhusgivare, t.ex. Netatmo (tom = pumpens BT50)",
           "setpoint": "Börvärde inomhus (°C)",
           "setpoint_entity": "Börvärdesentitet (ersätter talet)",
           "indoor_factor": "Inomhusfaktor",
@@ -72,12 +72,15 @@
           "price_guard": "Sänk bara vid dyra nivåer när det är varmt nog inne",
           "price_temp_low": "Marginal över börvärdet (°C)",
           "weather_hours": "Prognos timmar framåt"
+        },
+        "data_description": {
+          "indoor_entity": "Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032)."
         }
       },
       "system_s2": {
         "title": "Klimatsystem {system}",
         "data": {
-          "indoor_entity": "Inomhusgivare (tom = pumpens BT50)",
+          "indoor_entity": "Inomhusgivare, t.ex. Netatmo (tom = pumpens BT50)",
           "setpoint": "Börvärde inomhus (°C)",
           "setpoint_entity": "Börvärdesentitet (ersätter talet)",
           "indoor_factor": "Inomhusfaktor",
@@ -89,6 +92,9 @@
           "price_guard": "Sänk bara vid dyra nivåer när det är varmt nog inne",
           "price_temp_low": "Marginal över börvärdet (°C)",
           "weather_hours": "Prognos timmar framåt"
+        },
+        "data_description": {
+          "indoor_entity": "Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032)."
         }
       }
     }
