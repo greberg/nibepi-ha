@@ -161,7 +161,10 @@ def vv_store_key(entry_id: str) -> str:
 
 # The optimiser's history, fitted models and savings (helpers.storage).
 OPT_STORE_VERSION = 1
-OPT_STORE_SAVE_DELAY = 900  # seconds; a new 10-minute bin saves at most this late
+# Store.async_delay_save restarts its timer on every call, so the history
+# (~0.5 MB) asks for a save at most once an hour, written a minute later.
+OPT_STORE_SAVE_DELAY = 60  # seconds
+OPT_STORE_SAVE_EVERY = 3600  # seconds
 
 
 def opt_store_key(entry_id: str) -> str:

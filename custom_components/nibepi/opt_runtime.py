@@ -42,6 +42,7 @@ from .const import (
     OPT_PRICE_UNIT_FACTOR,
     OPT_SENSOR_TIMEOUT,
     OPT_STORE_SAVE_DELAY,
+    OPT_STORE_SAVE_EVERY,
     OPT_STORE_VERSION,
     REG_ADDITION_POWER,
     REG_BRINE_IN,
@@ -152,6 +153,11 @@ class ImportItem:
     problem: Optional[str] = None
 
 
+def _tz() -> Any:
+    getter = getattr(dt_util, "get_default_time_zone", None)
+    return getter() if getter is not None else dt_util.DEFAULT_TIME_ZONE
+
+
 def _celsius(unit: Optional[str]) -> Optional[Callable[[float], Optional[float]]]:
     if not unit or unit == UnitOfTemperature.CELSIUS:
         return None
@@ -204,6 +210,7 @@ class OptimizerRuntime:
         self.bootstrap_running = False
         self._logged: set = set()
         self._unsubs: List[Callable[[], None]] = []
+        self._save_requested: Optional[datetime] = None
         # Fits: the persisted dict (``optrun.fit_all``) and the models built
         # from it per system.
         self.fits: Dict[str, Any] = {}
@@ -294,8 +301,15 @@ class OptimizerRuntime:
         }
 
     def save_soon(self) -> None:
-        if self.loaded:
-            self.store.async_delay_save(self._store_data, OPT_STORE_SAVE_DELAY)
+        """Save within the hour (and always at shutdown)."""
+        if not self.loaded:
+            return
+        now = dt_util.utcnow()
+        last = self._save_requested
+        if last is not None and (now - last).total_seconds() < OPT_STORE_SAVE_EVERY:
+            return
+        self._save_requested = now
+        self.store.async_delay_save(self._store_data, OPT_STORE_SAVE_DELAY)
 
     # -- gateway discovery --------------------------------------------------
 
@@ -718,7 +732,7 @@ class OptimizerRuntime:
 
     def _heating_inputs(self, now: datetime) -> List[HeatingInputs]:
         rt = self.rt
-        tz = dt_util.get_default_time_zone()
+        tz = _tz()
         prices = scale_prices(rt.price_slots, rt.opt(OPT_PRICE_UNIT_FACTOR))
         fetched = rt.forecast_fetched
         forecast = list(rt.forecast or []) if fetched is not None and now - fetched <= FORECAST_MAX_AGE else []
@@ -765,7 +779,7 @@ class OptimizerRuntime:
         return TankInputs(
             prices=scale_prices(rt.price_slots, rt.opt(OPT_PRICE_UNIT_FACTOR)),
             now=now,
-            tz=dt_util.get_default_time_zone(),
+            tz=_tz(),
             bt6=value(REG_BT6),
             economy_stop=value(STOP_REGISTERS[0]),
             normal_start=value(START_REGISTERS[1]),
@@ -786,7 +800,7 @@ class OptimizerRuntime:
             return None, tank.problem or "no plan"
         if now - tank.planned_at > PLAN_MAX_AGE:
             return None, "plan older than %d min" % (PLAN_MAX_AGE.total_seconds() // 60)
-        return hw_windows(tank.plan.blocks, now, dt_util.get_default_time_zone()), None
+        return hw_windows(tank.plan.blocks, now, _tz()), None
 
     async def _async_plan_once(self) -> None:
         now = dt_util.utcnow()

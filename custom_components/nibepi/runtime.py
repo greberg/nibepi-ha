@@ -658,9 +658,12 @@ class NibePiRuntime:
             await self._async_rmu_step(sys, now)
         try:
             self.optimizer.sample(now)
-            self.optimizer.on_tick(now)
         except Exception:  # noqa: BLE001 - history is best effort
             _LOGGER.exception("NibePi optimiser: sampling failed")
+        try:
+            self.optimizer.on_tick(now)
+        except Exception:  # noqa: BLE001 - the rules keep running
+            _LOGGER.exception("NibePi optimiser: scheduling a plan failed")
         await self._async_hotwater_step(now)
         self._notify()
 
