@@ -23,9 +23,11 @@ from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_PATH,
     DOMAIN,
+    OPT_STORE_VERSION,
     PLATFORMS,
     SERVICE_IMPORT_VV_PROFILE,
     VV_STORE_VERSION,
+    opt_store_key,
     vv_store_key,
 )
 from .logic.vvimport import ProfileImportError
@@ -94,8 +96,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> b
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> None:
-    # The learned hot water profile belongs to the entry.
+    # The learned hot water profile and the optimiser's history and models
+    # belong to the entry.
     await Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id)).async_remove()
+    await Store(hass, OPT_STORE_VERSION, opt_store_key(entry.entry_id)).async_remove()
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: NibePiConfigEntry) -> None:

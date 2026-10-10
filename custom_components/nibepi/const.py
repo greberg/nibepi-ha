@@ -21,10 +21,31 @@ SYSTEMS = ("s1", "s2")
 # Registers (F series, node-red-contrib-nibepi dataregister.json)
 REG_OUTDOOR = 40004  # BT1
 # rmu: room temperature of the gateway's virtual RMU40 (leased, °C).
+# supply: BT2 (S1) / EP21-BT2 (S2), for the optimiser's house model.
 REGISTERS = {
-    "s1": {"offset": 47011, "curve": 47007, "indoor": 40033, "rmu": 10060},  # BT50
-    "s2": {"offset": 47010, "curve": 47006, "indoor": 40032, "rmu": 10160},
+    "s1": {"offset": 47011, "curve": 47007, "indoor": 40033, "rmu": 10060, "supply": 40008},  # BT50
+    "s2": {"offset": 47010, "curve": 47006, "indoor": 40032, "rmu": 10160, "supply": 40007},
 }
+
+# Cost optimiser inputs (besides BT1, BT2, the offsets and the hot water
+# registers): brine in/out, compressor input power, electric addition,
+# compressor frequency and the heat meters for heating and hot water.
+REG_BRINE_IN = 40015  # BT10
+REG_BRINE_OUT = 40016  # BT11
+REG_COMPRESSOR_POWER = 43141  # W
+REG_ADDITION_POWER = 43084  # kW
+REG_COMPRESSOR_FREQ = 43136  # Hz
+REG_HEAT_METER = 44300  # kWh, heating (compressor + addition)
+REG_HW_METER = 44298  # kWh, hot water (compressor + addition)
+OPTIMIZER_REGISTERS = (
+    REG_BRINE_IN,
+    REG_BRINE_OUT,
+    REG_COMPRESSOR_POWER,
+    REG_ADDITION_POWER,
+    REG_COMPRESSOR_FREQ,
+    REG_HEAT_METER,
+    REG_HW_METER,
+)
 
 COMPONENTS = ("indoor", "price", "weather")
 
@@ -136,6 +157,15 @@ VV_IMPORT_MAX_BYTES = 1_000_000
 
 def vv_store_key(entry_id: str) -> str:
     return "%s_vv_profile_%s" % (DOMAIN, entry_id)
+
+
+# The optimiser's history, fitted models and savings (helpers.storage).
+OPT_STORE_VERSION = 1
+OPT_STORE_SAVE_DELAY = 900  # seconds; a new 10-minute bin saves at most this late
+
+
+def opt_store_key(entry_id: str) -> str:
+    return "%s_optimizer_%s" % (DOMAIN, entry_id)
 
 
 # Options: house profile and cost optimiser (shared). See docs/optimizer.md

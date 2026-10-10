@@ -1,6 +1,7 @@
 {
   "domain": "nibepi",
   "name": "NibePi",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@greberg"],
   "config_flow": true,
   "dependencies": ["mqtt"],

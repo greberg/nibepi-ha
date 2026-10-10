@@ -80,6 +80,7 @@ from .const import (
     OPT_WIND_S,
     OPT_WIND_W,
     OPT_TIBBER_HOME,
+    OPTIMIZER_REGISTERS,
     OWNER,
     PRICE_LEVEL_OPTIONS,
     PRICE_SOURCE_NONE,
@@ -136,6 +137,7 @@ from .logic.vvimport import convert_nodered_store, read_json_file
 from .logic.vvlearn import VvProfile
 from .logic.vvplan import PlanSettings
 from .logic.weather import WeatherSettings, compute_weather
+from .opt_runtime import OptimizerRuntime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -236,6 +238,7 @@ class NibePiRuntime:
             )
         self.hotwater = HotWaterRuntime(HotWaterController(), HotWaterLeases(owner=OWNER))
         self.vv_store: Store = Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id))
+        self.optimizer = OptimizerRuntime(self)
         self._unsubs: List[Callable[[], None]] = []
         self._subscribed: set = set()
 
@@ -281,11 +284,15 @@ class NibePiRuntime:
         for sys in self.systems.values():
             regs.add(sys.registers["offset"])
             regs.add(sys.registers["curve"])
+            regs.add(sys.registers["supply"])
             if not self.opt(OPT_INDOOR_ENTITY, sys.system):
                 regs.add(sys.registers["indoor"])
         # Hot water: BT6, BT7, prio, comfort mode, period, temporary lux and
         # the start/stop temperatures.
         regs.update(INPUT_REGISTERS)
+        # Cost optimiser: brine, compressor power and frequency, addition,
+        # heat meters.
+        regs.update(OPTIMIZER_REGISTERS)
         return sorted(regs)
 
     async def _publish(self, topic: str, payload: str, retain: bool = False) -> None:
@@ -302,6 +309,7 @@ class NibePiRuntime:
         await self._async_subscribe()
         await self._async_subscribe_registers()
         await self._async_request_adjust()
+        await self.optimizer.async_start()
         self._unsubs.append(
             async_track_time_interval(self.hass, self._async_tick_cb, timedelta(seconds=TICK_SECONDS))
         )
@@ -333,6 +341,7 @@ class NibePiRuntime:
             await self._async_publish_lease(lease, action)
         if self.hotwater.store_loaded:
             await self.vv_store.async_save(self.hotwater.controller.profile.to_dict())
+        await self.optimizer.async_stop()
 
     async def async_options_updated(self) -> None:
         # The price source or Tibber home may have changed.
@@ -343,6 +352,7 @@ class NibePiRuntime:
         self._tibber_attempt = None
         await self._async_subscribe_registers()
         await self._async_refresh_forecast()
+        await self.optimizer.async_options_updated()
         await self.async_tick()
 
     async def _async_subscribe_registers(self) -> None:
@@ -640,6 +650,10 @@ class NibePiRuntime:
             if action is not None:
                 await self._async_send(sys, action)
             await self._async_rmu_step(sys, now)
+        try:
+            self.optimizer.sample(now)
+        except Exception:  # noqa: BLE001 - history is best effort
+            _LOGGER.exception("NibePi optimiser: sampling failed")
         await self._async_hotwater_step(now)
         self._notify()
 
