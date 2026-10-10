@@ -14,18 +14,20 @@ Per climate system the user picks a strategy:
 The off/shadow/active mode and the lease still decide whether anything is
 written; ``optimiser`` in shadow mode only computes and shows.
 
-Also here: the planned offset at a moment, and how much of a plan's
-savings falls into a time span (for "expected savings today").
+Also here: the planned offset at a moment, how much of a plan's savings
+falls into a time span (for "expected savings today"), and the hot water
+plan's charge blocks as heating windows for the hot water controller.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
-from typing import Optional, Sequence
+from datetime import datetime, timedelta, tzinfo
+from typing import List, Optional, Sequence
 
 from .curve import TOTAL_LIMIT, CurvePlan, clamp, target_value
 from .optimizer.gate import GateDecision
+from .vvplan import HeatWindow
 
 STRATEGY_RULES = "rules"
 STRATEGY_OPTIMISER = "optimiser"
@@ -109,3 +111,31 @@ def time_share(start: datetime, end: datetime, span_start: datetime, span_end: d
     if length <= 0:
         return 0.0
     return _overlap(span_start.timestamp(), span_end.timestamp(), start.timestamp(), end.timestamp()) / length
+
+
+def hw_windows(blocks: Sequence, now: datetime, tz: tzinfo) -> List[HeatWindow]:
+    """The optimiser's charge blocks as the hot water controller's windows.
+
+    Each ``charge`` block that has not ended becomes a window over the
+    block with the block's target (the pump's normal or luxury stop
+    temperature) and its comfort mode (economy/normal/luxury -> day mode
+    1/2/3). Inside it the controller starts a charge with temporary lux
+    and ends it when BT7 reaches the target, as for a VV-AI window.
+    """
+    out: List[HeatWindow] = []
+    for block in blocks:
+        if block.action != "charge" or block.end <= now or block.target is None:
+            continue
+        mode = max(1, min(3, int(block.mode) + 1))
+        out.append(
+            HeatWindow(
+                start=block.start,
+                end=block.end,
+                peak=block.end,
+                day=(block.start.astimezone(tz) - timedelta(hours=2)).date(),
+                day_mode=mode,
+                target=float(block.target),
+            )
+        )
+    out.sort(key=lambda w: w.start)
+    return out

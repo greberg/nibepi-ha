@@ -35,6 +35,7 @@ from .const import (
     OPT_HOUSE_ERA,
     OPT_HOUSE_FLOORS,
     OPT_HOUSE_SENSORS,
+    OPT_HW_OPT_FLOOR,
     OPT_INDOOR_ENTITY,
     OPT_METER_ENTITY,
     OPT_OPT_MIN_LEVEL,
@@ -54,6 +55,7 @@ from .const import (
     signal_update,
 )
 from .logic.curve import CurvePlan
+from .logic.hotwater import START_REGISTERS, STOP_REGISTERS
 from .logic.hwcontrol import REG_BT6, REG_PRIO
 from .logic.lease import MODE_OFF
 from .logic.inputs import Reading, state_timestamp, state_value, to_float, usable
@@ -84,11 +86,15 @@ from .logic.optrun import (
     HeatingResult,
     Models,
     SystemSetup,
+    TankInputs,
+    TankResult,
     base_offset,
     comfort_settings,
     fit_all,
     models_for,
     plan_system,
+    plan_tank,
+    profile_confidence,
     scale_prices,
 )
 from .logic.optstrategy import (
@@ -98,8 +104,10 @@ from .logic.optstrategy import (
     apply_choice,
     choose_total,
     hours_left,
+    hw_windows,
     offset_at,
     savings_between,
+    time_share,
 )
 
 if TYPE_CHECKING:
@@ -205,6 +213,7 @@ class OptimizerRuntime:
         # Planning (in memory; replanned every 15 minutes).
         self.strategy: Dict[str, str] = {system: STRATEGY_RULES for system in runtime.systems}
         self.heating: Dict[str, HeatingResult] = {}
+        self.tank: Optional[TankResult] = None
         self.gates: Dict[str, Optional[GateDecision]] = {}
         self.choices: Dict[str, StrategyChoice] = {}
         self.plan_running = False
@@ -742,12 +751,51 @@ class OptimizerRuntime:
             )
         return out
 
+    def _tank_inputs(self, now: datetime) -> Optional[TankInputs]:
+        rt = self.rt
+        if rt.hotwater.mode == MODE_OFF:
+            return None
+        readings = rt.readings
+        timeout = rt.opt(OPT_SENSOR_TIMEOUT)
+
+        def value(reg: int) -> Optional[float]:
+            return self._fresh(readings.get(reg), now, timeout)
+
+        profile = rt.hotwater.controller.profile
+        return TankInputs(
+            prices=scale_prices(rt.price_slots, rt.opt(OPT_PRICE_UNIT_FACTOR)),
+            now=now,
+            tz=dt_util.get_default_time_zone(),
+            bt6=value(REG_BT6),
+            economy_stop=value(STOP_REGISTERS[0]),
+            normal_start=value(START_REGISTERS[1]),
+            normal_stop=value(STOP_REGISTERS[1]),
+            lux_stop=value(STOP_REGISTERS[2]),
+            floor=to_float(rt.opt(OPT_HW_OPT_FLOOR)) or 40.0,
+            profile=list(profile.profile),
+            confidence=profile_confidence(profile.learned, bool(profile.imported_from)),
+            t_brine=self._fresh(readings.get(REG_BRINE_IN), now),
+        )
+
+    def hw_plan_windows(self, now: datetime):
+        """(windows, None) from a current hot water plan, or (None, why not)."""
+        tank = self.tank
+        if tank is None:
+            return None, "not planned yet"
+        if tank.plan is None:
+            return None, tank.problem or "no plan"
+        if now - tank.planned_at > PLAN_MAX_AGE:
+            return None, "plan older than %d min" % (PLAN_MAX_AGE.total_seconds() // 60)
+        return hw_windows(tank.plan.blocks, now, dt_util.get_default_time_zone()), None
+
     async def _async_plan_once(self) -> None:
         now = dt_util.utcnow()
         self.refresh_models()
         inputs = self._heating_inputs(now)
-        results = await self.hass.async_add_executor_job(_run_heating, inputs)
-        self._book_savings(now, results)
+        tank_inputs = self._tank_inputs(now)
+        results, tank = await self.hass.async_add_executor_job(_run_plans, inputs, tank_inputs)
+        self._book_savings(now, results, tank)
+        self.tank = tank
         active = {r.system for r in results}
         for system in list(self.heating):
             if system not in active:
@@ -758,7 +806,7 @@ class OptimizerRuntime:
 
     # -- expected savings today ------------------------------------------------
 
-    def _book_savings(self, now: datetime, heating: List[HeatingResult]) -> None:
+    def _book_savings(self, now: datetime, heating: List[HeatingResult], tank: Optional[TankResult]) -> None:
         """Bank what the previous plans expected to save until now; add the
         new plans' share of the rest of today."""
         day_start = dt_util.start_of_local_day(dt_util.as_local(now))
@@ -775,11 +823,24 @@ class OptimizerRuntime:
                 banked[result.system] = banked.get(result.system, 0.0) + savings_between(prev.plan, since, now)
             ahead = savings_between(result.plan, now, day_end) if result.plan is not None else 0.0
             today[result.system] = banked.get(result.system, 0.0) + ahead
+        # Hot water: spread over the plan's span by time.
+        prev_tank = self.tank
+        hw_banked = float(self.savings.get("hot_water") or 0.0)
+        if prev_tank is not None and prev_tank.plan is not None and prev_tank.plan.steps:
+            span = (prev_tank.plan.steps[0].start, prev_tank.plan.steps[-1].end)
+            hw_banked += prev_tank.plan.savings * time_share(max(prev_tank.planned_at, day_start), now, *span)
+        self.savings["hot_water"] = hw_banked
+        if tank is not None and tank.plan is not None and tank.plan.steps:
+            span = (tank.plan.steps[0].start, tank.plan.steps[-1].end)
+            today["hot_water"] = hw_banked + tank.plan.savings * time_share(now, day_end, *span)
+        elif hw_banked:
+            today["hot_water"] = hw_banked
         self.savings_today = today
 
 
-def _run_heating(inputs: List[HeatingInputs]) -> List[HeatingResult]:
-    """Executor job: one plan per system; a failure is that system's problem."""
+def _run_plans(inputs: List[HeatingInputs], tank: Optional[TankInputs]):
+    """Executor job: one plan per system and the hot water plan; a failure
+    is that plan's problem."""
     results = []
     for item in inputs:
         try:
@@ -787,4 +848,11 @@ def _run_heating(inputs: List[HeatingInputs]) -> List[HeatingResult]:
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("NibePi optimiser: planning %s failed", item.system)
             results.append(HeatingResult(item.system, item.now, 0, problem="error: %r" % err))
-    return results
+    tank_result = None
+    if tank is not None:
+        try:
+            tank_result = plan_tank(tank)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("NibePi optimiser: hot water planning failed")
+            tank_result = TankResult(tank.now, problem="error: %r" % err)
+    return results, tank_result

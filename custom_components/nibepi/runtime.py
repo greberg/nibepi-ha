@@ -489,6 +489,7 @@ class NibePiRuntime:
         _LOGGER.info("NibePi hot water mode %s -> %s", hw.mode, mode)
         hw.mode = mode
         self._hw_step_soon()
+        self.optimizer.request_plan()
 
     def set_hw_feature(self, feature: str, enabled: bool) -> None:
         hw = self.hotwater
@@ -587,6 +588,7 @@ class NibePiRuntime:
                         self.price_level = None
                     self.price_level_at = now
                 level = self.price_level
+                windows, problem = self.optimizer.hw_plan_windows(now)
                 inputs = HotWaterInputs(
                     now=now,
                     tz=_local_tz(),
@@ -594,6 +596,8 @@ class NibePiRuntime:
                     price_level=level.level if level is not None else None,
                     price_slots=list(self.price_slots),
                     held=hw.leases.held(),
+                    optimiser_windows=windows,
+                    optimiser_problem=problem,
                 )
                 settings = self._hw_settings()
                 learning = hw.mode != MODE_OFF and (

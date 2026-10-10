@@ -336,6 +336,9 @@
       },
       "hw_price_comfort": {
         "name": "Varmvatten komfortläge efter elpris"
+      },
+      "hw_optimiser": {
+        "name": "Optimera varmvattenladdningar"
       }
     },
     "sensor": {

@@ -14,6 +14,14 @@ makes one decision per tick, with a reason per feature:
 - 47041 comfort mode: the mode for the current price level while price
   comfort mode is on, else released (baseline).
 
+Optimised hot water charges (feature ``optimiser``, G6): the cost
+optimiser's charge blocks replace the VV-AI plan's heating windows. The
+VV path is otherwise unchanged: 47134 is held at 0, a charge is started
+with 48132 = 4 and ends when BT7 reaches the block's target, the min-temp
+floor still applies, and automatic luxury or priority still make it stand
+aside. Without a current optimiser plan the VV-AI plan is used when VV-AI
+control is on, otherwise hot water is left to the pump.
+
 Rules carried over from Node-RED:
 
 - Automatic luxury or hot water priority on means VV-AI control stands
@@ -86,7 +94,7 @@ INPUT_REGISTERS = (
 
 LEASE_LIMITS = {REG_COMFORT: (0, 2), REG_PERIOD: (0, 180), REG_TEMP_LUX: (0, 4)}
 
-FEATURES = ("learning", "vv_control", "autoluxury", "priority", "price_comfort")
+FEATURES = ("learning", "vv_control", "autoluxury", "priority", "price_comfort", "optimiser")
 # Node-RED's defaults, except learning (see docs/hotwater.md).
 FEATURE_DEFAULTS = {
     "learning": True,
@@ -94,6 +102,7 @@ FEATURE_DEFAULTS = {
     "autoluxury": False,
     "priority": False,
     "price_comfort": False,
+    "optimiser": False,
 }
 
 STATES = ("off", "fault", "idle", "heat_now", "block", "economy", "normal", "luxury")
@@ -121,6 +130,9 @@ class HotWaterInputs:
     price_level: Optional[str] = None
     price_slots: Sequence[PriceSlot] = ()
     held: Mapping[int, bool] = field(default_factory=dict)
+    # The cost optimiser's charge blocks as windows (None: no current plan).
+    optimiser_windows: Optional[Sequence[HeatWindow]] = None
+    optimiser_problem: Optional[str] = None
 
 
 @dataclass
@@ -262,16 +274,33 @@ class HotWaterController:
             self.priority.reset()
             reasons["priority"] = "off"
 
-        # VV-AI control -> 47134 and 48132.
+        # VV-AI control -> 47134 and 48132, with the VV-AI plan's windows or
+        # the cost optimiser's charge blocks.
         plan_settings = settings.plan
-        windows = build_plan(self.profile.profile, now, inputs.tz, plan_settings, stops, inputs.price_slots)
-        learned_plan = any(day_mode(total, plan_settings) > 0 for total in day_sums(self.profile.profile))
+        optimised = on("optimiser") and inputs.optimiser_windows is not None
+        use_price = plan_settings.use_price and not optimised
+        if optimised:
+            windows = list(inputs.optimiser_windows or ())
+            learned_plan = True
+            reasons["optimiser"] = "drives the charges"
+        else:
+            windows = build_plan(self.profile.profile, now, inputs.tz, plan_settings, stops, inputs.price_slots)
+            learned_plan = any(day_mode(total, plan_settings) > 0 for total in day_sums(self.profile.profile))
+            if not on("optimiser"):
+                reasons["optimiser"] = "off"
+            else:
+                reasons["optimiser"] = "no plan (%s)%s" % (
+                    inputs.optimiser_problem or "unknown",
+                    ": VV-AI plan used" if on("vv_control") else "",
+                )
         floor_temp = to_float(settings.floor_temp)
         floor = bool(settings.floor_enabled) and floor_temp is not None
         # (reason, is a missing input) when VV-AI control must not drive.
         blocked: Optional[Tuple[str, bool]] = None
-        if not on("vv_control"):
+        if not on("vv_control") and not on("optimiser"):
             blocked = ("off", False)
+        elif not on("vv_control") and not optimised:
+            blocked = ("no optimiser plan: hot water left to the pump", False)
         elif on("autoluxury") or on("priority"):
             blocked = ("automatic luxury or hot water priority is on and takes precedence", False)
         elif bt7 is None:
@@ -296,7 +325,7 @@ class HotWaterController:
         else:
             targets[REG_PERIOD] = 0
             result = self.vv.decide(
-                bt7, now, inputs.tz, windows, stops, bool(settings.floor_enabled), floor_temp, plan_settings.use_price
+                bt7, now, inputs.tz, windows, stops, bool(settings.floor_enabled), floor_temp, use_price
             )
             reasons["vv_control"] = result.reason
             if result.heat:
@@ -327,6 +356,7 @@ class HotWaterController:
             "faults": faults,
             "closed_until": self.vv.closed_until,
             "floor_active": self.vv.floor_active,
+            "plan_source": "optimiser" if optimised else "vv_ai",
         }
         return HotWaterDecision(
             state=state,
@@ -334,7 +364,7 @@ class HotWaterController:
             reasons=reasons,
             inputs_ok=not faults,
             windows=windows,
-            next_heat=next_heat_start(windows, now, self.vv.closed_until, plan_settings.use_price),
+            next_heat=next_heat_start(windows, now, self.vv.closed_until, use_price),
             details=details,
         )
 

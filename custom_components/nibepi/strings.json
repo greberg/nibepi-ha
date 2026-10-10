@@ -336,6 +336,9 @@
       },
       "hw_price_comfort": {
         "name": "Hot water comfort mode by price"
+      },
+      "hw_optimiser": {
+        "name": "Optimise hot water charges"
       }
     },
     "sensor": {

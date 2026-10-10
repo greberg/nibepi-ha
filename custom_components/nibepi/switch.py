@@ -22,6 +22,7 @@ HW_ICONS = {
     "autoluxury": "mdi:water-plus",
     "priority": "mdi:water-alert",
     "price_comfort": "mdi:cash-clock",
+    "optimiser": "mdi:cash-check",
 }
 
 
