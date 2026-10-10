@@ -29,6 +29,11 @@ Rules implemented by ``LeaseManager.decide``:
   "Heatpump is not ready yet." is retried after one tick interval
   (``not_ready_retry``), other rejections after ``renew_interval``.
 
+Values are whole numbers by default (the curve offset). With
+``decimals`` set they are rounded to that many decimals instead, e.g. the
+RMU40 room temperature (one decimal, see ``rmu.py``); a change is then
+any difference after rounding.
+
 The clock is injected so tests can drive time.
 """
 
@@ -36,7 +41,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Union
+
+Number = Union[int, float]
 
 DEFAULT_TTL = 900
 DEFAULT_RENEW = 300
@@ -59,7 +66,7 @@ def _utcnow() -> datetime:
 @dataclass(frozen=True)
 class LeaseAction:
     kind: str  # "set" or "release"
-    value: Optional[int] = None
+    value: Optional[Number] = None
     renew: bool = False
 
     def payload(self, ttl: int, owner: str) -> Mapping[str, Any]:
@@ -76,9 +83,10 @@ class LeaseManager:
         ttl: int = DEFAULT_TTL,
         renew_interval: int = DEFAULT_RENEW,
         clock: Optional[Callable[[], datetime]] = None,
-        low: int = LEASE_MIN,
-        high: int = LEASE_MAX,
+        low: Number = LEASE_MIN,
+        high: Number = LEASE_MAX,
         not_ready_retry: int = DEFAULT_NOT_READY_RETRY,
+        decimals: int = 0,
     ) -> None:
         self.register = register
         self.owner = owner
@@ -87,8 +95,9 @@ class LeaseManager:
         self.clock = clock or _utcnow
         self.low = low
         self.high = high
+        self.decimals = decimals
         self.held = False
-        self.value: Optional[int] = None
+        self.value: Optional[Number] = None
         self.last_sent: Optional[datetime] = None
         self.not_ready_retry = timedelta(seconds=not_ready_retry)
         self.remote: Mapping[str, Any] = {}
@@ -105,7 +114,9 @@ class LeaseManager:
         owner = state.get("owner")
         error = state.get("error")
         value = state.get("value")
-        remote_value = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        remote_value = (
+            self._round(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        )
         if error:
             # Rejected request. Whatever the gateway holds is the truth.
             now = self.clock()
@@ -134,10 +145,15 @@ class LeaseManager:
 
     # -- decisions ------------------------------------------------------
 
-    def clamp(self, value: int) -> int:
-        return max(self.low, min(self.high, int(value)))
+    def _round(self, value: Number) -> Number:
+        if self.decimals <= 0:
+            return int(value)
+        return round(float(value), self.decimals)
 
-    def decide(self, mode: str, target: Optional[int], healthy: bool) -> Optional[LeaseAction]:
+    def clamp(self, value: Number) -> Number:
+        return max(self.low, min(self.high, self._round(value)))
+
+    def decide(self, mode: str, target: Optional[Number], healthy: bool) -> Optional[LeaseAction]:
         if mode != MODE_ACTIVE:
             return LeaseAction("release") if self.held else None
         if not healthy or target is None:

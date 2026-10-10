@@ -120,6 +120,19 @@ class LeaseTest(unittest.TestCase):
     def test_payload(self) -> None:
         self.assertEqual(LeaseAction("set", -1).payload(900, "ha"), {"value": -1, "ttl": 900, "owner": "ha"})
 
+    def test_whole_numbers_by_default(self) -> None:
+        self.assertEqual(self.step("active", 2.7), LeaseAction("set", 2))
+        self.assertIsInstance(self.lease.value, int)
+        self.lease.note_remote_state({"active": True, "value": -3.0, "owner": "ha"})
+        self.assertIsInstance(self.lease.value, int)
+
+    def test_decimals(self) -> None:
+        lease = LeaseManager(10060, clock=self.clock, low=5, high=35, decimals=1)
+        self.assertEqual(lease.clamp(21.46), 21.5)
+        self.assertEqual(lease.clamp(4.0), 5)
+        lease.note_remote_state({"active": True, "value": 21.44, "owner": "ha"})
+        self.assertEqual(lease.value, 21.4)
+
     def test_remote_state_time(self) -> None:
         self.assertIsNone(self.lease.remote_at)
         self.lease.note_remote_state({"active": False})
