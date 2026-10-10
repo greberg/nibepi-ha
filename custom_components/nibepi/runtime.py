@@ -46,6 +46,7 @@ from .const import (
     OPT_PRICE_UNIT_FACTOR,
     OPT_PRICE_VERY_CHEAP_BELOW,
     OPT_PRICE_VERY_EXPENSIVE_ABOVE,
+    OPT_RMU_ENTITY,
     OPT_SENSOR_TIMEOUT,
     OPT_SETPOINT,
     OPT_SETPOINT_ENTITY,
@@ -101,6 +102,7 @@ from .logic.price import (
     tibber_refresh_due,
     tibber_request,
 )
+from .logic.rmu import RoomTemperature, rmu_decide, rmu_lease_manager
 from .logic.weather import WeatherSettings, compute_weather
 
 _LOGGER = logging.getLogger(__name__)
@@ -128,6 +130,7 @@ class SystemRuntime:
     system: str
     registers: Dict[str, int]
     lease: LeaseManager
+    rmu_lease: LeaseManager
     mode: str = MODE_SHADOW
     enabled: Dict[str, bool] = field(default_factory=lambda: {c: True for c in COMPONENTS})
     decisions: Dict[str, Decision] = field(default_factory=dict)
@@ -136,6 +139,12 @@ class SystemRuntime:
     healthy: bool = True
     error: Optional[str] = None
     last_action: Optional[str] = None
+    # RMU40 room temperature feed (own switch, independent of mode).
+    rmu_enabled: bool = False
+    rmu_room: Optional[RoomTemperature] = None
+    rmu_entity: Optional[str] = None
+    rmu_last_action: Optional[str] = None
+    rmu_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class NibePiRuntime:
@@ -172,6 +181,7 @@ class NibePiRuntime:
                 system=system,
                 registers=regs,
                 lease=LeaseManager(regs["offset"], owner=OWNER),
+                rmu_lease=rmu_lease_manager(regs["rmu"], owner=OWNER),
             )
         self._unsubs: List[Callable[[], None]] = []
         self._subscribed: set = set()
@@ -259,6 +269,9 @@ class NibePiRuntime:
             action = sys.lease.release_action()
             if action is not None:
                 await self._async_send(sys, action)
+            action = sys.rmu_lease.release_action()
+            if action is not None:
+                await self._async_send(sys, action, sys.rmu_lease)
 
     async def async_options_updated(self) -> None:
         # The price source or Tibber home may have changed.
@@ -289,13 +302,14 @@ class NibePiRuntime:
             await mqtt.async_subscribe(self.hass, self.prefix + "gateway/state", self._on_gateway_state)
         )
         for sys in self.systems.values():
-            self._unsubs.append(
-                await mqtt.async_subscribe(
-                    self.hass,
-                    "%slease/%d/state" % (self.prefix, sys.registers["offset"]),
-                    self._make_lease_cb(sys),
+            for lease in (sys.lease, sys.rmu_lease):
+                self._unsubs.append(
+                    await mqtt.async_subscribe(
+                        self.hass,
+                        "%slease/%d/state" % (self.prefix, lease.register),
+                        self._make_lease_cb(lease),
+                    )
                 )
-            )
             self._unsubs.append(
                 await mqtt.async_subscribe(
                     self.hass, "%sadjust_%s" % (self.prefix, sys.system), self._make_adjust_cb(sys.system)
@@ -326,17 +340,17 @@ class NibePiRuntime:
 
         return _cb
 
-    def _make_lease_cb(self, sys: SystemRuntime) -> Callable[[Any], None]:
+    def _make_lease_cb(self, lease: LeaseManager) -> Callable[[Any], None]:
         @callback
         def _cb(msg: Any) -> None:
             data = _json(msg.payload)
             if data is None:
                 return
-            previous_error = sys.lease.remote.get("error")
-            sys.lease.note_remote_state(data)
+            previous_error = lease.remote.get("error")
+            lease.note_remote_state(data)
             error = data.get("error")
             if error and error != previous_error:
-                _LOGGER.warning("Gateway rejected lease for %s: %s", sys.registers["offset"], error)
+                _LOGGER.warning("Gateway rejected lease for %s: %s", lease.register, error)
             self._notify()
 
         return _cb
@@ -380,6 +394,17 @@ class NibePiRuntime:
     def set_enabled(self, system: str, component: str, enabled: bool) -> None:
         self.systems[system].enabled[component] = enabled
 
+    def set_rmu_enabled(self, system: str, enabled: bool) -> None:
+        sys = self.systems[system]
+        if sys.rmu_enabled == enabled:
+            return
+        _LOGGER.info("NibePi %s RMU40 room temperature feed %s", system, "on" if enabled else "off")
+        sys.rmu_enabled = enabled
+        if self.started is not None:
+            self.entry.async_create_background_task(
+                self.hass, self._async_rmu_step(sys, dt_util.utcnow()), "nibepi rmu"
+            )
+
     async def _async_tick_cb(self, _now: datetime) -> None:
         await self.async_tick()
 
@@ -408,18 +433,47 @@ class NibePiRuntime:
             action = sys.lease.decide(sys.mode, target, sys.healthy and not in_grace)
             if action is not None:
                 await self._async_send(sys, action)
+            await self._async_rmu_step(sys, now)
         self._notify()
 
-    async def _async_send(self, sys: SystemRuntime, action: LeaseAction) -> None:
-        reg = sys.registers["offset"]
+    async def _async_rmu_step(self, sys: SystemRuntime, now: datetime) -> None:
+        """Feed (or stop feeding) the room temperature to the RMU40 register."""
+        async with sys.rmu_lock:
+            try:
+                entity_id = self.opt(OPT_RMU_ENTITY, sys.system) or self.opt(OPT_INDOOR_ENTITY, sys.system)
+                sys.rmu_entity = entity_id or None
+                reading = self._entity_reading(entity_id) if entity_id else None
+                action, room = rmu_decide(
+                    sys.rmu_lease, sys.rmu_enabled, reading, now, self.opt(OPT_SENSOR_TIMEOUT)
+                )
+                if sys.rmu_enabled and not entity_id:
+                    room = RoomTemperature(None, "no room temperature entity configured")
+                sys.rmu_room = room
+            except Exception as err:  # noqa: BLE001 - send nothing, the lease runs out
+                _LOGGER.exception("NibePi %s RMU40 feed failed", sys.system)
+                sys.rmu_room = RoomTemperature(None, "error: %r" % err)
+                return
+            if action is not None:
+                await self._async_send(sys, action, sys.rmu_lease)
+        self._notify()
+
+    async def _async_send(
+        self, sys: SystemRuntime, action: LeaseAction, lease: Optional[LeaseManager] = None
+    ) -> None:
+        lease = lease or sys.lease
+        reg = lease.register
         topic = "lease/%d/%s" % (reg, "set" if action.kind == "set" else "release")
         try:
-            await self._publish(topic, json.dumps(action.payload(sys.lease.ttl, OWNER)))
+            await self._publish(topic, json.dumps(action.payload(lease.ttl, OWNER)))
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Could not publish %s%s", self.prefix, topic, exc_info=True)
             return
-        sys.lease.record(action)
-        sys.last_action = "%s %s" % (action.kind, "" if action.value is None else action.value)
+        lease.record(action)
+        text = "%s %s" % (action.kind, "" if action.value is None else action.value)
+        if lease is sys.rmu_lease:
+            sys.rmu_last_action = text
+        else:
+            sys.last_action = text
         if not action.renew:
             _LOGGER.info("NibePi %s: lease %s %s", reg, action.kind, action.value)
 
@@ -495,6 +549,10 @@ class NibePiRuntime:
         entity_id = self.opt(OPT_INDOOR_ENTITY, sys.system)
         if not entity_id:
             return self.readings.get(sys.registers["indoor"])
+        return self._entity_reading(entity_id)
+
+    def _entity_reading(self, entity_id: str) -> Optional[Reading]:
+        """A temperature entity in °C, timestamped by its last report."""
         state = self.hass.states.get(entity_id)
         if state is None:
             return None

@@ -20,9 +20,10 @@ SYSTEMS = ("s1", "s2")
 
 # Registers (F series, node-red-contrib-nibepi dataregister.json)
 REG_OUTDOOR = 40004  # BT1
+# rmu: room temperature of the gateway's virtual RMU40 (leased, °C).
 REGISTERS = {
-    "s1": {"offset": 47011, "curve": 47007, "indoor": 40033},  # BT50
-    "s2": {"offset": 47010, "curve": 47006, "indoor": 40032},
+    "s1": {"offset": 47011, "curve": 47007, "indoor": 40033, "rmu": 10060},  # BT50
+    "s2": {"offset": 47010, "curve": 47006, "indoor": 40032, "rmu": 10160},
 }
 
 COMPONENTS = ("indoor", "price", "weather")

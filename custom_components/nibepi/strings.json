@@ -205,6 +205,9 @@
       },
       "weather_enabled": {
         "name": "Forecast control {system}"
+      },
+      "rmu_feed": {
+        "name": "Send room temperature to pump (RMU40) {system}"
       }
     },
     "sensor": {
@@ -225,6 +228,16 @@
       },
       "lease_state": {
         "name": "Lease {system}",
+        "state": {
+          "active": "Active",
+          "grace": "Grace (after gateway restart)",
+          "restoring": "Restoring",
+          "inactive": "Inactive",
+          "error": "Error"
+        }
+      },
+      "rmu_lease_state": {
+        "name": "RMU40 room temperature lease {system}",
         "state": {
           "active": "Active",
           "grace": "Grace (after gateway restart)",

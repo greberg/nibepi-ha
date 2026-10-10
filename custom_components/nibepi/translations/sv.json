@@ -205,6 +205,9 @@
       },
       "weather_enabled": {
         "name": "Prognosreglering {system}"
+      },
+      "rmu_feed": {
+        "name": "Skicka rumstemperatur till pumpen (RMU40) {system}"
       }
     },
     "sensor": {
@@ -225,6 +228,16 @@
       },
       "lease_state": {
         "name": "Lease {system}",
+        "state": {
+          "active": "Aktiv",
+          "grace": "Respit (efter omstart av gateway)",
+          "restoring": "Återställer",
+          "inactive": "Inaktiv",
+          "error": "Fel"
+        }
+      },
+      "rmu_lease_state": {
+        "name": "Lease RMU40-rumstemperatur {system}",
         "state": {
           "active": "Aktiv",
           "grace": "Respit (efter omstart av gateway)",

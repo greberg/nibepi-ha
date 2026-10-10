@@ -12,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import NibePiConfigEntry
 from .const import COMPONENTS, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
+from .logic.lease import LeaseManager
 from .logic.price import LEVELS
 from .runtime import NibePiRuntime, SystemRuntime
 
@@ -26,6 +27,7 @@ async def async_setup_entry(
         entities.extend(ComponentOffsetSensor(runtime, system, c) for c in COMPONENTS)
         entities.append(PumpOffsetSensor(runtime, system))
         entities.append(LeaseStateSensor(runtime, system))
+        entities.append(RmuLeaseStateSensor(runtime, system))
     async_add_entities(entities)
 
 
@@ -128,12 +130,16 @@ class LeaseStateSensor(_SystemSensor):
     _attr_options = ["active", "grace", "restoring", "inactive", "error"]
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, runtime: NibePiRuntime, system: str) -> None:
-        super().__init__(runtime, "lease_state", system)
+    def __init__(self, runtime: NibePiRuntime, system: str, key: str = "lease_state") -> None:
+        super().__init__(runtime, key, system)
+
+    @property
+    def lease(self) -> LeaseManager:
+        return self.sys.lease
 
     @property
     def native_value(self) -> Optional[str]:
-        remote = self.sys.lease.remote
+        remote = self.lease.remote
         if not remote:
             # The gateway publishes a lease state only once a lease was
             # taken; shadow mode never takes one.
@@ -141,14 +147,14 @@ class LeaseStateSensor(_SystemSensor):
         if remote.get("restoring"):
             return "restoring"
         if remote.get("active"):
-            return "grace" if self.sys.lease.is_grace() else "active"
+            return "grace" if self.lease.is_grace() else "active"
         if remote.get("error"):
             return "error"
         return "inactive"
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        lease = self.sys.lease
+        lease = self.lease
         remote = lease.remote
         return {
             "register": lease.register,
@@ -166,6 +172,35 @@ class LeaseStateSensor(_SystemSensor):
             "retry_after": _iso(lease.retry_after),
             "last_state_received": _iso(lease.remote_at),
         }
+
+
+class RmuLeaseStateSensor(LeaseStateSensor):
+    """The gateway's ``lease/10060/state`` (S1) or ``lease/10160/state`` (S2)."""
+
+    _attr_icon = "mdi:home-thermometer-outline"
+
+    def __init__(self, runtime: NibePiRuntime, system: str) -> None:
+        super().__init__(runtime, system, "rmu_lease_state")
+
+    @property
+    def lease(self) -> LeaseManager:
+        return self.sys.rmu_lease
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        sys = self.sys
+        room = sys.rmu_room
+        attrs = super().extra_state_attributes
+        attrs.update(
+            {
+                "feed_enabled": sys.rmu_enabled,
+                "source_entity": sys.rmu_entity,
+                "room_temperature": room.value if room is not None else None,
+                "reason": room.reason if room is not None else None,
+                "last_action": sys.rmu_last_action,
+            }
+        )
+        return attrs
 
 
 class PriceLevelSensor(NibePiEntity, SensorEntity):
