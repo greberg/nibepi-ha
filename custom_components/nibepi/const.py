@@ -34,6 +34,8 @@ FORECAST_REFRESH_SECONDS = 30 * 60
 OPT_SENSOR_TIMEOUT = "sensor_timeout"
 OPT_PRICE_SOURCE = "price_source"
 OPT_TIBBER_HOME = "tibber_home"
+# Informational: tibber.get_prices always uses Tibber's first config entry.
+OPT_TIBBER_ENTRY = "tibber_entry"
 OPT_PRICE_ENTITY = "price_entity"
 OPT_PRICE_UNIT_FACTOR = "price_unit_factor"
 OPT_PRICE_TIME_WINDOW = "price_time_window"
@@ -55,6 +57,7 @@ OPT_SUN_HALF_CLEAR = "sun_half_clear"
 
 # Options: per system, stored as "<key>_<system>"
 OPT_INDOOR_ENTITY = "indoor_entity"
+OPT_RMU_ENTITY = "rmu_entity"  # empty: the indoor entity
 OPT_SETPOINT = "setpoint"
 OPT_SETPOINT_ENTITY = "setpoint_entity"
 OPT_INDOOR_FACTOR = "indoor_factor"
@@ -63,7 +66,8 @@ OPT_PRICE_TEMP_LOW = "price_temp_low"
 OPT_WEATHER_HOURS = "weather_hours"
 PRICE_SOURCE_TIBBER = "tibber_action"
 PRICE_SOURCE_ENTITY = "entity_attributes"
-PRICE_SOURCES = (PRICE_SOURCE_TIBBER, PRICE_SOURCE_ENTITY)
+PRICE_SOURCE_NONE = "none"
+PRICE_SOURCES = (PRICE_SOURCE_TIBBER, PRICE_SOURCE_ENTITY, PRICE_SOURCE_NONE)
 
 ISSUE_TIBBER_MISSING = "tibber_missing"
 

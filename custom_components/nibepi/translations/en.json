@@ -12,10 +12,70 @@
         "data_description": {
           "prefix": "config.mqtt.topic on the gateway, e.g. nibe/modbus/"
         }
+      },
+      "price": {
+        "title": "Electricity prices",
+        "description": "Where NibePi reads the electricity prices for the price component. Each loaded Tibber integration is listed by name.",
+        "data": {
+          "price_source": "Price source"
+        },
+        "data_description": {
+          "price_source": "Tibber: prices from the tibber.get_prices action. Price sensor entity: a Nordpool or similar sensor with the prices in its attributes. None: the price component contributes 0."
+        }
+      },
+      "tibber_warning": {
+        "title": "Tibber account",
+        "description": "You chose the Tibber integration \"{chosen}\", but the tibber.get_prices action always uses the first Tibber integration, \"{first}\". Prices will come from \"{first}\". To use \"{chosen}\", remove the other Tibber integration or add \"{chosen}\" first. Submit to continue."
+      },
+      "tibber_home": {
+        "title": "Tibber home",
+        "description": "The Tibber account has several homes. Choose the one whose prices should control the heat pump.",
+        "data": {
+          "tibber_home": "Tibber home"
+        },
+        "data_description": {
+          "tibber_home": "The home's nickname in the Tibber app. Empty: the first home."
+        }
+      },
+      "price_entity": {
+        "title": "Price sensor",
+        "data": {
+          "price_entity": "Price sensor"
+        },
+        "data_description": {
+          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes (startsAt/total)."
+        }
+      },
+      "system_s1": {
+        "title": "Climate system {system}",
+        "description": "Room sensors and setpoint. Everything else is under Configure after setup.",
+        "data": {
+          "indoor_entity": "Indoor temperature sensor, e.g. Netatmo (empty = pump's BT50)",
+          "rmu_entity": "Room temperature for the pump's RMU40 (empty = the indoor sensor)",
+          "setpoint": "Indoor setpoint (°C)"
+        },
+        "data_description": {
+          "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
+        }
+      },
+      "system_s2": {
+        "title": "Climate system {system}",
+        "description": "Room sensors and setpoint. Everything else is under Configure after setup.",
+        "data": {
+          "indoor_entity": "Indoor temperature sensor, e.g. Netatmo (empty = pump's BT50)",
+          "rmu_entity": "Room temperature for the pump's RMU40 (empty = the indoor sensor)",
+          "setpoint": "Indoor setpoint (°C)"
+        },
+        "data_description": {
+          "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
+        }
       }
     },
     "error": {
-      "invalid_prefix": "Invalid topic prefix (no wildcards)."
+      "invalid_prefix": "Invalid topic prefix (no wildcards).",
+      "tibber_homes_failed": "Could not list the Tibber homes ({error}). Enter the home's nickname from the Tibber app, or leave empty to use the first home."
     },
     "abort": {
       "already_configured": "This gateway is already configured."
@@ -28,8 +88,6 @@
         "data": {
           "sensor_timeout": "Sensor timeout (min, 0 = never stale)",
           "price_source": "Price source",
-          "tibber_home": "Tibber home (empty = the only one)",
-          "price_entity": "Price sensor (entity attributes source)",
           "price_unit_factor": "Price unit to öre factor",
           "price_time_window": "Price analysis window (h)",
           "price_min_spread": "Minimum spread (öre)",
@@ -50,17 +108,39 @@
         },
         "data_description": {
           "sensor_timeout": "An indoor or outdoor value older than this counts as missing and its component gives 0.",
-          "price_source": "Tibber: the Tibber integration's tibber.get_prices action. Entity attributes: a Nordpool or similar price sensor.",
-          "tibber_home": "The home's nickname in the Tibber app. Only needed when the Tibber account has several homes.",
-          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes (startsAt/total). Only used with the entity attributes source.",
+          "price_source": "Tibber: prices from the tibber.get_prices action. Price sensor entity: a Nordpool or similar sensor with the prices in its attributes. None: the price component contributes 0.",
           "price_unit_factor": "100 when prices are in SEK/kWh (Tibber, most sensors), 1 when they are in öre/kWh.",
           "price_very_cheap_below": "Set both thresholds to replace the optimiser's level."
+        }
+      },
+      "tibber_warning": {
+        "title": "Tibber account",
+        "description": "You chose the Tibber integration \"{chosen}\", but the tibber.get_prices action always uses the first Tibber integration, \"{first}\". Prices will come from \"{first}\". To use \"{chosen}\", remove the other Tibber integration or add \"{chosen}\" first. Submit to continue."
+      },
+      "tibber_home": {
+        "title": "Tibber home",
+        "description": "The Tibber account has several homes. Choose the one whose prices should control the heat pump.",
+        "data": {
+          "tibber_home": "Tibber home"
+        },
+        "data_description": {
+          "tibber_home": "The home's nickname in the Tibber app. Empty: the first home."
+        }
+      },
+      "price_entity": {
+        "title": "Price sensor",
+        "data": {
+          "price_entity": "Price sensor"
+        },
+        "data_description": {
+          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes (startsAt/total)."
         }
       },
       "system_s1": {
         "title": "Climate system {system}",
         "data": {
           "indoor_entity": "Indoor temperature sensor, e.g. Netatmo (empty = pump's BT50)",
+          "rmu_entity": "Room temperature for the pump's RMU40 (empty = the indoor sensor)",
           "setpoint": "Indoor setpoint (°C)",
           "setpoint_entity": "Setpoint entity (overrides the number)",
           "indoor_factor": "Indoor factor",
@@ -74,13 +154,15 @@
           "weather_hours": "Forecast hours ahead"
         },
         "data_description": {
-          "indoor_entity": "Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used."
+          "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
         }
       },
       "system_s2": {
         "title": "Climate system {system}",
         "data": {
           "indoor_entity": "Indoor temperature sensor, e.g. Netatmo (empty = pump's BT50)",
+          "rmu_entity": "Room temperature for the pump's RMU40 (empty = the indoor sensor)",
           "setpoint": "Indoor setpoint (°C)",
           "setpoint_entity": "Setpoint entity (overrides the number)",
           "indoor_factor": "Indoor factor",
@@ -94,9 +176,13 @@
           "weather_hours": "Forecast hours ahead"
         },
         "data_description": {
-          "indoor_entity": "Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used."
+          "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
+          "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
         }
       }
+    },
+    "error": {
+      "tibber_homes_failed": "Could not list the Tibber homes ({error}). Enter the home's nickname from the Tibber app, or leave empty to use the first home."
     }
   },
   "entity": {
@@ -168,7 +254,8 @@
     "price_source": {
       "options": {
         "tibber_action": "Tibber integration (tibber.get_prices)",
-        "entity_attributes": "Price sensor attributes (Nordpool and similar)"
+        "entity_attributes": "Price sensor entity (attributes)",
+        "none": "None"
       }
     }
   },

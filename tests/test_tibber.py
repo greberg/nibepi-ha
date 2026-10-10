@@ -21,6 +21,7 @@ from logic.price import (
     normalize_tibber_response,
     slot_at,
     slots_from_starts,
+    tibber_homes,
     tibber_refresh_due,
     tibber_request,
 )
@@ -51,6 +52,15 @@ def tibber_items(first: datetime, count: int, step_min: int, price=lambda i: 1.0
 
 def response(**homes: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"prices": dict(homes)}
+
+
+class TibberHomesTest(unittest.TestCase):
+    def test_home_names(self) -> None:
+        self.assertEqual(tibber_homes(response(Hemma=[], Stugan=[])), ["Hemma", "Stugan"])
+
+    def test_bad_response(self) -> None:
+        self.assertEqual(tibber_homes(None), [])
+        self.assertEqual(tibber_homes({"prices": []}), [])
 
 
 class NormalizeTibberTest(unittest.TestCase):

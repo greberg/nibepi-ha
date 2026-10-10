@@ -353,6 +353,14 @@ def _select_home(prices: Mapping[Any, Any], home: Optional[str]) -> Tuple[Any, O
     return keys[0], None
 
 
+def tibber_homes(response: Any) -> List[str]:
+    """Home names in a ``tibber.get_prices`` response (the ``prices`` keys)."""
+    prices = response.get("prices") if isinstance(response, Mapping) else None
+    if not isinstance(prices, Mapping):
+        return []
+    return [str(key) for key in prices]
+
+
 def normalize_tibber_response(
     response: Any, tz: tzinfo, home: Optional[str] = None
 ) -> TibberPrices:

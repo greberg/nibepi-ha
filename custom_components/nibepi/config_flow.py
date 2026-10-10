@@ -1,11 +1,30 @@
-"""Config and options flow for NibePi."""
+"""Config and options flow for NibePi.
+
+Setup:   user (name, prefix, S2) -> price -> [tibber_warning] ->
+         [tibber_home | price_entity] -> system_s1 -> [system_s2]
+Options: init (shared) -> [tibber_warning] -> [tibber_home | price_entity]
+         -> system_s1 -> [system_s2]
+
+Setup asks only for what is needed to get going (price source, room
+sensors, setpoint); the options flow has everything. Both store the same
+option keys, and every key is optional: entries made before a key existed
+fall back to the defaults in const.py.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any, Dict, List, Optional
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -14,11 +33,13 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
     TextSelector,
 )
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_NAME,
@@ -31,19 +52,21 @@ from .const import (
     OPT_INDOOR_FACTOR,
     OPT_PRICE_ENTITY,
     OPT_PRICE_GUARD,
-    OPT_PRICE_SOURCE,
     OPT_PRICE_MIN_SPREAD,
+    OPT_PRICE_SOURCE,
     OPT_PRICE_TEMP_LOW,
     OPT_PRICE_TIME_WINDOW,
     OPT_PRICE_UNIT_FACTOR,
     OPT_PRICE_VERY_CHEAP_BELOW,
     OPT_PRICE_VERY_EXPENSIVE_ABOVE,
+    OPT_RMU_ENTITY,
     OPT_SENSOR_TIMEOUT,
     OPT_SETPOINT,
     OPT_SETPOINT_ENTITY,
     OPT_SUN_CLEAR,
     OPT_SUN_ENABLE,
     OPT_SUN_HALF_CLEAR,
+    OPT_TIBBER_ENTRY,
     OPT_TIBBER_HOME,
     OPT_WEATHER_ADJUST,
     OPT_WEATHER_DOWN,
@@ -56,24 +79,31 @@ from .const import (
     OPT_WIND_S,
     OPT_WIND_W,
     PRICE_LEVEL_OPTIONS,
-    PRICE_SOURCES,
+    PRICE_SOURCE_ENTITY,
+    PRICE_SOURCE_NONE,
+    PRICE_SOURCE_TIBBER,
     SHARED_DEFAULTS,
     SYSTEM_DEFAULTS,
     price_source,
     system_key,
 )
+from .logic.price import TIBBER_DOMAIN, TIBBER_SERVICE, tibber_homes, tibber_request
+
+_LOGGER = logging.getLogger(__name__)
 
 CONF_USE_S2 = "use_s2"
+# Price source selector values: one per Tibber config entry, plus the
+# generic sources.
+TIBBER_OPTION = "tibber:"
+TIBBER_HOMES_TIMEOUT = 30
 
 # Shared options that may be left empty.
 SHARED_OPTIONAL = (
-    OPT_TIBBER_HOME,
-    OPT_PRICE_ENTITY,
     OPT_PRICE_VERY_CHEAP_BELOW,
     OPT_PRICE_VERY_EXPENSIVE_ABOVE,
     OPT_WEATHER_ENTITY,
 )
-SYSTEM_OPTIONAL = (OPT_INDOOR_ENTITY, OPT_SETPOINT_ENTITY)
+SYSTEM_OPTIONAL = (OPT_INDOOR_ENTITY, OPT_RMU_ENTITY, OPT_SETPOINT_ENTITY)
 
 
 def _number(low: float, high: float, step: float) -> NumberSelector:
@@ -85,15 +115,13 @@ def _number(low: float, high: float, step: float) -> NumberSelector:
 OFFSET = _number(-10, 10, 0.5)
 FACTOR = _number(0, 10, 0.1)
 BOOL = BooleanSelector()
-PRICE_SOURCE = SelectSelector(
-    SelectSelectorConfig(
-        options=list(PRICE_SOURCES), mode=SelectSelectorMode.LIST, translation_key="price_source"
-    )
-)
+TEMPERATURE_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
 
 
-def _optional(key: str, current: Dict[str, Any]) -> vol.Optional:
+def _optional(key: str, current: Dict[str, Any], suggested: Any = None) -> vol.Optional:
     value = current.get(key)
+    if value in (None, ""):
+        value = suggested
     if value in (None, ""):
         return vol.Optional(key)
     return vol.Optional(key, description={"suggested_value": value})
@@ -103,87 +131,180 @@ def _required(key: str, current: Dict[str, Any], defaults: Dict[str, Any]) -> vo
     return vol.Required(key, default=current.get(key, defaults.get(key)))
 
 
-class NibePiConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+class _NibePiSteps:
+    """Price and per-system steps shared by the config and options flow.
 
-    async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
-        errors: Dict[str, str] = {}
+    The subclass sets ``_options`` and ``_pending`` (systems still to ask)
+    and implements ``_async_finish`` and ``_full_system_step``.
+    """
+
+    _options: Dict[str, Any]
+    _pending: List[str]
+    _full_system_step = False
+    _allow_generic_tibber = False
+    _homes: Optional[List[str]] = None
+    _homes_error: Optional[str] = None
+
+    # -- price source ------------------------------------------------------
+
+    def _tibber_entries(self, loaded_only: bool = True) -> List[ConfigEntry]:
+        entries = self.hass.config_entries.async_entries(TIBBER_DOMAIN)  # type: ignore[attr-defined]
+        if loaded_only:
+            entries = [e for e in entries if e.state is ConfigEntryState.LOADED]
+        return entries
+
+    def _source_value(self) -> str:
+        """The selector value for the stored price source.
+
+        A new entry gets the first loaded Tibber entry, or none. An existing
+        Tibber entry whose integration is not loaded keeps a generic Tibber
+        choice instead of silently switching source.
+        """
+        source = price_source(self._options)
+        if source != PRICE_SOURCE_TIBBER:
+            return source
+        entries = self._tibber_entries()
+        ids = [e.entry_id for e in entries]
+        wanted = self._options.get(OPT_TIBBER_ENTRY)
+        if wanted in ids:
+            return TIBBER_OPTION + str(wanted)
+        if ids:
+            return TIBBER_OPTION + ids[0]
+        return PRICE_SOURCE_TIBBER if self._allow_generic_tibber else PRICE_SOURCE_NONE
+
+    def _source_selector(self) -> SelectSelector:
+        options = [
+            SelectOptionDict(value=TIBBER_OPTION + e.entry_id, label="Tibber: %s" % e.title)
+            for e in self._tibber_entries()
+        ]
+        if not options and self._allow_generic_tibber and price_source(self._options) == PRICE_SOURCE_TIBBER:
+            options.append(
+                SelectOptionDict(value=PRICE_SOURCE_TIBBER, label="Tibber integration (tibber.get_prices)")
+            )
+        options.append(SelectOptionDict(value=PRICE_SOURCE_ENTITY, label="Price sensor entity (attributes)"))
+        options.append(SelectOptionDict(value=PRICE_SOURCE_NONE, label="None"))
+        return SelectSelector(
+            SelectSelectorConfig(
+                options=options, mode=SelectSelectorMode.DROPDOWN, translation_key="price_source"
+            )
+        )
+
+    def _apply_source(self, value: str) -> None:
+        if value.startswith(TIBBER_OPTION):
+            self._options[OPT_PRICE_SOURCE] = PRICE_SOURCE_TIBBER
+            self._options[OPT_TIBBER_ENTRY] = value[len(TIBBER_OPTION):]
+        elif value in (PRICE_SOURCE_TIBBER, PRICE_SOURCE_ENTITY):
+            self._options[OPT_PRICE_SOURCE] = value
+        else:
+            self._options[OPT_PRICE_SOURCE] = PRICE_SOURCE_NONE
+
+    async def _async_after_source(self) -> ConfigFlowResult:
+        source = self._options.get(OPT_PRICE_SOURCE)
+        if source == PRICE_SOURCE_TIBBER:
+            entries = self._tibber_entries(loaded_only=False)
+            chosen = self._options.get(OPT_TIBBER_ENTRY)
+            if entries and chosen and entries[0].entry_id != chosen:
+                return await self.async_step_tibber_warning()
+            return await self.async_step_tibber_home()
+        if source == PRICE_SOURCE_ENTITY:
+            return await self.async_step_price_entity()
+        return await self._async_next_system()
+
+    async def async_step_tibber_warning(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        """tibber.get_prices always uses Tibber's first config entry."""
         if user_input is not None:
-            prefix = str(user_input[CONF_PREFIX]).strip()
-            if prefix and not prefix.endswith("/"):
-                prefix += "/"
-            if not prefix or "#" in prefix or "+" in prefix:
-                errors[CONF_PREFIX] = "invalid_prefix"
+            return await self.async_step_tibber_home()
+        entries = self._tibber_entries(loaded_only=False)
+        chosen = self._options.get(OPT_TIBBER_ENTRY)
+        chosen_title = next((e.title for e in entries if e.entry_id == chosen), str(chosen))
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="tibber_warning",
+            data_schema=vol.Schema({}),
+            description_placeholders={"chosen": chosen_title, "first": entries[0].title},
+        )
+
+    async def _async_list_homes(self) -> None:
+        self._homes = None
+        self._homes_error = None
+        hass = self.hass  # type: ignore[attr-defined]
+        try:
+            if not hass.services.has_service(TIBBER_DOMAIN, TIBBER_SERVICE):
+                raise RuntimeError("%s.%s is not available" % (TIBBER_DOMAIN, TIBBER_SERVICE))
+            tz = dt_util.get_default_time_zone()
+            response = await asyncio.wait_for(
+                hass.services.async_call(
+                    TIBBER_DOMAIN,
+                    TIBBER_SERVICE,
+                    tibber_request(dt_util.utcnow(), tz),
+                    blocking=True,
+                    return_response=True,
+                ),
+                TIBBER_HOMES_TIMEOUT,
+            )
+        except Exception as err:  # noqa: BLE001 - fall back to a text field
+            _LOGGER.info("Could not list Tibber homes: %s", str(err) or repr(err))
+            self._homes_error = str(err) or repr(err)
+            return
+        homes = tibber_homes(response)
+        if homes:
+            self._homes = homes
+        else:
+            self._homes_error = "no homes in the response"
+
+    async def async_step_tibber_home(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        if user_input is not None:
+            home = str(user_input.get(OPT_TIBBER_HOME) or "").strip()
+            if home:
+                self._options[OPT_TIBBER_HOME] = home
             else:
-                await self.async_set_unique_id(prefix)
-                self._abort_if_unique_id_configured()
-                systems: List[str] = ["s1", "s2"] if user_input.get(CONF_USE_S2) else ["s1"]
-                return self.async_create_entry(
-                    title=user_input[CONF_NAME],
-                    data={CONF_NAME: user_input[CONF_NAME], CONF_PREFIX: prefix, CONF_SYSTEMS: systems},
-                )
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
-                vol.Required(CONF_PREFIX, default=DEFAULT_PREFIX): str,
-                vol.Required(CONF_USE_S2, default=False): BOOL,
-            }
-        )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> "NibePiOptionsFlow":
-        return NibePiOptionsFlow()
-
-
-class NibePiOptionsFlow(OptionsFlow):
-    """init (shared: price, weather, staleness) -> one step per system."""
-
-    def __init__(self) -> None:
-        self._options: Dict[str, Any] = {}
-        self._pending: List[str] = []
-
-    async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
-        if user_input is not None:
-            self._options = dict(self.config_entry.options)
-            for key in SHARED_OPTIONAL:
-                if key not in user_input:
-                    self._options.pop(key, None)
-            self._options.update(user_input)
-            self._pending = list(self.config_entry.data.get(CONF_SYSTEMS, ["s1"]))
+                self._options.pop(OPT_TIBBER_HOME, None)
             return await self._async_next_system()
-        current = dict(self.config_entry.options)
-        schema = vol.Schema(
-            {
-                _required(OPT_SENSOR_TIMEOUT, current, SHARED_DEFAULTS): _number(0, 1440, 1),
-                vol.Required(OPT_PRICE_SOURCE, default=price_source(current)): PRICE_SOURCE,
-                _optional(OPT_TIBBER_HOME, current): TextSelector(),
-                _optional(OPT_PRICE_ENTITY, current): EntitySelector(EntitySelectorConfig(domain="sensor")),
-                _required(OPT_PRICE_UNIT_FACTOR, current, SHARED_DEFAULTS): _number(0.001, 100000, 0.001),
-                _required(OPT_PRICE_TIME_WINDOW, current, SHARED_DEFAULTS): _number(1, 48, 1),
-                _required(OPT_PRICE_MIN_SPREAD, current, SHARED_DEFAULTS): _number(0, 1000, 1),
-                _optional(OPT_PRICE_VERY_CHEAP_BELOW, current): _number(-1000, 10000, 0.1),
-                _optional(OPT_PRICE_VERY_EXPENSIVE_ABOVE, current): _number(-1000, 10000, 0.1),
-                _optional(OPT_WEATHER_ENTITY, current): EntitySelector(EntitySelectorConfig(domain="weather")),
-                _required(OPT_WEATHER_ADJUST, current, SHARED_DEFAULTS): BOOL,
-                _required(OPT_WEATHER_UP, current, SHARED_DEFAULTS): BOOL,
-                _required(OPT_WEATHER_DOWN, current, SHARED_DEFAULTS): BOOL,
-                _required(OPT_WIND_ENABLE, current, SHARED_DEFAULTS): BOOL,
-                _required(OPT_WIND_N, current, SHARED_DEFAULTS): FACTOR,
-                _required(OPT_WIND_S, current, SHARED_DEFAULTS): FACTOR,
-                _required(OPT_WIND_W, current, SHARED_DEFAULTS): FACTOR,
-                _required(OPT_WIND_E, current, SHARED_DEFAULTS): FACTOR,
-                _required(OPT_SUN_ENABLE, current, SHARED_DEFAULTS): BOOL,
-                _required(OPT_SUN_CLEAR, current, SHARED_DEFAULTS): OFFSET,
-                _required(OPT_SUN_HALF_CLEAR, current, SHARED_DEFAULTS): OFFSET,
-            }
+        await self._async_list_homes()
+        if self._homes is not None and len(self._homes) == 1:
+            # The only home: nothing to choose.
+            self._options.pop(OPT_TIBBER_HOME, None)
+            return await self._async_next_system()
+        current = self._options.get(OPT_TIBBER_HOME)
+        errors: Dict[str, str] = {}
+        if self._homes:
+            default = current if current in self._homes else self._homes[0]
+            schema = vol.Schema(
+                {
+                    vol.Required(OPT_TIBBER_HOME, default=default): SelectSelector(
+                        SelectSelectorConfig(options=list(self._homes), mode=SelectSelectorMode.DROPDOWN)
+                    )
+                }
+            )
+        else:
+            errors["base"] = "tibber_homes_failed"
+            schema = vol.Schema({_optional(OPT_TIBBER_HOME, self._options): TextSelector()})
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="tibber_home",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"error": self._homes_error or ""},
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_price_entity(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._options[OPT_PRICE_ENTITY] = user_input[OPT_PRICE_ENTITY]
+            return await self._async_next_system()
+        current = self._options.get(OPT_PRICE_ENTITY)
+        key = (
+            vol.Required(OPT_PRICE_ENTITY, default=current)
+            if current
+            else vol.Required(OPT_PRICE_ENTITY)
+        )
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="price_entity",
+            data_schema=vol.Schema({key: EntitySelector(EntitySelectorConfig(domain="sensor"))}),
+        )
+
+    # -- per system -------------------------------------------------------
 
     async def _async_next_system(self) -> ConfigFlowResult:
         if not self._pending:
-            return self.async_create_entry(data=self._options)
+            return await self._async_finish()
         system = self._pending[0]
         return await (self.async_step_system_s1() if system == "s1" else self.async_step_system_s2())
 
@@ -210,22 +331,129 @@ class NibePiOptionsFlow(OptionsFlow):
             if key.endswith("_" + system)
         }
         fields: Dict[Any, Any] = {
-            _optional(OPT_INDOOR_ENTITY, current): EntitySelector(
-                EntitySelectorConfig(domain="sensor", device_class="temperature")
-            ),
+            _optional(OPT_INDOOR_ENTITY, current): TEMPERATURE_SENSOR,
+            _optional(OPT_RMU_ENTITY, current, current.get(OPT_INDOOR_ENTITY)): TEMPERATURE_SENSOR,
             _required(OPT_SETPOINT, current, SYSTEM_DEFAULTS): _number(5, 35, 0.1),
-            _optional(OPT_SETPOINT_ENTITY, current): EntitySelector(
-                EntitySelectorConfig(domain=["input_number", "number", "sensor"])
-            ),
-            _required(OPT_INDOOR_FACTOR, current, SYSTEM_DEFAULTS): FACTOR,
         }
-        for key in PRICE_LEVEL_OPTIONS.values():
-            fields[_required(key, current, SYSTEM_DEFAULTS)] = OFFSET
-        fields[_required(OPT_PRICE_GUARD, current, SYSTEM_DEFAULTS)] = BOOL
-        fields[_required(OPT_PRICE_TEMP_LOW, current, SYSTEM_DEFAULTS)] = _number(-10, 10, 0.1)
-        fields[_required(OPT_WEATHER_HOURS, current, SYSTEM_DEFAULTS)] = _number(0, 48, 1)
-        return self.async_show_form(
+        if self._full_system_step:
+            fields[_optional(OPT_SETPOINT_ENTITY, current)] = EntitySelector(
+                EntitySelectorConfig(domain=["input_number", "number", "sensor"])
+            )
+            fields[_required(OPT_INDOOR_FACTOR, current, SYSTEM_DEFAULTS)] = FACTOR
+            for key in PRICE_LEVEL_OPTIONS.values():
+                fields[_required(key, current, SYSTEM_DEFAULTS)] = OFFSET
+            fields[_required(OPT_PRICE_GUARD, current, SYSTEM_DEFAULTS)] = BOOL
+            fields[_required(OPT_PRICE_TEMP_LOW, current, SYSTEM_DEFAULTS)] = _number(-10, 10, 0.1)
+            fields[_required(OPT_WEATHER_HOURS, current, SYSTEM_DEFAULTS)] = _number(0, 48, 1)
+        return self.async_show_form(  # type: ignore[attr-defined]
             step_id="system_%s" % system,
             data_schema=vol.Schema(fields),
             description_placeholders={"system": system.upper()},
         )
+
+    async def _async_finish(self) -> ConfigFlowResult:
+        raise NotImplementedError
+
+
+class NibePiConfigFlow(_NibePiSteps, ConfigFlow, domain=DOMAIN):
+    VERSION = 1
+
+    def __init__(self) -> None:
+        self._options = {}
+        self._pending = []
+        self._data: Dict[str, Any] = {}
+
+    async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        errors: Dict[str, str] = {}
+        if user_input is not None:
+            prefix = str(user_input[CONF_PREFIX]).strip()
+            if prefix and not prefix.endswith("/"):
+                prefix += "/"
+            if not prefix or "#" in prefix or "+" in prefix:
+                errors[CONF_PREFIX] = "invalid_prefix"
+            else:
+                await self.async_set_unique_id(prefix)
+                self._abort_if_unique_id_configured()
+                systems: List[str] = ["s1", "s2"] if user_input.get(CONF_USE_S2) else ["s1"]
+                self._data = {CONF_NAME: user_input[CONF_NAME], CONF_PREFIX: prefix, CONF_SYSTEMS: systems}
+                return await self.async_step_price()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
+                vol.Required(CONF_PREFIX, default=DEFAULT_PREFIX): str,
+                vol.Required(CONF_USE_S2, default=False): BOOL,
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+    async def async_step_price(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._apply_source(user_input[OPT_PRICE_SOURCE])
+            self._pending = list(self._data[CONF_SYSTEMS])
+            return await self._async_after_source()
+        schema = vol.Schema(
+            {vol.Required(OPT_PRICE_SOURCE, default=self._source_value()): self._source_selector()}
+        )
+        return self.async_show_form(step_id="price", data_schema=schema)
+
+    async def _async_finish(self) -> ConfigFlowResult:
+        return self.async_create_entry(
+            title=self._data[CONF_NAME], data=self._data, options=dict(self._options)
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> "NibePiOptionsFlow":
+        return NibePiOptionsFlow()
+
+
+class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
+    """init (shared: price, weather, staleness) -> price details -> one step per system."""
+
+    _full_system_step = True
+    _allow_generic_tibber = True
+
+    def __init__(self) -> None:
+        self._options = {}
+        self._pending = []
+
+    async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        if not self._options:
+            self._options = dict(self.config_entry.options)
+        if user_input is not None:
+            for key in SHARED_OPTIONAL:
+                if key not in user_input:
+                    self._options.pop(key, None)
+            user_input = dict(user_input)
+            self._apply_source(user_input.pop(OPT_PRICE_SOURCE))
+            self._options.update(user_input)
+            self._pending = list(self.config_entry.data.get(CONF_SYSTEMS, ["s1"]))
+            return await self._async_after_source()
+        current = self._options
+        schema = vol.Schema(
+            {
+                _required(OPT_SENSOR_TIMEOUT, current, SHARED_DEFAULTS): _number(0, 1440, 1),
+                vol.Required(OPT_PRICE_SOURCE, default=self._source_value()): self._source_selector(),
+                _required(OPT_PRICE_UNIT_FACTOR, current, SHARED_DEFAULTS): _number(0.001, 100000, 0.001),
+                _required(OPT_PRICE_TIME_WINDOW, current, SHARED_DEFAULTS): _number(1, 48, 1),
+                _required(OPT_PRICE_MIN_SPREAD, current, SHARED_DEFAULTS): _number(0, 1000, 1),
+                _optional(OPT_PRICE_VERY_CHEAP_BELOW, current): _number(-1000, 10000, 0.1),
+                _optional(OPT_PRICE_VERY_EXPENSIVE_ABOVE, current): _number(-1000, 10000, 0.1),
+                _optional(OPT_WEATHER_ENTITY, current): EntitySelector(EntitySelectorConfig(domain="weather")),
+                _required(OPT_WEATHER_ADJUST, current, SHARED_DEFAULTS): BOOL,
+                _required(OPT_WEATHER_UP, current, SHARED_DEFAULTS): BOOL,
+                _required(OPT_WEATHER_DOWN, current, SHARED_DEFAULTS): BOOL,
+                _required(OPT_WIND_ENABLE, current, SHARED_DEFAULTS): BOOL,
+                _required(OPT_WIND_N, current, SHARED_DEFAULTS): FACTOR,
+                _required(OPT_WIND_S, current, SHARED_DEFAULTS): FACTOR,
+                _required(OPT_WIND_W, current, SHARED_DEFAULTS): FACTOR,
+                _required(OPT_WIND_E, current, SHARED_DEFAULTS): FACTOR,
+                _required(OPT_SUN_ENABLE, current, SHARED_DEFAULTS): BOOL,
+                _required(OPT_SUN_CLEAR, current, SHARED_DEFAULTS): OFFSET,
+                _required(OPT_SUN_HALF_CLEAR, current, SHARED_DEFAULTS): OFFSET,
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def _async_finish(self) -> ConfigFlowResult:
+        return self.async_create_entry(data=self._options)

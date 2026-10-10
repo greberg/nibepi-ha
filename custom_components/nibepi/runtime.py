@@ -65,6 +65,7 @@ from .const import (
     OPT_TIBBER_HOME,
     OWNER,
     PRICE_LEVEL_OPTIONS,
+    PRICE_SOURCE_NONE,
     PRICE_SOURCE_TIBBER,
     REG_OUTDOOR,
     REGISTERS,
@@ -521,7 +522,11 @@ class NibePiRuntime:
         return to_float(self.opt(OPT_SETPOINT, sys.system))
 
     def _price_level(self, now: datetime) -> Optional[PriceLevel]:
-        if price_source(dict(self.entry.options)) == PRICE_SOURCE_TIBBER:
+        source = price_source(dict(self.entry.options))
+        if source == PRICE_SOURCE_NONE:
+            self.price_status = "no price source configured"
+            return None
+        if source == PRICE_SOURCE_TIBBER:
             slots = self.tibber_slots
         else:
             entity_id = self.opt(OPT_PRICE_ENTITY)

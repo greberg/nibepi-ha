@@ -12,10 +12,70 @@
         "data_description": {
           "prefix": "config.mqtt.topic i gatewayn, t.ex. nibe/modbus/"
         }
+      },
+      "price": {
+        "title": "Elpriser",
+        "description": "Varifrån NibePi läser elpriserna för prisdelen. Varje laddad Tibber-integration visas med sitt namn.",
+        "data": {
+          "price_source": "Priskälla"
+        },
+        "data_description": {
+          "price_source": "Tibber: priser från åtgärden tibber.get_prices. Prissensor: en Nordpool- eller liknande sensor med priserna i sina attribut. Ingen: prisdelen bidrar med 0."
+        }
+      },
+      "tibber_warning": {
+        "title": "Tibber-konto",
+        "description": "Du valde Tibber-integrationen \"{chosen}\", men åtgärden tibber.get_prices använder alltid den första Tibber-integrationen, \"{first}\". Priserna kommer från \"{first}\". För att använda \"{chosen}\": ta bort den andra Tibber-integrationen eller lägg till \"{chosen}\" först. Skicka för att fortsätta."
+      },
+      "tibber_home": {
+        "title": "Tibber-hem",
+        "description": "Tibber-kontot har flera hem. Välj det hem vars priser ska styra värmepumpen.",
+        "data": {
+          "tibber_home": "Tibber-hem"
+        },
+        "data_description": {
+          "tibber_home": "Hemmets smeknamn i Tibber-appen. Tomt: det första hemmet."
+        }
+      },
+      "price_entity": {
+        "title": "Prissensor",
+        "data": {
+          "price_entity": "Prissensor"
+        },
+        "data_description": {
+          "price_entity": "Nordpool (raw_today/raw_tomorrow eller today/tomorrow) eller Tibber-liknande attribut (startsAt/total)."
+        }
+      },
+      "system_s1": {
+        "title": "Klimatsystem {system}",
+        "description": "Rumsgivare och börvärde. Allt annat finns under Konfigurera efter installationen.",
+        "data": {
+          "indoor_entity": "Inomhusgivare, t.ex. Netatmo (tom = pumpens BT50)",
+          "rmu_entity": "Rumstemperatur till pumpens RMU40 (tom = inomhusgivaren)",
+          "setpoint": "Börvärde inomhus (°C)"
+        },
+        "data_description": {
+          "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
+        }
+      },
+      "system_s2": {
+        "title": "Klimatsystem {system}",
+        "description": "Rumsgivare och börvärde. Allt annat finns under Konfigurera efter installationen.",
+        "data": {
+          "indoor_entity": "Inomhusgivare, t.ex. Netatmo (tom = pumpens BT50)",
+          "rmu_entity": "Rumstemperatur till pumpens RMU40 (tom = inomhusgivaren)",
+          "setpoint": "Börvärde inomhus (°C)"
+        },
+        "data_description": {
+          "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
+        }
       }
     },
     "error": {
-      "invalid_prefix": "Ogiltigt topic-prefix (inga jokertecken)."
+      "invalid_prefix": "Ogiltigt topic-prefix (inga jokertecken).",
+      "tibber_homes_failed": "Kunde inte hämta Tibber-hemmen ({error}). Ange hemmets smeknamn i Tibber-appen, eller lämna tomt för att använda det första hemmet."
     },
     "abort": {
       "already_configured": "Den här gatewayn är redan konfigurerad."
@@ -28,8 +88,6 @@
         "data": {
           "sensor_timeout": "Givartimeout (min, 0 = aldrig inaktuell)",
           "price_source": "Priskälla",
-          "tibber_home": "Tibber-hem (tomt = det enda)",
-          "price_entity": "Elprissensor (för källan entitetsattribut)",
           "price_unit_factor": "Faktor från prisets enhet till öre",
           "price_time_window": "Tidshorisont för prisanalys (h)",
           "price_min_spread": "Minsta prisskillnad (öre)",
@@ -50,17 +108,39 @@
         },
         "data_description": {
           "sensor_timeout": "Ett inne- eller utevärde som är äldre än så räknas som saknat och dess del blir 0.",
-          "price_source": "Tibber: Tibber-integrationens åtgärd tibber.get_prices. Entitetsattribut: en Nordpool- eller liknande prissensor.",
-          "tibber_home": "Hemmets smeknamn i Tibber-appen. Behövs bara när Tibber-kontot har flera hem.",
-          "price_entity": "Nordpool (raw_today/raw_tomorrow eller today/tomorrow) eller Tibber-liknande attribut (startsAt/total). Används bara med källan entitetsattribut.",
+          "price_source": "Tibber: priser från åtgärden tibber.get_prices. Prissensor: en Nordpool- eller liknande sensor med priserna i sina attribut. Ingen: prisdelen bidrar med 0.",
           "price_unit_factor": "100 när priserna är i kr/kWh (Tibber, de flesta sensorer), 1 när de är i öre/kWh.",
           "price_very_cheap_below": "Ange båda gränserna för att ersätta optimerarens nivå."
+        }
+      },
+      "tibber_warning": {
+        "title": "Tibber-konto",
+        "description": "Du valde Tibber-integrationen \"{chosen}\", men åtgärden tibber.get_prices använder alltid den första Tibber-integrationen, \"{first}\". Priserna kommer från \"{first}\". För att använda \"{chosen}\": ta bort den andra Tibber-integrationen eller lägg till \"{chosen}\" först. Skicka för att fortsätta."
+      },
+      "tibber_home": {
+        "title": "Tibber-hem",
+        "description": "Tibber-kontot har flera hem. Välj det hem vars priser ska styra värmepumpen.",
+        "data": {
+          "tibber_home": "Tibber-hem"
+        },
+        "data_description": {
+          "tibber_home": "Hemmets smeknamn i Tibber-appen. Tomt: det första hemmet."
+        }
+      },
+      "price_entity": {
+        "title": "Prissensor",
+        "data": {
+          "price_entity": "Prissensor"
+        },
+        "data_description": {
+          "price_entity": "Nordpool (raw_today/raw_tomorrow eller today/tomorrow) eller Tibber-liknande attribut (startsAt/total)."
         }
       },
       "system_s1": {
         "title": "Klimatsystem {system}",
         "data": {
           "indoor_entity": "Inomhusgivare, t.ex. Netatmo (tom = pumpens BT50)",
+          "rmu_entity": "Rumstemperatur till pumpens RMU40 (tom = inomhusgivaren)",
           "setpoint": "Börvärde inomhus (°C)",
           "setpoint_entity": "Börvärdesentitet (ersätter talet)",
           "indoor_factor": "Inomhusfaktor",
@@ -74,13 +154,15 @@
           "weather_hours": "Prognos timmar framåt"
         },
         "data_description": {
-          "indoor_entity": "Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032)."
+          "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
         }
       },
       "system_s2": {
         "title": "Klimatsystem {system}",
         "data": {
           "indoor_entity": "Inomhusgivare, t.ex. Netatmo (tom = pumpens BT50)",
+          "rmu_entity": "Rumstemperatur till pumpens RMU40 (tom = inomhusgivaren)",
           "setpoint": "Börvärde inomhus (°C)",
           "setpoint_entity": "Börvärdesentitet (ersätter talet)",
           "indoor_factor": "Inomhusfaktor",
@@ -94,9 +176,13 @@
           "weather_hours": "Prognos timmar framåt"
         },
         "data_description": {
-          "indoor_entity": "Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032)."
+          "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
+          "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
         }
       }
+    },
+    "error": {
+      "tibber_homes_failed": "Kunde inte hämta Tibber-hemmen ({error}). Ange hemmets smeknamn i Tibber-appen, eller lämna tomt för att använda det första hemmet."
     }
   },
   "entity": {
@@ -168,7 +254,8 @@
     "price_source": {
       "options": {
         "tibber_action": "Tibber-integrationen (tibber.get_prices)",
-        "entity_attributes": "Prissensorns attribut (Nordpool och liknande)"
+        "entity_attributes": "Prissensor (attribut)",
+        "none": "Ingen"
       }
     }
   },
