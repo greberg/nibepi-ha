@@ -1,0 +1,556 @@
+"""Runtime: collect inputs, run the controllers every tick, publish leases.
+
+All decisions are made by the pure modules in ``logic``; this file only
+moves data between Home Assistant, MQTT and those modules.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
+
+from homeassistant.components import mqtt
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfSpeed, UnitOfTemperature
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import sun as sun_helper
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import SpeedConverter, TemperatureConverter
+
+from .const import (
+    COMPONENTS,
+    CONF_NAME,
+    CONF_PREFIX,
+    CONF_SYSTEMS,
+    DEFAULT_NAME,
+    DOMAIN,
+    FORECAST_REFRESH_SECONDS,
+    MANUFACTURER,
+    OPT_INDOOR_ENTITY,
+    OPT_INDOOR_FACTOR,
+    OPT_PRICE_ENTITY,
+    OPT_PRICE_GUARD,
+    OPT_PRICE_MIN_SPREAD,
+    OPT_PRICE_TEMP_LOW,
+    OPT_PRICE_TIME_WINDOW,
+    OPT_PRICE_UNIT_FACTOR,
+    OPT_PRICE_VERY_CHEAP_BELOW,
+    OPT_PRICE_VERY_EXPENSIVE_ABOVE,
+    OPT_SENSOR_TIMEOUT,
+    OPT_SETPOINT,
+    OPT_SETPOINT_ENTITY,
+    OPT_SUN_CLEAR,
+    OPT_SUN_ENABLE,
+    OPT_SUN_HALF_CLEAR,
+    OPT_WEATHER_ADJUST,
+    OPT_WEATHER_DOWN,
+    OPT_WEATHER_ENTITY,
+    OPT_WEATHER_HOURS,
+    OPT_WEATHER_UP,
+    OPT_WIND_E,
+    OPT_WIND_ENABLE,
+    OPT_WIND_N,
+    OPT_WIND_S,
+    OPT_WIND_W,
+    OWNER,
+    PRICE_LEVEL_OPTIONS,
+    REG_OUTDOOR,
+    REGISTERS,
+    SHARED_DEFAULTS,
+    SYSTEM_DEFAULTS,
+    TICK_SECONDS,
+    signal_update,
+    system_key,
+)
+from .logic import curve
+from .logic.indoor import compute_indoor
+from .logic.inputs import Decision, ForecastPoint, Reading, to_float
+from .logic.lease import MODE_ACTIVE, MODE_OFF, MODE_SHADOW, LeaseAction, LeaseManager
+from .logic.price import PriceCache, PriceLevel, compute_level, compute_price, normalize_prices
+from .logic.weather import WeatherSettings, compute_weather
+
+_LOGGER = logging.getLogger(__name__)
+
+# No lease is published during the first ticks after start: MQTT register
+# values are not retained and the forecast is still loading, so the first
+# totals would be built from zeros. An adopted lease has a 15 min TTL.
+STARTUP_GRACE = timedelta(seconds=150)
+
+CARDINALS = {
+    "N": 0.0, "NNE": 22.5, "NE": 45.0, "ENE": 67.5, "E": 90.0, "ESE": 112.5,
+    "SE": 135.0, "SSE": 157.5, "S": 180.0, "SSW": 202.5, "SW": 225.0,
+    "WSW": 247.5, "W": 270.0, "WNW": 292.5, "NW": 315.0, "NNW": 337.5,
+}
+
+
+@dataclass
+class SystemRuntime:
+    system: str
+    registers: Dict[str, int]
+    lease: LeaseManager
+    mode: str = MODE_SHADOW
+    enabled: Dict[str, bool] = field(default_factory=lambda: {c: True for c in COMPONENTS})
+    decisions: Dict[str, Decision] = field(default_factory=dict)
+    plan: Optional[curve.CurvePlan] = None
+    last_tick: Optional[datetime] = None
+    healthy: bool = True
+    error: Optional[str] = None
+    last_action: Optional[str] = None
+
+
+class NibePiRuntime:
+    """One per config entry (one gateway)."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.prefix: str = entry.data[CONF_PREFIX]
+        self.readings: Dict[int, Reading] = {}
+        self.base_adjust: Dict[str, float] = {}
+        self.gateway_online: Optional[bool] = None
+        self.gateway_state: Dict[str, Any] = {}
+        self.forecast: Optional[List[ForecastPoint]] = None
+        self.forecast_fetched: Optional[datetime] = None
+        self.price_cache = PriceCache()
+        self.price_level: Optional[PriceLevel] = None
+        self.started: Optional[datetime] = None
+        self.systems: Dict[str, SystemRuntime] = {}
+        for system in entry.data.get(CONF_SYSTEMS, ["s1"]):
+            regs = REGISTERS[system]
+            self.systems[system] = SystemRuntime(
+                system=system,
+                registers=regs,
+                lease=LeaseManager(regs["offset"], owner=OWNER),
+            )
+        self._unsubs: List[Callable[[], None]] = []
+        self._subscribed: set = set()
+
+    # -- helpers ----------------------------------------------------------
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.entry.entry_id)},
+            name=self.entry.data.get(CONF_NAME, DEFAULT_NAME),
+            manufacturer=MANUFACTURER,
+            model="F1255 (NibePi gateway)",
+        )
+
+    def opt(self, key: str, system: Optional[str] = None) -> Any:
+        options = self.entry.options
+        if system is not None:
+            full = system_key(key, system)
+            if full in options:
+                return options[full]
+            return SYSTEM_DEFAULTS.get(key)
+        if key in options:
+            return options[key]
+        return SHARED_DEFAULTS.get(key)
+
+    def _registers(self) -> List[int]:
+        regs = {REG_OUTDOOR}
+        for sys in self.systems.values():
+            regs.add(sys.registers["offset"])
+            regs.add(sys.registers["curve"])
+            if not self.opt(OPT_INDOOR_ENTITY, sys.system):
+                regs.add(sys.registers["indoor"])
+        return sorted(regs)
+
+    async def _publish(self, topic: str, payload: str, retain: bool = False) -> None:
+        await mqtt.async_publish(self.hass, self.prefix + topic, payload, 0, retain)
+
+    def _notify(self) -> None:
+        async_dispatcher_send(self.hass, signal_update(self.entry.entry_id))
+
+    # -- lifecycle --------------------------------------------------------
+
+    async def async_start(self) -> None:
+        self.started = dt_util.utcnow()
+        await self._async_subscribe()
+        await self._async_subscribe_registers()
+        await self._async_request_adjust()
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._async_tick_cb, timedelta(seconds=TICK_SECONDS))
+        )
+        self._unsubs.append(
+            async_track_time_interval(
+                self.hass, self._async_forecast_cb, timedelta(seconds=FORECAST_REFRESH_SECONDS)
+            )
+        )
+        self.entry.async_create_background_task(
+            self.hass, self._async_refresh_forecast(), "nibepi forecast"
+        )
+
+    async def async_stop(self) -> None:
+        while self._unsubs:
+            self._unsubs.pop()()
+        self._subscribed.clear()
+        for sys in self.systems.values():
+            action = sys.lease.release_action()
+            if action is not None:
+                await self._async_send(sys, action)
+
+    async def async_options_updated(self) -> None:
+        await self._async_subscribe_registers()
+        await self._async_refresh_forecast()
+        await self.async_tick()
+
+    async def _async_subscribe_registers(self) -> None:
+        """Subscribe to and ask the gateway to poll every needed register."""
+        for reg in self._registers():
+            if reg in self._subscribed:
+                continue
+            self._unsubs.append(
+                await mqtt.async_subscribe(self.hass, self.prefix + str(reg), self._make_register_cb(reg))
+            )
+            self._subscribed.add(reg)
+            await self._publish("%d/add" % reg, "ha")
+            await self._publish("%d/get" % reg, "ha")
+
+    async def _async_subscribe(self) -> None:
+        self._unsubs.append(await mqtt.async_subscribe(self.hass, self.prefix + "status", self._on_status))
+        self._unsubs.append(
+            await mqtt.async_subscribe(self.hass, self.prefix + "gateway/state", self._on_gateway_state)
+        )
+        for sys in self.systems.values():
+            self._unsubs.append(
+                await mqtt.async_subscribe(
+                    self.hass,
+                    "%slease/%d/state" % (self.prefix, sys.registers["offset"]),
+                    self._make_lease_cb(sys),
+                )
+            )
+            self._unsubs.append(
+                await mqtt.async_subscribe(
+                    self.hass, "%sadjust_%s" % (self.prefix, sys.system), self._make_adjust_cb(sys.system)
+                )
+            )
+
+    async def _async_request_adjust(self) -> None:
+        for system in self.systems:
+            await self._publish("adjust_%s/get" % system, "ha")
+
+    # -- MQTT callbacks -----------------------------------------------------
+
+    def _make_register_cb(self, reg: int) -> Callable[[Any], None]:
+        @callback
+        def _cb(msg: Any) -> None:
+            value = to_float(msg.payload)
+            if value is not None:
+                self.readings[reg] = Reading(value, dt_util.utcnow())
+
+        return _cb
+
+    def _make_adjust_cb(self, system: str) -> Callable[[Any], None]:
+        @callback
+        def _cb(msg: Any) -> None:
+            value = to_float(msg.payload)
+            if value is not None:
+                self.base_adjust[system] = value
+
+        return _cb
+
+    def _make_lease_cb(self, sys: SystemRuntime) -> Callable[[Any], None]:
+        @callback
+        def _cb(msg: Any) -> None:
+            data = _json(msg.payload)
+            if data is None:
+                return
+            previous_error = sys.lease.remote.get("error")
+            sys.lease.note_remote_state(data)
+            error = data.get("error")
+            if error and error != previous_error:
+                _LOGGER.warning("Gateway rejected lease for %s: %s", sys.registers["offset"], error)
+            self._notify()
+
+        return _cb
+
+    @callback
+    def _on_status(self, msg: Any) -> None:
+        payload = str(msg.payload).strip().lower()
+        self.gateway_online = payload == "online"
+        self._notify()
+
+    @callback
+    def _on_gateway_state(self, msg: Any) -> None:
+        data = _json(msg.payload)
+        if data is not None:
+            self.gateway_state = data
+            self._notify()
+
+    # -- control ----------------------------------------------------------
+
+    def set_mode(self, system: str, mode: str) -> None:
+        sys = self.systems[system]
+        if sys.mode == mode:
+            return
+        _LOGGER.info("NibePi %s mode %s -> %s", system, sys.mode, mode)
+        sys.mode = mode
+        if self.started is not None:
+            self.entry.async_create_background_task(self.hass, self.async_tick(), "nibepi tick")
+
+    def set_enabled(self, system: str, component: str, enabled: bool) -> None:
+        self.systems[system].enabled[component] = enabled
+
+    async def _async_tick_cb(self, _now: datetime) -> None:
+        await self.async_tick()
+
+    async def _async_forecast_cb(self, _now: datetime) -> None:
+        await self._async_refresh_forecast()
+        await self._async_request_adjust()
+
+    async def async_tick(self) -> None:
+        now = dt_util.utcnow()
+        for sys in self.systems.values():
+            try:
+                self._compute(sys, now)
+                sys.healthy = True
+                sys.error = None
+            except Exception as err:  # noqa: BLE001 - stop renewing, gateway falls back
+                _LOGGER.exception("NibePi tick failed for %s", sys.system)
+                sys.healthy = False
+                sys.error = repr(err)
+            sys.last_tick = now
+            in_grace = self.started is not None and now - self.started < STARTUP_GRACE
+            target = sys.plan.target if (sys.plan is not None and sys.healthy) else None
+            action = sys.lease.decide(sys.mode, target, sys.healthy and not in_grace)
+            if action is not None:
+                await self._async_send(sys, action)
+        self._notify()
+
+    async def _async_send(self, sys: SystemRuntime, action: LeaseAction) -> None:
+        reg = sys.registers["offset"]
+        topic = "lease/%d/%s" % (reg, "set" if action.kind == "set" else "release")
+        try:
+            await self._publish(topic, json.dumps(action.payload(sys.lease.ttl, OWNER)))
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Could not publish %s%s", self.prefix, topic, exc_info=True)
+            return
+        sys.lease.record(action)
+        sys.last_action = "%s %s" % (action.kind, "" if action.value is None else action.value)
+        if not action.renew:
+            _LOGGER.info("NibePi %s: lease %s %s", reg, action.kind, action.value)
+
+    def _compute(self, sys: SystemRuntime, now: datetime) -> None:
+        if sys.mode == MODE_OFF:
+            sys.decisions = {}
+            sys.plan = None
+            return
+        timeout = self.opt(OPT_SENSOR_TIMEOUT)
+        indoor = self._indoor_reading(sys)
+        setpoint = self._setpoint(sys)
+        decisions: Dict[str, Decision] = {}
+
+        if sys.enabled.get("indoor", True):
+            decisions["indoor"] = compute_indoor(
+                indoor, setpoint, self.opt(OPT_INDOOR_FACTOR, sys.system), now, timeout
+            )
+        else:
+            decisions["indoor"] = Decision.zero("disabled", inputs_ok=True)
+
+        self.price_level = self._price_level(now)
+        if sys.enabled.get("price", True):
+            offsets = {
+                level: self.opt(key, sys.system) for level, key in PRICE_LEVEL_OPTIONS.items()
+            }
+            decisions["price"] = compute_price(
+                self.price_level,
+                offsets,
+                now,
+                guard_enabled=bool(self.opt(OPT_PRICE_GUARD, sys.system)),
+                temp_low=self.opt(OPT_PRICE_TEMP_LOW, sys.system),
+                indoor=indoor,
+                setpoint=setpoint,
+                sensor_timeout_min=timeout,
+            )
+        else:
+            decisions["price"] = Decision.zero("disabled", inputs_ok=True)
+
+        if sys.enabled.get("weather", True):
+            hours = to_float(self.opt(OPT_WEATHER_HOURS, sys.system)) or 0.0
+            decisions["weather"] = compute_weather(
+                self.readings.get(REG_OUTDOOR),
+                self._value(sys.registers["curve"]),
+                self.forecast,
+                self.forecast_fetched,
+                now,
+                self._weather_settings(hours),
+                daylight=self._daylight(now + timedelta(hours=hours)),
+                sensor_timeout_min=timeout,
+            )
+        else:
+            decisions["weather"] = Decision.zero("disabled", inputs_ok=True)
+
+        if sys.mode == MODE_ACTIVE and sys.lease.held and sys.lease.value is not None:
+            reference = float(sys.lease.value)
+        else:
+            reference = self._value(sys.registers["offset"])
+        sys.decisions = decisions
+        sys.plan = curve.plan(decisions, reference, self.base_adjust.get(sys.system, 0.0))
+
+    # -- inputs -----------------------------------------------------------
+
+    def _value(self, reg: int) -> Optional[float]:
+        reading = self.readings.get(reg)
+        return reading.value if reading is not None else None
+
+    def _indoor_reading(self, sys: SystemRuntime) -> Optional[Reading]:
+        entity_id = self.opt(OPT_INDOOR_ENTITY, sys.system)
+        if not entity_id:
+            return self.readings.get(sys.registers["indoor"])
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        value = to_float(state.state)
+        if value is None:
+            return None
+        unit = state.attributes.get("unit_of_measurement")
+        if unit and unit != UnitOfTemperature.CELSIUS:
+            try:
+                value = TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
+            except Exception:  # noqa: BLE001 - unknown unit
+                return None
+        ts = getattr(state, "last_reported", None) or state.last_updated
+        return Reading(value, ts)
+
+    def _setpoint(self, sys: SystemRuntime) -> Optional[float]:
+        entity_id = self.opt(OPT_SETPOINT_ENTITY, sys.system)
+        if entity_id:
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                return None
+            return to_float(state.state)
+        return to_float(self.opt(OPT_SETPOINT, sys.system))
+
+    def _price_level(self, now: datetime) -> Optional[PriceLevel]:
+        entity_id = self.opt(OPT_PRICE_ENTITY)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        attributes = dict(state.attributes) if state is not None else {}
+        slots = normalize_prices(attributes, _local_tz(), now)
+        slots = self.price_cache.update(slots, now)
+        return compute_level(
+            slots,
+            now,
+            time_window_h=self.opt(OPT_PRICE_TIME_WINDOW),
+            min_spread=self.opt(OPT_PRICE_MIN_SPREAD),
+            unit_factor=self.opt(OPT_PRICE_UNIT_FACTOR),
+            very_cheap_below=self.opt(OPT_PRICE_VERY_CHEAP_BELOW),
+            very_expensive_above=self.opt(OPT_PRICE_VERY_EXPENSIVE_ABOVE),
+        )
+
+    def _weather_settings(self, hours: float) -> WeatherSettings:
+        return WeatherSettings(
+            hours=hours,
+            enable_up=bool(self.opt(OPT_WEATHER_UP)),
+            enable_down=bool(self.opt(OPT_WEATHER_DOWN)),
+            forecast_adjust=bool(self.opt(OPT_WEATHER_ADJUST)),
+            wind_enable=bool(self.opt(OPT_WIND_ENABLE)),
+            wind_factors={
+                "n": self.opt(OPT_WIND_N),
+                "s": self.opt(OPT_WIND_S),
+                "w": self.opt(OPT_WIND_W),
+                "e": self.opt(OPT_WIND_E),
+            },
+            sun_enable=bool(self.opt(OPT_SUN_ENABLE)),
+            sun_factors={
+                "clear": self.opt(OPT_SUN_CLEAR),
+                "half_clear": self.opt(OPT_SUN_HALF_CLEAR),
+            },
+        )
+
+    def _daylight(self, when: datetime) -> Optional[bool]:
+        try:
+            return bool(sun_helper.is_up(self.hass, when))
+        except Exception:  # noqa: BLE001 - no location configured
+            return None
+
+    async def _async_refresh_forecast(self) -> None:
+        entity_id = self.opt(OPT_WEATHER_ENTITY)
+        if not entity_id:
+            self.forecast = None
+            self.forecast_fetched = None
+            return
+        try:
+            response = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"type": "hourly"},
+                target={"entity_id": entity_id},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001 - keep the cached forecast
+            _LOGGER.warning("Could not fetch forecast from %s: %s", entity_id, err)
+            return
+        items = ((response or {}).get(entity_id) or {}).get("forecast") or []
+        state = self.hass.states.get(entity_id)
+        attrs = state.attributes if state is not None else {}
+        points = _forecast_points(
+            items,
+            attrs.get("temperature_unit") or UnitOfTemperature.CELSIUS,
+            attrs.get("wind_speed_unit") or UnitOfSpeed.METERS_PER_SECOND,
+        )
+        if points:
+            self.forecast = points
+            self.forecast_fetched = dt_util.utcnow()
+        else:
+            _LOGGER.warning("Forecast from %s had no usable hourly points", entity_id)
+
+
+def _json(payload: Any) -> Optional[Dict[str, Any]]:
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _local_tz() -> Any:
+    getter = getattr(dt_util, "get_default_time_zone", None)
+    return getter() if getter is not None else dt_util.DEFAULT_TIME_ZONE
+
+
+def _bearing(value: Any) -> Optional[float]:
+    number = to_float(value)
+    if number is not None:
+        return number % 360 if number != 360 else 360.0
+    if isinstance(value, str):
+        return CARDINALS.get(value.strip().upper())
+    return None
+
+
+def _forecast_points(items: List[Dict[str, Any]], temp_unit: str, speed_unit: str) -> List[ForecastPoint]:
+    points = []
+    for item in items:
+        when = dt_util.parse_datetime(str(item.get("datetime", "")))
+        temp = to_float(item.get("temperature"))
+        if when is None or temp is None:
+            continue
+        if temp_unit != UnitOfTemperature.CELSIUS:
+            temp = TemperatureConverter.convert(temp, temp_unit, UnitOfTemperature.CELSIUS)
+        speed = to_float(item.get("wind_speed"))
+        gust = to_float(item.get("wind_gust_speed"))
+        if speed_unit != UnitOfSpeed.METERS_PER_SECOND:
+            if speed is not None:
+                speed = SpeedConverter.convert(speed, speed_unit, UnitOfSpeed.METERS_PER_SECOND)
+            if gust is not None:
+                gust = SpeedConverter.convert(gust, speed_unit, UnitOfSpeed.METERS_PER_SECOND)
+        points.append(
+            ForecastPoint(
+                time=dt_util.as_utc(when),
+                temperature=temp,
+                wind_speed=speed,
+                wind_bearing=_bearing(item.get("wind_bearing")),
+                wind_gust=gust,
+                condition=item.get("condition"),
+            )
+        )
+    return points
