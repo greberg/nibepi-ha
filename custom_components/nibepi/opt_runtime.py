@@ -544,7 +544,7 @@ class OptimizerRuntime:
     def profile(self, system: str) -> HouseProfile:
         rt = self.rt
         config = self.hass.config
-        floors = to_float(rt.opt(OPT_HOUSE_FLOORS)) or 1.5
+        floors = to_float(str(rt.opt(OPT_HOUSE_FLOORS) or "").replace("_", ".")) or 1.5
         era = rt.opt(OPT_HOUSE_ERA)
         construction = rt.opt(OPT_HOUSE_CONSTRUCTION)
         sensors = to_float(rt.opt(OPT_HOUSE_SENSORS)) or 1

@@ -169,7 +169,7 @@ class ProfileTest(unittest.TestCase):
 
     def test_profile_effects(self) -> None:
         old = house_prior(HouseProfile(era="pre1960"))
-        new = house_prior(HouseProfile(era="2011-"))
+        new = house_prior(HouseProfile(era="2011_later"))
         self.assertGreater(old.ua_kw_per_k, 2 * new.ua_kw_per_k)
         self.assertLess(old.uncertainty, house_prior(HouseProfile()).uncertainty)
         heavy = house_prior(HouseProfile(construction="heavy"))

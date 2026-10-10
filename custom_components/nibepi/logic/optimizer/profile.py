@@ -15,7 +15,7 @@ deliberately middle-of-the-road; see docs/optimizer.md):
   space-heating demand of ~130 (pre-1960) down to ~50 kWh/m²·year
   (post-2010, BBR) at ~90 000 degree-hours:
 
-      pre-1960 1.3, 1961-1975 1.05, 1976-1990 0.8, 1991-2010 0.65, 2011- 0.45
+      pre-1960 1.3, 1961-1975 1.05, 1976-1990 0.8, 1991-2010 0.65, 2011 and later 0.45
 
   Unknown era: 0.85 with a wider plausible range.
 - Floors change the envelope per m² of floor: 1 floor ×1.10 (more roof and
@@ -54,7 +54,8 @@ ERA_LOSS_W_PER_K_M2 = {
     "1961-1975": 1.05,
     "1976-1990": 0.8,
     "1991-2010": 0.65,
-    "2011-": 0.45,
+    "2011_later": 0.45,
+    "2011-": 0.45,  # spelling before 0.2.0 (not a valid selector key)
 }
 DEFAULT_LOSS_W_PER_K_M2 = 0.85
 CONSTRUCTION_WH_PER_K_M2 = {"light": 60.0, "medium": 90.0, "heavy": 130.0}

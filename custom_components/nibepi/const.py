@@ -184,15 +184,15 @@ OPT_OPT_MIN_LEVEL = "optimizer_min_level"
 OPT_HW_OPT_FLOOR = "hw_optimizer_floor"
 
 UNKNOWN = "unknown"
-HOUSE_FLOORS = ("1", "1.5", "2", "3")
-HOUSE_ERAS = (UNKNOWN, "pre1960", "1961-1975", "1976-1990", "1991-2010", "2011-")
+HOUSE_FLOORS = ("1", "1_5", "2", "3")  # selector keys: no dots allowed
+HOUSE_ERAS = (UNKNOWN, "pre1960", "1961-1975", "1976-1990", "1991-2010", "2011_later")
 HOUSE_CONSTRUCTIONS = (UNKNOWN, "light", "medium", "heavy")
 HOUSE_EMITTERS = ("radiators", "floor", "mixed")
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
 OPTIMIZER_DEFAULTS: Dict[str, Any] = {
     OPT_HOUSE_AREA: 150.0,
-    OPT_HOUSE_FLOORS: "1.5",
+    OPT_HOUSE_FLOORS: "1_5",
     OPT_HOUSE_ERA: UNKNOWN,
     OPT_HOUSE_CONSTRUCTION: UNKNOWN,
     OPT_HOUSE_EMITTER: "radiators",
