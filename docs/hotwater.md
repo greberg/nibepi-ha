@@ -72,9 +72,10 @@ Everything above, with the same constants and defaults, as pure modules:
 - `logic/vvplan.py`: day modes, peaks, heating windows, price placement,
   heat-allowed rule, min-temp floor and window closing.
 - `logic/hotwater.py`: automatic luxury, hot water priority, comfort mode by
-  price level, and **one controller** that combines them into a single
-  decision per tick with a reason per feature; plus the lease decisions for
-  47041, 47134 and 48132.
+  price level.
+- `logic/hwcontrol.py`: **one controller** that combines all features into
+  a single decision per tick with a reason per feature, and the lease
+  decisions for 47041, 47134 and 48132.
 - `logic/vvimport.py`: conversion of the Node-RED profile file.
 
 One controller owns the three registers, so two features never write the

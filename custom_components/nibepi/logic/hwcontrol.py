@@ -1,0 +1,377 @@
+"""The hot water controller: one owner for 47041, 47134 and 48132.
+
+Node-RED had three writers for these registers (``vvAiTick``,
+``hotwaterPlugin``, ``priceAdjustCurve``) that kept each other apart with
+config flags. Here one controller asks every feature what it wants and
+makes one decision per tick, with a reason per feature:
+
+- 48132 temporary lux: 4 while any feature wants a charge (VV-AI control,
+  automatic luxury, hot water priority), else released (the gateway writes
+  0). It is never held at 0.
+- 47134 hot water period: 0 while VV-AI control is in charge (the pump
+  then makes hot water only when told to), else released (the gateway
+  restores its captured baseline).
+- 47041 comfort mode: the mode for the current price level while price
+  comfort mode is on, else released (baseline).
+
+Rules carried over from Node-RED:
+
+- Automatic luxury or hot water priority on means VV-AI control stands
+  aside (``aiOk = aiControlEnabled && !hwRegEnabled``); the min-temp floor
+  belongs to VV-AI control and stands aside with it.
+- Learning observes in every mode except ``off`` while learning or VV-AI
+  control is on (Node-RED ran the detection whenever ``vvAiTick`` ran).
+
+Fail-safe (new; see docs/hotwater.md):
+
+- A missing or stale input releases what depends on it at once: BT7 or the
+  stop temperatures for VV-AI control, BT6 for automatic luxury, BT7 and
+  the start/stop temperatures for priority, the price for comfort mode.
+- VV-AI control does not take 47134 when the pump's period reads 0 and the
+  lease is not ours: the gateway would capture 0 as the baseline and
+  "restore" the pump to no hot water. Nor while the period is unknown, nor
+  with nothing learned and the min-temp floor off.
+- ``HotWaterLeases.decide`` releases every lease when the tick was
+  unhealthy or the mode is not ``active``, and sends nothing in active mode
+  during the start-up grace period (register values are not retained).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, tzinfo
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from .hotwater import (
+    COMFORT_DEFAULTS,
+    COMFORT_NAMES,
+    DEFAULT_AUTOLUX_DIFF,
+    DEFAULT_AUTOLUX_TIME,
+    START_REGISTERS,
+    STOP_REGISTERS,
+    TEMP_LUX_START,
+    AutoLuxury,
+    HwPriority,
+    comfort_mode,
+)
+from .inputs import PriceSlot, Reading, to_float, usable
+from .lease import MODE_ACTIVE, MODE_OFF, LeaseAction, LeaseManager
+from .vvlearn import DrawDetector, DrawEvent, VvProfile, is_charging, learning_alpha, min_drop
+from .vvplan import (
+    HeatWindow,
+    PlanSettings,
+    StopTemps,
+    VvControl,
+    build_plan,
+    day_mode,
+    day_sums,
+    next_heat_start,
+)
+
+REG_BT7 = 40013
+REG_BT6 = 40014
+REG_PRIO = 43086
+REG_COMFORT = 47041
+REG_PERIOD = 47134
+REG_TEMP_LUX = 48132
+
+INPUT_REGISTERS = (
+    REG_BT7,
+    REG_BT6,
+    REG_PRIO,
+    REG_COMFORT,
+    REG_PERIOD,
+    REG_TEMP_LUX,
+) + tuple(sorted(set(START_REGISTERS.values()) | set(STOP_REGISTERS.values())))
+
+LEASE_LIMITS = {REG_COMFORT: (0, 2), REG_PERIOD: (0, 180), REG_TEMP_LUX: (0, 4)}
+
+FEATURES = ("learning", "vv_control", "autoluxury", "priority", "price_comfort")
+# Node-RED's defaults, except learning (see docs/hotwater.md).
+FEATURE_DEFAULTS = {
+    "learning": True,
+    "vv_control": False,
+    "autoluxury": False,
+    "priority": False,
+    "price_comfort": False,
+}
+
+STATES = ("off", "fault", "idle", "heat_now", "block", "economy", "normal", "luxury")
+DEFAULT_FLOOR_TEMP = 35.0
+
+
+@dataclass(frozen=True)
+class HotWaterSettings:
+    learning_rate: Any = 10
+    min_drop: Any = 3.0
+    plan: PlanSettings = field(default_factory=PlanSettings)
+    floor_enabled: bool = True
+    floor_temp: Optional[float] = DEFAULT_FLOOR_TEMP
+    autolux_diff: Any = DEFAULT_AUTOLUX_DIFF
+    autolux_time: Any = DEFAULT_AUTOLUX_TIME
+    comfort: Mapping[str, Any] = field(default_factory=lambda: dict(COMFORT_DEFAULTS))
+    sensor_timeout: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class HotWaterInputs:
+    now: datetime
+    tz: tzinfo
+    readings: Mapping[int, Reading]
+    price_level: Optional[str] = None
+    price_slots: Sequence[PriceSlot] = ()
+    held: Mapping[int, bool] = field(default_factory=dict)
+
+
+@dataclass
+class HotWaterDecision:
+    state: str
+    targets: Dict[int, Optional[int]]
+    reasons: Dict[str, str]
+    inputs_ok: bool = True
+    windows: List[HeatWindow] = field(default_factory=list)
+    next_heat: Optional[datetime] = None
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def idle(cls, state: str, reason: str) -> "HotWaterDecision":
+        return cls(state, {reg: None for reg in LEASE_LIMITS}, {"mode": reason})
+
+
+class HotWaterController:
+    """Holds the learning and control state; ``decide`` once per tick."""
+
+    def __init__(self, profile: Optional[VvProfile] = None) -> None:
+        self.profile = profile or VvProfile()
+        self.detector = DrawDetector()
+        self.vv = VvControl()
+        self.autolux = AutoLuxury()
+        self.priority = HwPriority()
+        self.last_event: Optional[DrawEvent] = None
+        self.last_event_at: Optional[datetime] = None
+
+    def reset_control(self) -> None:
+        self.vv.reset()
+        self.autolux.reset()
+        self.priority.reset()
+
+    @staticmethod
+    def _value(inputs: HotWaterInputs, reg: int, timeout: Optional[float]) -> Optional[float]:
+        reading = inputs.readings.get(reg)
+        if usable(reading, inputs.now, timeout) is not None:
+            return None
+        assert reading is not None
+        return float(reading.value)
+
+    # -- learning -----------------------------------------------------------
+
+    def learn(self, inputs: HotWaterInputs, settings: HotWaterSettings, enabled: bool) -> bool:
+        """One detection step; True when the profile changed (save it)."""
+        if not enabled:
+            self.detector.reset()
+            return False
+        alpha = learning_alpha(settings.learning_rate)
+        changed = self.profile.apply_daily_decay(inputs.now.astimezone(inputs.tz).date(), alpha)
+        bt6 = self._value(inputs, REG_BT6, settings.sensor_timeout)
+        prio = self._value(inputs, REG_PRIO, settings.sensor_timeout)
+        event = self.detector.step(
+            bt6, is_charging(prio), inputs.now, inputs.tz, min_drop(settings.min_drop)
+        )
+        if event is not None:
+            self.last_event = event
+            self.last_event_at = inputs.now
+            if event.learned:
+                changed = (
+                    self.profile.register_draw(event.drop, event.booked, inputs.now, inputs.tz, alpha)
+                    or changed
+                )
+        return changed
+
+    # -- control --------------------------------------------------------------
+
+    def decide(
+        self,
+        mode: str,
+        features: Mapping[str, bool],
+        inputs: HotWaterInputs,
+        settings: HotWaterSettings,
+    ) -> HotWaterDecision:
+        if mode == MODE_OFF:
+            self.reset_control()
+            return HotWaterDecision.idle("off", "hot water mode off")
+        now = inputs.now
+        timeout = settings.sensor_timeout
+
+        def value(reg: int) -> Optional[float]:
+            return self._value(inputs, reg, timeout)
+
+        def on(name: str) -> bool:
+            return bool(features.get(name, FEATURE_DEFAULTS[name]))
+
+        bt6 = value(REG_BT6)
+        bt7 = value(REG_BT7)
+        comfort_raw = value(REG_COMFORT)
+        comfort_now = int(comfort_raw) if comfort_raw is not None else None
+        stop_now = value(STOP_REGISTERS[comfort_now]) if comfort_now in STOP_REGISTERS else None
+        start_now = value(START_REGISTERS[comfort_now]) if comfort_now in START_REGISTERS else None
+        stops = StopTemps(value(STOP_REGISTERS[0]), value(STOP_REGISTERS[1]), value(STOP_REGISTERS[2]))
+        pump_lux = value(REG_TEMP_LUX)
+        period = value(REG_PERIOD)
+        held_lux = bool(inputs.held.get(REG_TEMP_LUX))
+        held_period = bool(inputs.held.get(REG_PERIOD))
+
+        reasons: Dict[str, str] = {}
+        sources: List[str] = []
+        faults: List[str] = []
+        targets: Dict[int, Optional[int]] = {reg: None for reg in LEASE_LIMITS}
+
+        # Price comfort mode -> 47041.
+        if on("price_comfort"):
+            targets[REG_COMFORT], reasons["price_comfort"] = comfort_mode(inputs.price_level, settings.comfort)
+            if inputs.price_level is None:
+                faults.append("price_comfort")
+        else:
+            reasons["price_comfort"] = "off"
+
+        # Automatic luxury and hot water priority -> 48132.
+        if on("autoluxury"):
+            result = self.autolux.step(
+                bt6, stop_now, pump_lux, held_lux, now, settings.autolux_diff, settings.autolux_time
+            )
+            reasons["autoluxury"] = result.reason
+            if result.heat:
+                sources.append("autoluxury")
+            if bt6 is None or stop_now is None:
+                faults.append("autoluxury")
+        else:
+            self.autolux.reset()
+            reasons["autoluxury"] = "off"
+        if on("priority"):
+            result = self.priority.step(
+                bt7, start_now, stop_now, pump_lux, held_lux, self.autolux.active, now
+            )
+            reasons["priority"] = result.reason
+            if result.heat:
+                sources.append("priority")
+            if bt7 is None or start_now is None or stop_now is None:
+                faults.append("priority")
+        else:
+            self.priority.reset()
+            reasons["priority"] = "off"
+
+        # VV-AI control -> 47134 and 48132.
+        plan_settings = settings.plan
+        windows = build_plan(self.profile.profile, now, inputs.tz, plan_settings, stops, inputs.price_slots)
+        learned_plan = any(day_mode(total, plan_settings) > 0 for total in day_sums(self.profile.profile))
+        floor_temp = to_float(settings.floor_temp)
+        floor = bool(settings.floor_enabled) and floor_temp is not None
+        # (reason, is a missing input) when VV-AI control must not drive.
+        blocked: Optional[Tuple[str, bool]] = None
+        if not on("vv_control"):
+            blocked = ("off", False)
+        elif on("autoluxury") or on("priority"):
+            blocked = ("automatic luxury or hot water priority is on and takes precedence", False)
+        elif bt7 is None:
+            blocked = ("BT7 missing or stale: hot water left to the pump", True)
+        elif not stops.complete():
+            blocked = ("stop temperatures unknown: hot water left to the pump", True)
+        elif period is None and not held_period:
+            blocked = ("hot water period (47134) unknown: hot water left to the pump", True)
+        elif period == 0 and not held_period:
+            blocked = (
+                "the pump's hot water period (47134) is 0; the gateway would restore 0, "
+                "so set it in the pump first",
+                False,
+            )
+        elif not learned_plan and not floor:
+            blocked = ("nothing learned yet and no min-temp floor: hot water left to the pump", False)
+        if blocked is not None:
+            self.vv.reset()
+            reasons["vv_control"] = blocked[0]
+            if blocked[1]:
+                faults.append("vv_control")
+        else:
+            targets[REG_PERIOD] = 0
+            result = self.vv.decide(
+                bt7, now, inputs.tz, windows, stops, bool(settings.floor_enabled), floor_temp, plan_settings.use_price
+            )
+            reasons["vv_control"] = result.reason
+            if result.heat:
+                sources.append("vv_control")
+
+        if sources:
+            targets[REG_TEMP_LUX] = TEMP_LUX_START
+
+        if targets[REG_TEMP_LUX] is not None:
+            state = "heat_now"
+        elif targets[REG_PERIOD] is not None:
+            state = "block"
+        elif faults:
+            state = "fault"
+        elif targets[REG_COMFORT] is not None:
+            state = COMFORT_NAMES[int(targets[REG_COMFORT])]
+        else:
+            state = "idle"
+
+        details: Dict[str, Any] = {
+            "bt6": bt6,
+            "bt7": bt7,
+            "comfort_mode": comfort_now,
+            "hot_water_period": period,
+            "temporary_lux": pump_lux,
+            "stop_temperatures": {"economy": stops.economy, "normal": stops.normal, "luxury": stops.luxury},
+            "heat_sources": sources,
+            "faults": faults,
+            "closed_until": self.vv.closed_until,
+            "floor_active": self.vv.floor_active,
+        }
+        return HotWaterDecision(
+            state=state,
+            targets=targets,
+            reasons=reasons,
+            inputs_ok=not faults,
+            windows=windows,
+            next_heat=next_heat_start(windows, now, self.vv.closed_until, plan_settings.use_price),
+            details=details,
+        )
+
+
+class HotWaterLeases:
+    """The three leases and when to set, renew or release them."""
+
+    def __init__(self, owner: str = "ha", clock: Optional[Callable[[], datetime]] = None) -> None:
+        self.leases: Dict[int, LeaseManager] = {
+            reg: LeaseManager(reg, owner=owner, clock=clock, low=low, high=high)
+            for reg, (low, high) in LEASE_LIMITS.items()
+        }
+
+    def held(self) -> Dict[int, bool]:
+        return {reg: lease.held for reg, lease in self.leases.items()}
+
+    def decide(
+        self,
+        mode: str,
+        decision: Optional[HotWaterDecision],
+        healthy: bool,
+        in_grace: bool = False,
+    ) -> List[Tuple[LeaseManager, LeaseAction]]:
+        if in_grace and mode == MODE_ACTIVE:
+            return []
+        actions: List[Tuple[LeaseManager, LeaseAction]] = []
+        for reg, lease in self.leases.items():
+            target = decision.targets.get(reg) if (decision is not None and healthy) else None
+            if mode == MODE_ACTIVE and target is not None:
+                action = lease.decide(MODE_ACTIVE, target, True)
+            else:
+                action = lease.decide(MODE_OFF, None, True)
+            if action is not None:
+                actions.append((lease, action))
+        return actions
+
+    def release_all(self) -> List[Tuple[LeaseManager, LeaseAction]]:
+        actions = []
+        for lease in self.leases.values():
+            action = lease.release_action()
+            if action is not None:
+                actions.append((lease, action))
+        return actions
