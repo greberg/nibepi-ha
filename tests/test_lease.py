@@ -120,6 +120,11 @@ class LeaseTest(unittest.TestCase):
     def test_payload(self) -> None:
         self.assertEqual(LeaseAction("set", -1).payload(900, "ha"), {"value": -1, "ttl": 900, "owner": "ha"})
 
+    def test_remote_state_time(self) -> None:
+        self.assertIsNone(self.lease.remote_at)
+        self.lease.note_remote_state({"active": False})
+        self.assertEqual(self.lease.remote_at, self.clock.now)
+
     def test_expires(self) -> None:
         self.lease.note_remote_state({"active": True, "owner": "x", "expires": 1760100000000})
         self.assertEqual(self.lease.expires().year, 2025)

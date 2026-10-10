@@ -22,7 +22,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import sun as sun_helper
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import SpeedConverter, TemperatureConverter
 
@@ -76,6 +76,7 @@ from .const import (
     system_key,
 )
 from .logic import curve
+from .logic.gateway import STATUS_TIMEOUT, gateway_online, status_hint
 from .logic.indoor import compute_indoor
 from .logic.inputs import (
     Decision,
@@ -145,8 +146,11 @@ class NibePiRuntime:
         self.prefix: str = entry.data[CONF_PREFIX]
         self.readings: Dict[int, Reading] = {}
         self.base_adjust: Dict[str, float] = {}
-        self.gateway_online: Optional[bool] = None
         self.gateway_state: Dict[str, Any] = {}
+        self.status_payload: Optional[str] = None
+        self.status_at: Optional[datetime] = None
+        self.gateway_state_at: Optional[datetime] = None
+        self.gateway_state_live_at: Optional[datetime] = None
         self.forecast: Optional[List[ForecastPoint]] = None
         self.forecast_fetched: Optional[datetime] = None
         self.price_cache = PriceCache()
@@ -193,6 +197,21 @@ class NibePiRuntime:
             return options[key]
         return SHARED_DEFAULTS.get(key)
 
+    @property
+    def status_topic(self) -> str:
+        return self.prefix + "status"
+
+    @property
+    def gateway_online(self) -> Optional[bool]:
+        return gateway_online(
+            self.status_payload, self.gateway_state_live_at, self.started, dt_util.utcnow()
+        )
+
+    @property
+    def last_message_at(self) -> Optional[datetime]:
+        stamps = [t for t in (self.status_at, self.gateway_state_at) if t is not None]
+        return max(stamps) if stamps else None
+
     def _registers(self) -> List[int]:
         regs = {REG_OUTDOOR}
         for sys in self.systems.values():
@@ -222,6 +241,9 @@ class NibePiRuntime:
             async_track_time_interval(
                 self.hass, self._async_forecast_cb, timedelta(seconds=FORECAST_REFRESH_SECONDS)
             )
+        )
+        self._unsubs.append(
+            async_call_later(self.hass, STATUS_TIMEOUT.total_seconds() + 1, self._check_status)
         )
         self.entry.async_create_background_task(
             self.hass, self._async_refresh_forecast(), "nibepi forecast"
@@ -261,7 +283,7 @@ class NibePiRuntime:
             await self._publish("%d/get" % reg, "ha")
 
     async def _async_subscribe(self) -> None:
-        self._unsubs.append(await mqtt.async_subscribe(self.hass, self.prefix + "status", self._on_status))
+        self._unsubs.append(await mqtt.async_subscribe(self.hass, self.status_topic, self._on_status))
         self._unsubs.append(
             await mqtt.async_subscribe(self.hass, self.prefix + "gateway/state", self._on_gateway_state)
         )
@@ -320,16 +342,28 @@ class NibePiRuntime:
 
     @callback
     def _on_status(self, msg: Any) -> None:
-        payload = str(msg.payload).strip().lower()
-        self.gateway_online = payload == "online"
+        self.status_payload = str(msg.payload).strip()
+        self.status_at = dt_util.utcnow()
         self._notify()
 
     @callback
     def _on_gateway_state(self, msg: Any) -> None:
         data = _json(msg.payload)
         if data is not None:
+            now = dt_util.utcnow()
             self.gateway_state = data
+            self.gateway_state_at = now
+            # The retained copy replayed on subscribe may be from a gateway
+            # that has since died; only a live one shows it is running.
+            if not getattr(msg, "retain", False):
+                self.gateway_state_live_at = now
             self._notify()
+
+    @callback
+    def _check_status(self, _now: datetime) -> None:
+        if self.status_payload is None and self.gateway_state_at is None:
+            _LOGGER.warning(status_hint(self.status_topic))
+        self._notify()
 
     # -- control ----------------------------------------------------------
 

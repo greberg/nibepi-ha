@@ -92,6 +92,7 @@ class LeaseManager:
         self.last_sent: Optional[datetime] = None
         self.not_ready_retry = timedelta(seconds=not_ready_retry)
         self.remote: Mapping[str, Any] = {}
+        self.remote_at: Optional[datetime] = None
         self.retry_after: Optional[datetime] = None
 
     # -- inputs ---------------------------------------------------------
@@ -99,6 +100,7 @@ class LeaseManager:
     def note_remote_state(self, state: Mapping[str, Any]) -> None:
         """Feed ``<prefix>lease/<reg>/state`` JSON from the gateway."""
         self.remote = dict(state)
+        self.remote_at = self.clock()
         active = state.get("active") is True
         owner = state.get("owner")
         error = state.get("error")

@@ -135,7 +135,9 @@ class LeaseStateSensor(_SystemSensor):
     def native_value(self) -> Optional[str]:
         remote = self.sys.lease.remote
         if not remote:
-            return None
+            # The gateway publishes a lease state only once a lease was
+            # taken; shadow mode never takes one.
+            return "inactive"
         if remote.get("restoring"):
             return "restoring"
         if remote.get("active"):
@@ -162,6 +164,7 @@ class LeaseStateSensor(_SystemSensor):
             "ha_value": lease.value,
             "last_sent": _iso(lease.last_sent),
             "retry_after": _iso(lease.retry_after),
+            "last_state_received": _iso(lease.remote_at),
         }
 
 
