@@ -1,8 +1,9 @@
-"""NibePi: curve-offset control of a Nibe heat pump through the NibePi gateway.
+"""NibePi: control of a Nibe heat pump through the NibePi gateway.
 
 The gateway (on the Pi) owns the RS485 bus and is the safety boundary; this
-integration computes the indoor + price + weather curve offset and, in
-``active`` mode, holds register 47011/47010 through a TTL lease over MQTT.
+integration computes the indoor + price + weather curve offset and the hot
+water control and, in ``active`` mode, holds the registers (47011/47010,
+47041/47134/48132) through TTL leases over MQTT.
 """
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.storage import Store
 
-from .const import PLATFORMS
+from .const import PLATFORMS, VV_STORE_VERSION, vv_store_key
 from .runtime import NibePiRuntime
 
 if TYPE_CHECKING:
@@ -40,6 +42,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> b
     # Releases held leases: the gateway restores the register at once.
     await entry.runtime_data.async_stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> None:
+    # The learned hot water profile belongs to the entry.
+    await Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id)).async_remove()
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: NibePiConfigEntry) -> None:

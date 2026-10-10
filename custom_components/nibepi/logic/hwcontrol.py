@@ -195,7 +195,10 @@ class HotWaterController:
         features: Mapping[str, bool],
         inputs: HotWaterInputs,
         settings: HotWaterSettings,
+        sample: bool = True,
     ) -> HotWaterDecision:
+        """``sample`` False: an extra decision between ticks, which does not
+        add an automatic luxury sample (they are counted per minute)."""
         if mode == MODE_OFF:
             self.reset_control()
             return HotWaterDecision.idle("off", "hot water mode off")
@@ -236,7 +239,7 @@ class HotWaterController:
         # Automatic luxury and hot water priority -> 48132.
         if on("autoluxury"):
             result = self.autolux.step(
-                bt6, stop_now, pump_lux, held_lux, now, settings.autolux_diff, settings.autolux_time
+                bt6, stop_now, pump_lux, held_lux, now, settings.autolux_diff, settings.autolux_time, sample
             )
             reasons["autoluxury"] = result.reason
             if result.heat:

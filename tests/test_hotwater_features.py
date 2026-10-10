@@ -77,6 +77,13 @@ class AutoLuxuryTest(unittest.TestCase):
         self.assertFalse(self.step(30.0, pump_lux=4).heat)
         self.assertTrue(self.step(29.0, pump_lux=4, held=True).heat)
 
+    def test_extra_decision_between_ticks_adds_no_sample(self) -> None:
+        self.assertEqual(self.feature.step(30.0, 55.0, 0, False, self.now, sample=False).reason, "no BT6 samples yet")
+        self.step(50.0)
+        result = self.feature.step(30.0, 55.0, 0, False, self.now, sample=False)
+        self.assertTrue(result.heat)
+        self.assertEqual(self.feature.history, [50.0])
+
     def test_missing_input_resets(self) -> None:
         self.step(50.0)
         self.assertTrue(self.step(30.0).heat)

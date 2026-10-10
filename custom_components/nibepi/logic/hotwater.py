@@ -115,7 +115,9 @@ class AutoLuxury:
         now: datetime,
         diff: Any = DEFAULT_AUTOLUX_DIFF,
         samples: Any = DEFAULT_AUTOLUX_TIME,
+        sample: bool = True,
     ) -> FeatureResult:
+        """``sample`` False re-evaluates without storing BT6 (between ticks)."""
         if bt6 is None or stop_temp is None:
             self.reset()
             return FeatureResult(False, "BT6 missing" if bt6 is None else "stop temperature unknown")
@@ -124,12 +126,17 @@ class AutoLuxury:
             delta = DEFAULT_AUTOLUX_DIFF
         count = to_float(samples)
         count_int = int(count) if count is not None and count >= 1 else DEFAULT_AUTOLUX_TIME
-        self.history.insert(0, bt6)
-        if len(self.history) >= count_int:
-            del self.history[count_int:]
-            reference = self.history.pop()
-        else:
+        if sample:
+            self.history.insert(0, bt6)
+            if len(self.history) >= count_int:
+                del self.history[count_int:]
+                reference = self.history.pop()
+            else:
+                reference = self.history[-1]
+        elif self.history:
             reference = self.history[-1]
+        else:
+            return FeatureResult(False, "no BT6 samples yet")
         self.trigger = to_fixed(reference - delta, 2)
         limit = stop_temp - 1
         details = {"trigger": self.trigger, "target": self.target, "stop": limit}

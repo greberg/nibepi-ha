@@ -23,6 +23,7 @@ from homeassistant.helpers import sun as sun_helper
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import SpeedConverter, TemperatureConverter
 
@@ -34,8 +35,22 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
     FORECAST_REFRESH_SECONDS,
+    HW_COMFORT_OPTIONS,
     ISSUE_TIBBER_MISSING,
     MANUFACTURER,
+    OPT_HW_AUTOLUX_DIFF,
+    OPT_HW_AUTOLUX_TIME,
+    OPT_HW_DAY_LARGE,
+    OPT_HW_DAY_MEDIUM,
+    OPT_HW_DAY_SMALL,
+    OPT_HW_LEARNING_RATE,
+    OPT_HW_MIN_DROP,
+    OPT_HW_MIN_TEMP,
+    OPT_HW_MIN_TEMP_ENABLE,
+    OPT_HW_PEAK,
+    OPT_HW_PREHEAT,
+    OPT_HW_PRICE_WINDOW,
+    OPT_HW_USE_PRICE,
     OPT_INDOOR_ENTITY,
     OPT_INDOOR_FACTOR,
     OPT_PRICE_ENTITY,
@@ -73,12 +88,24 @@ from .const import (
     SHARED_DEFAULTS,
     SYSTEM_DEFAULTS,
     TICK_SECONDS,
+    VV_STORE_SAVE_DELAY,
+    VV_STORE_VERSION,
     price_source,
     signal_update,
     system_key,
+    vv_store_key,
 )
 from .logic import curve
 from .logic.gateway import STATUS_TIMEOUT, gateway_online, status_hint
+from .logic.hwcontrol import (
+    FEATURE_DEFAULTS,
+    INPUT_REGISTERS,
+    HotWaterController,
+    HotWaterDecision,
+    HotWaterInputs,
+    HotWaterLeases,
+    HotWaterSettings,
+)
 from .logic.indoor import compute_indoor
 from .logic.inputs import (
     Decision,
@@ -103,6 +130,8 @@ from .logic.price import (
     tibber_request,
 )
 from .logic.rmu import RoomTemperature, rmu_decide, rmu_lease_manager
+from .logic.vvlearn import VvProfile
+from .logic.vvplan import PlanSettings
 from .logic.weather import WeatherSettings, compute_weather
 
 _LOGGER = logging.getLogger(__name__)
@@ -147,6 +176,23 @@ class SystemRuntime:
     rmu_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+@dataclass
+class HotWaterRuntime:
+    """Hot water control (shared by the climate systems)."""
+
+    controller: HotWaterController
+    leases: HotWaterLeases
+    mode: str = MODE_SHADOW
+    features: Dict[str, bool] = field(default_factory=lambda: dict(FEATURE_DEFAULTS))
+    decision: Optional[HotWaterDecision] = None
+    last_tick: Optional[datetime] = None
+    healthy: bool = True
+    error: Optional[str] = None
+    last_actions: Dict[int, str] = field(default_factory=dict)
+    store_loaded: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
 class NibePiRuntime:
     """One per config entry (one gateway)."""
 
@@ -165,6 +211,8 @@ class NibePiRuntime:
         self.forecast_fetched: Optional[datetime] = None
         self.price_cache = PriceCache()
         self.price_level: Optional[PriceLevel] = None
+        self.price_level_at: Optional[datetime] = None
+        self.price_slots: List[PriceSlot] = []
         self.price_status: Optional[str] = None
         self.tibber_slots: List[PriceSlot] = []
         self.tibber_home: Optional[str] = None
@@ -183,6 +231,8 @@ class NibePiRuntime:
                 lease=LeaseManager(regs["offset"], owner=OWNER),
                 rmu_lease=rmu_lease_manager(regs["rmu"], owner=OWNER),
             )
+        self.hotwater = HotWaterRuntime(HotWaterController(), HotWaterLeases(owner=OWNER))
+        self.vv_store: Store = Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id))
         self._unsubs: List[Callable[[], None]] = []
         self._subscribed: set = set()
 
@@ -230,6 +280,9 @@ class NibePiRuntime:
             regs.add(sys.registers["curve"])
             if not self.opt(OPT_INDOOR_ENTITY, sys.system):
                 regs.add(sys.registers["indoor"])
+        # Hot water: BT6, BT7, prio, comfort mode, period, temporary lux and
+        # the start/stop temperatures.
+        regs.update(INPUT_REGISTERS)
         return sorted(regs)
 
     async def _publish(self, topic: str, payload: str, retain: bool = False) -> None:
@@ -242,6 +295,7 @@ class NibePiRuntime:
 
     async def async_start(self) -> None:
         self.started = dt_util.utcnow()
+        await self._async_load_vv_store()
         await self._async_subscribe()
         await self._async_subscribe_registers()
         await self._async_request_adjust()
@@ -272,6 +326,10 @@ class NibePiRuntime:
             action = sys.rmu_lease.release_action()
             if action is not None:
                 await self._async_send(sys, action, sys.rmu_lease)
+        for lease, action in self.hotwater.leases.release_all():
+            await self._async_publish_lease(lease, action)
+        if self.hotwater.store_loaded:
+            await self.vv_store.async_save(self.hotwater.controller.profile.to_dict())
 
     async def async_options_updated(self) -> None:
         # The price source or Tibber home may have changed.
@@ -301,15 +359,17 @@ class NibePiRuntime:
         self._unsubs.append(
             await mqtt.async_subscribe(self.hass, self.prefix + "gateway/state", self._on_gateway_state)
         )
-        for sys in self.systems.values():
-            for lease in (sys.lease, sys.rmu_lease):
-                self._unsubs.append(
-                    await mqtt.async_subscribe(
-                        self.hass,
-                        "%slease/%d/state" % (self.prefix, lease.register),
-                        self._make_lease_cb(lease),
-                    )
+        leases = [lease for sys in self.systems.values() for lease in (sys.lease, sys.rmu_lease)]
+        leases.extend(self.hotwater.leases.leases.values())
+        for lease in leases:
+            self._unsubs.append(
+                await mqtt.async_subscribe(
+                    self.hass,
+                    "%slease/%d/state" % (self.prefix, lease.register),
+                    self._make_lease_cb(lease),
                 )
+            )
+        for sys in self.systems.values():
             self._unsubs.append(
                 await mqtt.async_subscribe(
                     self.hass, "%sadjust_%s" % (self.prefix, sys.system), self._make_adjust_cb(sys.system)
@@ -405,6 +465,124 @@ class NibePiRuntime:
                 self.hass, self._async_rmu_step(sys, dt_util.utcnow()), "nibepi rmu"
             )
 
+    # -- hot water --------------------------------------------------------
+
+    def set_hw_mode(self, mode: str) -> None:
+        hw = self.hotwater
+        if hw.mode == mode:
+            return
+        _LOGGER.info("NibePi hot water mode %s -> %s", hw.mode, mode)
+        hw.mode = mode
+        self._hw_step_soon()
+
+    def set_hw_feature(self, feature: str, enabled: bool) -> None:
+        hw = self.hotwater
+        if hw.features.get(feature) == enabled:
+            return
+        _LOGGER.info("NibePi hot water %s %s", feature, "on" if enabled else "off")
+        hw.features[feature] = enabled
+        self._hw_step_soon()
+
+    def _hw_step_soon(self) -> None:
+        if self.started is not None:
+            self.entry.async_create_background_task(
+                self.hass,
+                self._async_hotwater_step(dt_util.utcnow(), sample=False),
+                "nibepi hot water",
+            )
+
+    async def _async_load_vv_store(self) -> None:
+        try:
+            data = await self.vv_store.async_load()
+        except Exception:  # noqa: BLE001 - a broken file must not stop setup
+            _LOGGER.exception("Could not load the learned hot water profile; starting empty")
+            data = None
+        self.hotwater.controller.profile = VvProfile.from_dict(data)
+        self.hotwater.store_loaded = True
+
+    def _save_vv_store(self) -> None:
+        hw = self.hotwater
+        # Looked up at write time: an import replaces the profile object.
+        self.vv_store.async_delay_save(lambda: hw.controller.profile.to_dict(), VV_STORE_SAVE_DELAY)
+
+    def _hw_settings(self) -> HotWaterSettings:
+        return HotWaterSettings(
+            learning_rate=self.opt(OPT_HW_LEARNING_RATE),
+            min_drop=self.opt(OPT_HW_MIN_DROP),
+            plan=PlanSettings.from_values(
+                day_small=self.opt(OPT_HW_DAY_SMALL),
+                day_medium=self.opt(OPT_HW_DAY_MEDIUM),
+                day_large=self.opt(OPT_HW_DAY_LARGE),
+                peak_threshold=self.opt(OPT_HW_PEAK),
+                preheat_hours=self.opt(OPT_HW_PREHEAT),
+                use_price=bool(self.opt(OPT_HW_USE_PRICE)),
+                price_window_hours=self.opt(OPT_HW_PRICE_WINDOW),
+            ),
+            floor_enabled=bool(self.opt(OPT_HW_MIN_TEMP_ENABLE)),
+            floor_temp=to_float(self.opt(OPT_HW_MIN_TEMP)),
+            autolux_diff=self.opt(OPT_HW_AUTOLUX_DIFF),
+            autolux_time=self.opt(OPT_HW_AUTOLUX_TIME),
+            comfort={level: self.opt(key) for level, key in HW_COMFORT_OPTIONS.items()},
+            sensor_timeout=self.opt(OPT_SENSOR_TIMEOUT),
+        )
+
+    async def _async_hotwater_step(self, now: datetime, sample: bool = True) -> None:
+        """Learn, decide and publish the hot water leases for this tick.
+
+        ``sample`` False (a switch or mode change between ticks) decides
+        again without feeding the per-minute learning and automatic luxury
+        samples.
+        """
+        hw = self.hotwater
+        in_grace = self.started is not None and now - self.started < STARTUP_GRACE
+        async with hw.lock:
+            try:
+                if not hw.store_loaded:
+                    raise RuntimeError("learned profile not loaded")
+                if hw.mode != MODE_OFF and self.price_level_at != now:
+                    try:
+                        self.price_level = self._price_level(now)
+                    except Exception:  # noqa: BLE001 - bad price attributes: no level
+                        _LOGGER.exception("Could not compute the price level")
+                        self.price_level = None
+                    self.price_level_at = now
+                level = self.price_level
+                inputs = HotWaterInputs(
+                    now=now,
+                    tz=_local_tz(),
+                    readings=dict(self.readings),
+                    price_level=level.level if level is not None else None,
+                    price_slots=list(self.price_slots),
+                    held=hw.leases.held(),
+                )
+                settings = self._hw_settings()
+                learning = hw.mode != MODE_OFF and (
+                    hw.features.get("learning", False) or hw.features.get("vv_control", False)
+                )
+                if sample and hw.controller.learn(inputs, settings, learning):
+                    self._save_vv_store()
+                event = hw.controller.last_event
+                if event is not None and hw.controller.last_event_at == now:
+                    _LOGGER.debug(
+                        "Hot water draw %s: %.1f °C over %d min (%.2f °C/h, %s)",
+                        event.verdict, event.span, event.minutes, event.rate, event.reason,
+                    )
+                hw.decision = hw.controller.decide(hw.mode, hw.features, inputs, settings, sample)
+                hw.healthy = True
+                hw.error = None
+            except Exception as err:  # noqa: BLE001 - release, the gateway restores
+                _LOGGER.exception("NibePi hot water tick failed")
+                hw.healthy = False
+                hw.error = repr(err)
+                hw.controller.reset_control()
+            hw.last_tick = now
+            for lease, action in hw.leases.decide(hw.mode, hw.decision, hw.healthy, in_grace):
+                if await self._async_publish_lease(lease, action):
+                    hw.last_actions[lease.register] = "%s %s" % (
+                        action.kind, "" if action.value is None else action.value
+                    )
+        self._notify()
+
     async def _async_tick_cb(self, _now: datetime) -> None:
         await self.async_tick()
 
@@ -434,6 +612,7 @@ class NibePiRuntime:
             if action is not None:
                 await self._async_send(sys, action)
             await self._async_rmu_step(sys, now)
+        await self._async_hotwater_step(now)
         self._notify()
 
     async def _async_rmu_step(self, sys: SystemRuntime, now: datetime) -> None:
@@ -461,21 +640,27 @@ class NibePiRuntime:
         self, sys: SystemRuntime, action: LeaseAction, lease: Optional[LeaseManager] = None
     ) -> None:
         lease = lease or sys.lease
+        if not await self._async_publish_lease(lease, action):
+            return
+        text = "%s %s" % (action.kind, "" if action.value is None else action.value)
+        if lease is sys.rmu_lease:
+            sys.rmu_last_action = text
+        else:
+            sys.last_action = text
+
+    async def _async_publish_lease(self, lease: LeaseManager, action: LeaseAction) -> bool:
+        """Publish a lease request and record it; False if it failed."""
         reg = lease.register
         topic = "lease/%d/%s" % (reg, "set" if action.kind == "set" else "release")
         try:
             await self._publish(topic, json.dumps(action.payload(lease.ttl, OWNER)))
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Could not publish %s%s", self.prefix, topic, exc_info=True)
-            return
+            return False
         lease.record(action)
-        text = "%s %s" % (action.kind, "" if action.value is None else action.value)
-        if lease is sys.rmu_lease:
-            sys.rmu_last_action = text
-        else:
-            sys.last_action = text
         if not action.renew:
             _LOGGER.info("NibePi %s: lease %s %s", reg, action.kind, action.value)
+        return True
 
     def _compute(self, sys: SystemRuntime, now: datetime) -> None:
         if sys.mode == MODE_OFF:
@@ -487,6 +672,7 @@ class NibePiRuntime:
         setpoint = self._setpoint(sys)
         try:
             self.price_level = self._price_level(now)
+            self.price_level_at = now
         except Exception:  # noqa: BLE001 - bad price attributes: no level
             _LOGGER.exception("Could not compute the price level")
             self.price_level = None
@@ -596,6 +782,7 @@ class NibePiRuntime:
             slots = normalize_prices(attributes, _local_tz(), now)
             self.price_status = "ok" if slots else "no prices in %s" % entity_id
         slots = self.price_cache.update(slots, now)
+        self.price_slots = slots
         return compute_level(
             slots,
             now,

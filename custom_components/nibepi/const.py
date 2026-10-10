@@ -80,6 +80,64 @@ PRICE_LEVEL_OPTIONS = {
     "VERY_EXPENSIVE": "price_very_expensive",
 }
 
+# Options: hot water (shared). Defaults are Node-RED's (config_node.js,
+# default.json); see docs/hotwater.md for the exceptions.
+OPT_HW_LEARNING_RATE = "hw_learning_rate"
+OPT_HW_MIN_DROP = "hw_min_drop"
+OPT_HW_DAY_SMALL = "hw_day_small"
+OPT_HW_DAY_MEDIUM = "hw_day_medium"
+OPT_HW_DAY_LARGE = "hw_day_large"
+OPT_HW_PEAK = "hw_peak_threshold"
+OPT_HW_PREHEAT = "hw_preheat_hours"
+OPT_HW_USE_PRICE = "hw_use_price"
+OPT_HW_PRICE_WINDOW = "hw_price_window"
+OPT_HW_MIN_TEMP_ENABLE = "hw_min_temp_enable"
+OPT_HW_MIN_TEMP = "hw_min_temp"
+OPT_HW_AUTOLUX_DIFF = "hw_autolux_diff"
+OPT_HW_AUTOLUX_TIME = "hw_autolux_time"
+
+HW_COMFORT_OPTIONS = {
+    "VERY_CHEAP": "hw_comfort_very_cheap",
+    "CHEAP": "hw_comfort_cheap",
+    "NORMAL": "hw_comfort_normal",
+    "EXPENSIVE": "hw_comfort_expensive",
+    "VERY_EXPENSIVE": "hw_comfort_very_expensive",
+}
+
+HW_DEFAULTS: Dict[str, Any] = {
+    OPT_HW_LEARNING_RATE: 10,
+    OPT_HW_MIN_DROP: 3.0,
+    OPT_HW_DAY_SMALL: 1.0,
+    OPT_HW_DAY_MEDIUM: 3.0,
+    OPT_HW_DAY_LARGE: 6.0,
+    OPT_HW_PEAK: 3.0,
+    OPT_HW_PREHEAT: 2,
+    OPT_HW_USE_PRICE: False,
+    OPT_HW_PRICE_WINDOW: 7,
+    OPT_HW_MIN_TEMP_ENABLE: True,
+    OPT_HW_MIN_TEMP: 35.0,
+    OPT_HW_AUTOLUX_DIFF: 20.0,
+    OPT_HW_AUTOLUX_TIME: 10,
+    "hw_comfort_very_cheap": "2",
+    "hw_comfort_cheap": "1",
+    "hw_comfort_normal": "0",
+    "hw_comfort_expensive": "0",
+    "hw_comfort_very_expensive": "0",
+}
+
+# The learned hot water profile (homeassistant.helpers.storage).
+VV_STORE_VERSION = 1
+VV_STORE_SAVE_DELAY = 30  # seconds; a learned draw or a new day saves
+SERVICE_IMPORT_VV_PROFILE = "import_vv_profile"
+ATTR_PATH = "path"
+ATTR_CONFIG_ENTRY_ID = "config_entry_id"
+VV_IMPORT_MAX_BYTES = 1_000_000
+
+
+def vv_store_key(entry_id: str) -> str:
+    return "%s_vv_profile_%s" % (DOMAIN, entry_id)
+
+
 SHARED_DEFAULTS: Dict[str, Any] = {
     OPT_SENSOR_TIMEOUT: 60,
     OPT_PRICE_UNIT_FACTOR: 100.0,
@@ -96,6 +154,7 @@ SHARED_DEFAULTS: Dict[str, Any] = {
     OPT_SUN_ENABLE: False,
     OPT_SUN_CLEAR: 0.0,
     OPT_SUN_HALF_CLEAR: 0.0,
+    **HW_DEFAULTS,
 }
 
 SYSTEM_DEFAULTS: Dict[str, Any] = {
