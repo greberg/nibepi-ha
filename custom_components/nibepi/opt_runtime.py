@@ -8,6 +8,7 @@ entities. See docs/optimizer.md in the workspace for the design.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -16,7 +17,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_call_later, async_track_time_change
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -25,6 +27,11 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from homeassistant.components import mqtt
 
 from .const import (
+    OPT_HOUSE_AREA,
+    OPT_HOUSE_CONSTRUCTION,
+    OPT_HOUSE_ERA,
+    OPT_HOUSE_FLOORS,
+    OPT_HOUSE_SENSORS,
     OPT_INDOOR_ENTITY,
     OPT_METER_ENTITY,
     OPT_SENSOR_TIMEOUT,
@@ -37,10 +44,12 @@ from .const import (
     REG_HEAT_METER,
     REG_HW_METER,
     REG_OUTDOOR,
+    UNKNOWN,
     opt_store_key,
+    signal_update,
 )
 from .logic.hwcontrol import REG_BT6, REG_PRIO
-from .logic.inputs import Reading, state_timestamp, state_value, usable
+from .logic.inputs import Reading, state_timestamp, state_value, to_float, usable
 from .logic.opthistory import (
     BOOTSTRAP_DAYS,
     PRIO_HEAT,
@@ -59,6 +68,8 @@ from .logic.opthistory import (
     retention_start,
 )
 from .logic.optimizer.meter import MeterConfig, MeterReading
+from .logic.optimizer.profile import HouseProfile
+from .logic.optrun import Models, SystemSetup, fit_all, models_for
 
 if TYPE_CHECKING:
     from .runtime import NibePiRuntime
@@ -67,6 +78,9 @@ _LOGGER = logging.getLogger(__name__)
 
 DISCOVERY_TOPIC = "homeassistant/device/+/config"
 BOOTSTRAP_DELAY_S = 60
+FIT_DELAY_S = 600  # first fit after start (after the history import)
+FIT_TIME = (3, 15)  # nightly, local time
+DEFAULT_TARGET = 21.0
 # Live samples: a register value older than this is left out of the bin.
 SAMPLE_MAX_AGE_MIN = 30.0
 METER_BUFFER = timedelta(hours=2)
@@ -147,6 +161,12 @@ class OptimizerRuntime:
         self.bootstrap_running = False
         self._logged: set = set()
         self._unsubs: List[Callable[[], None]] = []
+        # Fits: the persisted dict (``optrun.fit_all``) and the models built
+        # from it per system.
+        self.fits: Dict[str, Any] = {}
+        self.models: Dict[str, Models] = {}
+        self.fit_running = False
+        self.fit_error: Optional[str] = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -154,10 +174,15 @@ class OptimizerRuntime:
         await self._async_load()
         self._unsubs.append(await mqtt.async_subscribe(self.hass, DISCOVERY_TOPIC, self._on_discovery))
         self._unsubs.append(async_at_started(self.hass, self._started))
+        self._unsubs.append(
+            async_track_time_change(self.hass, self._fit_cb, hour=FIT_TIME[0], minute=FIT_TIME[1], second=0)
+        )
+        self.refresh_models()
 
     @callback
     def _started(self, _hass: Any) -> None:
         self._unsubs.append(async_call_later(self.hass, BOOTSTRAP_DELAY_S, self._bootstrap_cb))
+        self._unsubs.append(async_call_later(self.hass, FIT_DELAY_S, self._fit_cb))
 
     async def async_stop(self) -> None:
         while self._unsubs:
@@ -168,10 +193,15 @@ class OptimizerRuntime:
     async def async_options_updated(self) -> None:
         # A new indoor sensor or meter may have history to import.
         self.meter_buffer = []
+        self.refresh_models()
         if self.loaded and not self.bootstrap_running:
             self.rt.entry.async_create_background_task(
-                self.hass, self.async_bootstrap(), "nibepi optimiser history import"
+                self.hass, self._async_import_and_fit(), "nibepi optimiser history import"
             )
+
+    async def _async_import_and_fit(self) -> None:
+        await self.async_bootstrap()
+        await self.async_fit()
 
     async def _async_load(self) -> None:
         try:
@@ -188,13 +218,15 @@ class OptimizerRuntime:
         self.loaded = True
 
     def _load_extra(self, data: Dict[str, Any]) -> None:
-        """Hook for the fitted models and savings (later sections)."""
+        fits = data.get("fits")
+        self.fits = fits if isinstance(fits, dict) else {}
 
     def _store_data(self) -> Dict[str, Any]:
         return {
             "log": self.log.to_dict(),
             "imported": dict(self.imported),
             "bootstrap_at": self.bootstrap_at,
+            "fits": self.fits,
         }
 
     def save_soon(self) -> None:
@@ -428,3 +460,78 @@ class OptimizerRuntime:
                 "NibePi optimiser: history imported, %d bins of %d min", len(self.log), STEP_S // 60
             )
             await self.store.async_save(self._store_data())
+
+    # -- house profile and fitting --------------------------------------------
+
+    def profile(self, system: str) -> HouseProfile:
+        rt = self.rt
+        config = self.hass.config
+        floors = to_float(rt.opt(OPT_HOUSE_FLOORS)) or 1.5
+        era = rt.opt(OPT_HOUSE_ERA)
+        construction = rt.opt(OPT_HOUSE_CONSTRUCTION)
+        sensors = to_float(rt.opt(OPT_HOUSE_SENSORS)) or 1
+        sys = rt.systems.get(system)
+        target = rt._setpoint(sys) if sys is not None else None
+        return HouseProfile(
+            floor_area_m2=to_float(rt.opt(OPT_HOUSE_AREA)) or 150.0,
+            floors=floors,
+            target_temp=target if target is not None else DEFAULT_TARGET,
+            era=None if era in (None, UNKNOWN) else str(era),
+            construction=None if construction in (None, UNKNOWN) else str(construction),
+            indoor_sensors=int(sensors),
+            latitude=config.latitude,
+            longitude=config.longitude,
+            elevation_m=float(config.elevation or 0),
+            time_zone=str(config.time_zone),
+        )
+
+    def setup(self, system: str) -> SystemSetup:
+        sys = self.rt.systems[system]
+        return SystemSetup(system, self.profile(system), self.rt._value(sys.registers["curve"]) or 0.0)
+
+    def refresh_models(self) -> None:
+        """Rebuild the models from the stored fits and the current options."""
+        models: Dict[str, Models] = {}
+        for system in self.rt.systems:
+            try:
+                models[system] = models_for(self.setup(system), self.fits)
+            except Exception:  # noqa: BLE001 - keep the previous models
+                _LOGGER.exception("NibePi optimiser: could not build the %s models", system)
+                if system in self.models:
+                    models[system] = self.models[system]
+        self.models = models
+
+    @callback
+    def _fit_cb(self, _now: Any) -> None:
+        self.rt.entry.async_create_background_task(self.hass, self.async_fit(), "nibepi optimiser fit")
+
+    async def async_fit(self) -> None:
+        """Fit all models in an executor job and keep the result."""
+        if self.fit_running or not self.loaded:
+            return
+        self.fit_running = True
+        try:
+            for _ in range(40):  # the history import may still be running
+                if not self.bootstrap_running:
+                    break
+                await asyncio.sleep(30)
+            now = dt_util.utcnow()
+            rows = self.log.snapshot(since=now.timestamp() - BOOTSTRAP_DAYS * 86400)
+            setups = [self.setup(system) for system in self.rt.systems]
+            fits = await self.hass.async_add_executor_job(fit_all, rows, setups, now)
+            self.fits = fits
+            self.fit_error = None
+            self.refresh_models()
+            for system, models in self.models.items():
+                fit = models.fit
+                _LOGGER.info(
+                    "NibePi optimiser %s: house model %s (%s, confidence %.2f, sim RMSE %.2f °C, %d h)",
+                    system, "fitted" if fit.ok else "prior", fit.reason, fit.confidence, fit.sim_rmse, fit.samples,
+                )
+            await self.store.async_save(self._store_data())
+        except Exception as err:  # noqa: BLE001 - keep the previous fits
+            _LOGGER.exception("NibePi optimiser: fitting failed")
+            self.fit_error = repr(err)
+        finally:
+            self.fit_running = False
+        async_dispatcher_send(self.hass, signal_update(self.rt.entry.entry_id))
