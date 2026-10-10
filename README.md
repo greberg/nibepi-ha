@@ -84,8 +84,10 @@ Shared:
 | Option | Default | Notes |
 |---|---|---|
 | Sensor timeout | 60 min | 0 disables the check (as `config.home.sensor_timeout`) |
-| Price sensor | - | see below |
-| Price unit factor | 100 | to öre: 100 for SEK/kWh, 1 for öre/kWh |
+| Price source | Tibber | `tibber_action` (Tibber integration) or `entity_attributes` (price sensor), see below |
+| Tibber home | - | nickname of the home in the Tibber app; only needed with several homes |
+| Price sensor | - | only for the `entity_attributes` source |
+| Price unit factor | 100 | to öre: 100 for SEK/kWh (Tibber), 1 for öre/kWh |
 | Price analysis window | 12 h | `config.price.time` |
 | Minimum spread | 20 öre | `config.price.min_spread` |
 | Own thresholds | - | both set: replaces the optimiser's level (`verycheap` / `veryexpensive`) |
@@ -98,7 +100,7 @@ Per climate system:
 
 | Option | Default | Notes |
 |---|---|---|
-| Indoor sensor | pump's BT50 | any HA temperature sensor; staleness from its last report |
+| Indoor sensor | pump's BT50 | a room temperature sensor such as Netatmo (recommended), see below |
 | Setpoint | 20.0 °C | or an `input_number`/`number` entity |
 | Indoor factor | 2.0 | Nibe's default for menu 1.9.4 |
 | Offsets per price level | 0 | `heat_very_cheap_sN` ... `heat_very_expensive_sN` |
@@ -108,9 +110,34 @@ Per climate system:
 The defaults are Node-RED's. When migrating, copy your values from the
 gateway's `config.json` (`price`, `weather`, `indoor`, `home` sections).
 
-### Price sensors
+### Prices from Tibber (default)
 
-The price sensor's attributes are read every minute. Supported:
+The official Tibber integration has no price-list attributes; prices are
+fetched with its `tibber.get_prices` action.
+
+1. Settings -> Devices & services -> *Add integration* -> **Tibber**, and
+   sign in.
+2. In NibePi's **Configure** dialog, choose the price source *Tibber
+   integration*. With several homes on the Tibber account, enter the home's
+   nickname from the Tibber app (otherwise the first home is used and a
+   warning is logged).
+3. Keep the price unit factor at 100: Tibber prices are the total
+   (energy + tax) in currency/kWh, e.g. SEK/kWh.
+
+The action is called for today 00:00 through tomorrow 24:00 local time:
+on start, at every new hour, every 15 minutes while no price covers the
+current time, and every 15 minutes from 13:00 until tomorrow's prices are
+published. Calls run in the background; the tick uses the last good list
+for as long as it covers the current hour. Problems (action missing,
+timeout, unknown home) show in the *Price level* sensor's `price_status`
+attribute and the log, and a missing Tibber integration raises a repair
+issue. Tibber returns 15-minute prices; they are averaged into hours as
+below.
+
+### Prices from a price sensor
+
+With the source *Price sensor attributes*, the price sensor's attributes
+are read every minute. Supported:
 
 - **Nordpool (HACS)**: `raw_today` / `raw_tomorrow`, lists of
   `{start, end, value}`.
@@ -118,9 +145,27 @@ The price sensor's attributes are read every minute. Supported:
   day: 24 hourly, 96 quarter-hour, and 23/25 or 92/100 values on DST days.
 - **Tibber style**: any attribute holding a list of `{startsAt, total}`.
 
+Entries configured with a price sensor before the price source option
+existed keep using it.
+
 Slots are never assumed to be hourly (Nordic day-ahead prices have been
 15-minute since 2025-10-01). As in NibePi, they are averaged into hours
 before the level is computed.
+
+### Indoor temperature from Netatmo
+
+A room sensor gives the indoor controller a better value than the pump's
+BT50 (or replaces a missing one). With the Netatmo integration set up,
+pick the indoor module's temperature sensor (e.g.
+`sensor.<room>_temperature`) as *Indoor temperature sensor* for each
+climate system. Left empty, the pump's BT50 register is used instead.
+
+Netatmo polls the cloud about every 10 minutes and often reports an
+unchanged value, which does not move the entity's `last_updated`. The
+sensor timeout is therefore checked against `last_reported` (Home
+Assistant 2024.3+), so a steady temperature is not taken for a stale one.
+`unavailable` and `unknown` count as missing: the indoor part, and the
+price guard that needs it, contribute 0 until the sensor is back.
 
 ## Entities
 
@@ -136,7 +181,9 @@ Per system (`S1`, `S2`):
 - `sensor` Lease (active / grace / restoring / inactive / error; attributes:
   expires, owner, written, baseline, error)
 
-Shared: `sensor` Price level, `binary_sensor` Gateway (online/offline
+Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
+price_source, price_status, and for Tibber tibber_home and
+prices_fetched), `binary_sensor` Gateway (online/offline
 from `<prefix>status`, with `gateway/state` as attributes).
 
 ## Migrating from Node-RED
