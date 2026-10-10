@@ -20,9 +20,10 @@ adjustment (`config.home.adjust_sN`), clamped to ±10 and rounded. A new
 value is only chosen when the total moves more than 0.75 away from the
 current one (`curveAdjust`).
 
-Phase 1 of the migration: curve offset only, default mode **shadow**.
-Separately, it can feed a room temperature to the pump's virtual RMU40
-room unit (see [Room temperature to the pump](#room-temperature-to-the-pump-rmu40)).
+Default mode **shadow**. Separately, it can feed a room temperature to
+the pump's virtual RMU40 room unit (see [Room temperature to the
+pump](#room-temperature-to-the-pump-rmu40)), and control hot water with a
+learned draw profile (see [Hot water](#hot-water-and-vv-learning)).
 
 ## Safety model
 
@@ -241,6 +242,83 @@ and the heating overshoots. Use one of them:
   sensor* off in the pump. The RMU40 feed can then stay on for the display
   only.
 
+## Hot water and VV learning
+
+Ported from NibePi's Node-RED VV-AI and hot water nodes; what it does, and
+where it deliberately differs, is in [docs/hotwater.md](docs/hotwater.md).
+It has its own **Hot water mode** select (`off` / `shadow` (default) /
+`active`), separate from the curve-offset modes, and a switch per feature:
+
+| Switch | Default | What it does | Registers |
+|---|---|---|---|
+| Hot water learning | on | Learns a weekly draw profile from BT6 (in shadow and active) | none |
+| Hot water VV-AI control | off | Holds the hot water period at 0 and starts charges itself before the learned draws, to the stop temperature of the day's mode; a min-temp floor on BT7 | 47134, 48132 |
+| Hot water automatic luxury | off | A one-time increase when BT6 falls fast | 48132 |
+| Hot water priority | off | A one-time increase when BT7 reaches the start temperature | 48132 |
+| Hot water comfort mode by price | off | Comfort mode (economy/normal/luxury) per price level | 47041 |
+
+Automatic luxury or priority on makes VV-AI control stand aside, as in
+Node-RED. One controller owns the three registers and writes them through
+leases (`ttl` 900 s, renewed every 5 minutes):
+
+- 48132 temporary lux is leased at 4 only while a charge is wanted, and
+  released (the gateway writes 0) when it ends.
+- 47134 hot water period is leased at 0 only while VV-AI control is in
+  charge; otherwise it is released and the gateway restores the value it
+  read before (the baseline). VV-AI control will not start while the
+  pump's period reads 0 (the gateway would capture 0 and restore it), nor
+  without the stop temperatures, nor with nothing learned and the floor
+  off.
+- 47041 comfort mode is released (baseline) when the price for the
+  current hour is missing or the level's setting is *Unchanged*.
+- A stale or missing BT6/BT7 (sensor timeout), a failed tick, mode
+  `shadow`/`off`, or unloading the integration releases the leases at
+  once. If Home Assistant goes away, they expire after 15 minutes.
+
+Registers read (and added to the gateway's polling): BT7 40013, BT6
+40014, prio 43086, 47041, 47134, 48132, and the start/stop temperatures
+47043-47045 / 47047-47049.
+
+The learned profile is stored in `.storage/nibepi_vv_profile_<entry id>`
+(debounced saves, survives restarts, removed with the integration). Its
+168 hours are local wall-clock time (DST-safe). Plans use the configured
+price source in its own slot length (15-minute or hourly).
+
+Options (**Configure** -> last step, *Hot water*), with Node-RED's
+defaults: learning rate 10, smallest draw 3 °C, day sums for economy /
+normal / luxury 1 / 3 / 6 °C, second peak threshold 3 °C, heating window
+2 h, heat in the cheapest hours off, price search window 7 h, min-temp
+floor on at 35 °C (Node-RED: off), automatic luxury 20 °C within 10
+minutes, comfort mode per price level very cheap luxury, cheap normal,
+the rest economy.
+
+### Bringing over the Node-RED profile
+
+Node-RED's VV-AI kept what it learned in `/etc/nibepi/vv_ai_profile.json`
+inside its container, i.e. in the folder the Pi mounted there (often
+`~/nibepi/etc/nibepi/` or `/opt/nibepi/etc/nibepi/`; old bare installs:
+`~/.node-red/node_modules/node-red-contrib-nibepi/vv_ai_profile.json`).
+Removing the container kept that folder.
+
+1. On the Pi, find the file:
+
+   ```sh
+   docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/nibepi"}}{{.Source}}{{end}}{{end}}' nibepi  # if the container still exists
+   ls -l ~/nibepi/etc/nibepi/vv_ai_profile.json
+   ```
+
+2. Copy it into Home Assistant's configuration directory, e.g. to
+   `/config/nibepi/vv_ai_profile.json` (Samba share, or from the Pi with
+   `scp ~/nibepi/etc/nibepi/vv_ai_profile.json root@<ha>:/config/nibepi/`
+   through the *Terminal & SSH* add-on).
+3. Developer tools -> Actions -> **NibePi: Import Node-RED hot water
+   profile** (`nibepi.import_vv_profile`) with `path:
+   nibepi/vv_ai_profile.json`. The response lists the learned hours; the
+   *Hot water next expected draw* sensor shows them in `top_slots`.
+
+Only paths inside the configuration directory are accepted. The import
+replaces the current profile; days since Node-RED stopped are not decayed.
+
 ## Entities
 
 Per system (`S1`, `S2`):
@@ -264,6 +342,22 @@ Per system (`S1`, `S2`):
 Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
 price_source, price_status, and for Tibber tibber_home and
 prices_fetched), `binary_sensor` Gateway (online/offline, see below).
+
+Hot water:
+
+- `select` Hot water mode
+- `switch` Hot water learning, VV-AI control, automatic luxury, priority,
+  comfort mode by price
+- `sensor` Hot water planned action (off / fault / idle / heat_now /
+  block / economy / normal / luxury; attributes: reasons per feature,
+  targets per register, next_heat_start, closed_until, plan_24h, inputs,
+  last_actions)
+- `sensor` Hot water next expected draw (timestamp; attributes:
+  confidence (the hour's learned value relative to the largest), slot,
+  expected_drop, learned_draws, last_learned, last_event, day_sums,
+  top_slots, imported_from, profile)
+- `sensor` Hot water comfort mode lease (47041), Hot water period lease
+  (47134), Temporary lux lease (48132), as the lease sensors above
 
 The Gateway sensor is on when `<prefix>status` says `online` or a live
 `gateway/state` arrived in the last 3 minutes, and off when the status
@@ -295,7 +389,8 @@ and weather, so all three are controlled together.
 5. Optionally set the gateway's `NIBEPI_RAW_SET=none`, so only leases can
    write to the pump.
 
-Later phases move hot water and a cost optimiser into this integration.
+Hot water starts the same way: `shadow`, watch *Hot water planned action*
+for a few days, then `active`.
 The Node-RED version of NibePi is kept under the `nodered-final` tag of
 the NibePi repositories.
 
