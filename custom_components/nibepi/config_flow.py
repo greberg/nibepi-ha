@@ -14,6 +14,10 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
 )
 
 from .const import (
@@ -27,6 +31,7 @@ from .const import (
     OPT_INDOOR_FACTOR,
     OPT_PRICE_ENTITY,
     OPT_PRICE_GUARD,
+    OPT_PRICE_SOURCE,
     OPT_PRICE_MIN_SPREAD,
     OPT_PRICE_TEMP_LOW,
     OPT_PRICE_TIME_WINDOW,
@@ -39,6 +44,7 @@ from .const import (
     OPT_SUN_CLEAR,
     OPT_SUN_ENABLE,
     OPT_SUN_HALF_CLEAR,
+    OPT_TIBBER_HOME,
     OPT_WEATHER_ADJUST,
     OPT_WEATHER_DOWN,
     OPT_WEATHER_ENTITY,
@@ -50,8 +56,10 @@ from .const import (
     OPT_WIND_S,
     OPT_WIND_W,
     PRICE_LEVEL_OPTIONS,
+    PRICE_SOURCES,
     SHARED_DEFAULTS,
     SYSTEM_DEFAULTS,
+    price_source,
     system_key,
 )
 
@@ -59,6 +67,7 @@ CONF_USE_S2 = "use_s2"
 
 # Shared options that may be left empty.
 SHARED_OPTIONAL = (
+    OPT_TIBBER_HOME,
     OPT_PRICE_ENTITY,
     OPT_PRICE_VERY_CHEAP_BELOW,
     OPT_PRICE_VERY_EXPENSIVE_ABOVE,
@@ -76,6 +85,11 @@ def _number(low: float, high: float, step: float) -> NumberSelector:
 OFFSET = _number(-10, 10, 0.5)
 FACTOR = _number(0, 10, 0.1)
 BOOL = BooleanSelector()
+PRICE_SOURCE = SelectSelector(
+    SelectSelectorConfig(
+        options=list(PRICE_SOURCES), mode=SelectSelectorMode.LIST, translation_key="price_source"
+    )
+)
 
 
 def _optional(key: str, current: Dict[str, Any]) -> vol.Optional:
@@ -143,6 +157,8 @@ class NibePiOptionsFlow(OptionsFlow):
         schema = vol.Schema(
             {
                 _required(OPT_SENSOR_TIMEOUT, current, SHARED_DEFAULTS): _number(0, 1440, 1),
+                vol.Required(OPT_PRICE_SOURCE, default=price_source(current)): PRICE_SOURCE,
+                _optional(OPT_TIBBER_HOME, current): TextSelector(),
                 _optional(OPT_PRICE_ENTITY, current): EntitySelector(EntitySelectorConfig(domain="sensor")),
                 _required(OPT_PRICE_UNIT_FACTOR, current, SHARED_DEFAULTS): _number(0.001, 100000, 0.001),
                 _required(OPT_PRICE_TIME_WINDOW, current, SHARED_DEFAULTS): _number(1, 48, 1),

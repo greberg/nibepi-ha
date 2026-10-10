@@ -27,7 +27,9 @@
         "title": "Elpris, prognos och givare",
         "data": {
           "sensor_timeout": "Givartimeout (min, 0 = aldrig inaktuell)",
-          "price_entity": "Elprissensor",
+          "price_source": "Priskälla",
+          "tibber_home": "Tibber-hem (tomt = det enda)",
+          "price_entity": "Elprissensor (för källan entitetsattribut)",
           "price_unit_factor": "Faktor från prisets enhet till öre",
           "price_time_window": "Tidshorisont för prisanalys (h)",
           "price_min_spread": "Minsta prisskillnad (öre)",
@@ -48,8 +50,10 @@
         },
         "data_description": {
           "sensor_timeout": "Ett inne- eller utevärde som är äldre än så räknas som saknat och dess del blir 0.",
-          "price_entity": "Nordpool (raw_today/raw_tomorrow eller today/tomorrow) eller Tibber-liknande attribut ({startsAt, total}).",
-          "price_unit_factor": "100 när sensorn är i kr/kWh, 1 när den är i öre/kWh.",
+          "price_source": "Tibber: Tibber-integrationens åtgärd tibber.get_prices. Entitetsattribut: en Nordpool- eller liknande prissensor.",
+          "tibber_home": "Hemmets smeknamn i Tibber-appen. Behövs bara när Tibber-kontot har flera hem.",
+          "price_entity": "Nordpool (raw_today/raw_tomorrow eller today/tomorrow) eller Tibber-liknande attribut ({startsAt, total}). Används bara med källan entitetsattribut.",
+          "price_unit_factor": "100 när priserna är i kr/kWh (Tibber, de flesta sensorer), 1 när de är i öre/kWh.",
           "price_very_cheap_below": "Ange båda gränserna för att ersätta optimerarens nivå."
         }
       },
@@ -152,6 +156,20 @@
       "gateway_online": {
         "name": "Gateway"
       }
+    }
+  },
+  "selector": {
+    "price_source": {
+      "options": {
+        "tibber_action": "Tibber-integrationen (tibber.get_prices)",
+        "entity_attributes": "Prissensorns attribut (Nordpool och liknande)"
+      }
+    }
+  },
+  "issues": {
+    "tibber_missing": {
+      "title": "Tibber-priser är inte tillgängliga",
+      "description": "NibePi ska läsa elpriser med åtgärden tibber.get_prices, men Tibber-integrationen är inte konfigurerad eller inte laddad. Lägg till Tibber-integrationen eller välj en annan priskälla i NibePis alternativ. Tills dess bidrar prisdelen med 0."
     }
   }
 }

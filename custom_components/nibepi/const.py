@@ -32,6 +32,8 @@ FORECAST_REFRESH_SECONDS = 30 * 60
 
 # Options: shared
 OPT_SENSOR_TIMEOUT = "sensor_timeout"
+OPT_PRICE_SOURCE = "price_source"
+OPT_TIBBER_HOME = "tibber_home"
 OPT_PRICE_ENTITY = "price_entity"
 OPT_PRICE_UNIT_FACTOR = "price_unit_factor"
 OPT_PRICE_TIME_WINDOW = "price_time_window"
@@ -59,6 +61,12 @@ OPT_INDOOR_FACTOR = "indoor_factor"
 OPT_PRICE_GUARD = "price_guard"
 OPT_PRICE_TEMP_LOW = "price_temp_low"
 OPT_WEATHER_HOURS = "weather_hours"
+PRICE_SOURCE_TIBBER = "tibber_action"
+PRICE_SOURCE_ENTITY = "entity_attributes"
+PRICE_SOURCES = (PRICE_SOURCE_TIBBER, PRICE_SOURCE_ENTITY)
+
+ISSUE_TIBBER_MISSING = "tibber_missing"
+
 PRICE_LEVEL_OPTIONS = {
     "VERY_CHEAP": "price_very_cheap",
     "CHEAP": "price_cheap",
@@ -97,6 +105,18 @@ SYSTEM_DEFAULTS: Dict[str, Any] = {
     "price_expensive": 0.0,
     "price_very_expensive": 0.0,
 }
+
+
+def price_source(options: Dict[str, Any]) -> str:
+    """The configured price source.
+
+    Entries set up before the option existed keep reading their price
+    entity; everything else defaults to the Tibber action.
+    """
+    source = options.get(OPT_PRICE_SOURCE)
+    if source in PRICE_SOURCES:
+        return str(source)
+    return PRICE_SOURCE_ENTITY if options.get(OPT_PRICE_ENTITY) else PRICE_SOURCE_TIBBER
 
 
 def system_key(key: str, system: str) -> str:

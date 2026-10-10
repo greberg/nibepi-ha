@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NibePiConfigEntry
-from .const import COMPONENTS
+from .const import COMPONENTS, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
 from .logic.price import LEVELS
 from .runtime import NibePiRuntime, SystemRuntime
@@ -181,12 +181,22 @@ class PriceLevelSensor(NibePiEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        level = self.runtime.price_level
-        if level is None:
-            return {}
-        return {
-            "price_ore": round(level.price, 2),
-            "hour_start": _iso(level.hour_start),
-            "source": level.reason,
-            "levels": level.levels,
+        runtime = self.runtime
+        attrs: Dict[str, Any] = {
+            "price_source": price_source(dict(runtime.entry.options)),
+            "price_status": runtime.price_status,
         }
+        if attrs["price_source"] == PRICE_SOURCE_TIBBER:
+            attrs["tibber_home"] = runtime.tibber_home
+            attrs["prices_fetched"] = _iso(runtime.tibber_fetched)
+        level = runtime.price_level
+        if level is not None:
+            attrs.update(
+                {
+                    "price_ore": round(level.price, 2),
+                    "hour_start": _iso(level.hour_start),
+                    "source": level.reason,
+                    "levels": level.levels,
+                }
+            )
+        return attrs

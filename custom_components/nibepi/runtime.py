@@ -6,6 +6,7 @@ moves data between Home Assistant, MQTT and those modules.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceNotFound
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import sun as sun_helper
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -31,6 +34,7 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
     FORECAST_REFRESH_SECONDS,
+    ISSUE_TIBBER_MISSING,
     MANUFACTURER,
     OPT_INDOOR_ENTITY,
     OPT_INDOOR_FACTOR,
@@ -58,21 +62,35 @@ from .const import (
     OPT_WIND_N,
     OPT_WIND_S,
     OPT_WIND_W,
+    OPT_TIBBER_HOME,
     OWNER,
     PRICE_LEVEL_OPTIONS,
+    PRICE_SOURCE_TIBBER,
     REG_OUTDOOR,
     REGISTERS,
     SHARED_DEFAULTS,
     SYSTEM_DEFAULTS,
     TICK_SECONDS,
+    price_source,
     signal_update,
     system_key,
 )
 from .logic import curve
 from .logic.indoor import compute_indoor
-from .logic.inputs import Decision, ForecastPoint, Reading, to_float
+from .logic.inputs import Decision, ForecastPoint, PriceSlot, Reading, to_float
 from .logic.lease import MODE_ACTIVE, MODE_OFF, MODE_SHADOW, LeaseAction, LeaseManager
-from .logic.price import PriceCache, PriceLevel, compute_level, compute_price, normalize_prices
+from .logic.price import (
+    TIBBER_DOMAIN,
+    TIBBER_SERVICE,
+    PriceCache,
+    PriceLevel,
+    compute_level,
+    compute_price,
+    normalize_prices,
+    normalize_tibber_response,
+    tibber_refresh_due,
+    tibber_request,
+)
 from .logic.weather import WeatherSettings, compute_weather
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,6 +99,12 @@ _LOGGER = logging.getLogger(__name__)
 # values are not retained and the forecast is still loading, so the first
 # totals would be built from zeros. An adopted lease has a 15 min TTL.
 STARTUP_GRACE = timedelta(seconds=150)
+
+# tibber.get_prices may call Tibber's API; never wait longer than this.
+TIBBER_TIMEOUT_SECONDS = 60
+# The Tibber integration may still be loading at start: raise the repair
+# issue only when the action is missing on this many attempts in a row.
+TIBBER_MISSING_ATTEMPTS = 2
 
 CARDINALS = {
     "N": 0.0, "NNE": 22.5, "NE": 45.0, "ENE": 67.5, "E": 90.0, "ESE": 112.5,
@@ -119,6 +143,14 @@ class NibePiRuntime:
         self.forecast_fetched: Optional[datetime] = None
         self.price_cache = PriceCache()
         self.price_level: Optional[PriceLevel] = None
+        self.price_status: Optional[str] = None
+        self.tibber_slots: List[PriceSlot] = []
+        self.tibber_home: Optional[str] = None
+        self.tibber_fetched: Optional[datetime] = None
+        self._tibber_attempt: Optional[datetime] = None
+        self._tibber_task: Optional[asyncio.Task] = None
+        self._tibber_missing = 0
+        self._tibber_logged: Optional[str] = None
         self.started: Optional[datetime] = None
         self.systems: Dict[str, SystemRuntime] = {}
         for system in entry.data.get(CONF_SYSTEMS, ["s1"]):
@@ -191,12 +223,19 @@ class NibePiRuntime:
         while self._unsubs:
             self._unsubs.pop()()
         self._subscribed.clear()
+        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TIBBER_MISSING)
         for sys in self.systems.values():
             action = sys.lease.release_action()
             if action is not None:
                 await self._async_send(sys, action)
 
     async def async_options_updated(self) -> None:
+        # The price source or Tibber home may have changed.
+        self.price_cache = PriceCache()
+        self.tibber_slots = []
+        self.tibber_home = None
+        self.tibber_fetched = None
+        self._tibber_attempt = None
         await self._async_subscribe_registers()
         await self._async_refresh_forecast()
         await self.async_tick()
@@ -307,6 +346,10 @@ class NibePiRuntime:
 
     async def async_tick(self) -> None:
         now = dt_util.utcnow()
+        try:
+            self._schedule_tibber_refresh(now)
+        except Exception:  # noqa: BLE001 - keep the tick going on cached prices
+            _LOGGER.exception("Could not schedule the Tibber price refresh")
         for sys in self.systems.values():
             try:
                 self._compute(sys, now)
@@ -434,12 +477,17 @@ class NibePiRuntime:
         return to_float(self.opt(OPT_SETPOINT, sys.system))
 
     def _price_level(self, now: datetime) -> Optional[PriceLevel]:
-        entity_id = self.opt(OPT_PRICE_ENTITY)
-        if not entity_id:
-            return None
-        state = self.hass.states.get(entity_id)
-        attributes = dict(state.attributes) if state is not None else {}
-        slots = normalize_prices(attributes, _local_tz(), now)
+        if price_source(dict(self.entry.options)) == PRICE_SOURCE_TIBBER:
+            slots = self.tibber_slots
+        else:
+            entity_id = self.opt(OPT_PRICE_ENTITY)
+            if not entity_id:
+                self.price_status = "no price sensor configured"
+                return None
+            state = self.hass.states.get(entity_id)
+            attributes = dict(state.attributes) if state is not None else {}
+            slots = normalize_prices(attributes, _local_tz(), now)
+            self.price_status = "ok" if slots else "no prices in %s" % entity_id
         slots = self.price_cache.update(slots, now)
         return compute_level(
             slots,
@@ -450,6 +498,93 @@ class NibePiRuntime:
             very_cheap_below=self.opt(OPT_PRICE_VERY_CHEAP_BELOW),
             very_expensive_above=self.opt(OPT_PRICE_VERY_EXPENSIVE_ABOVE),
         )
+
+    # -- Tibber prices ------------------------------------------------------
+
+    def _schedule_tibber_refresh(self, now: datetime) -> None:
+        """Start a background tibber.get_prices call when one is due."""
+        if price_source(dict(self.entry.options)) != PRICE_SOURCE_TIBBER:
+            self._set_tibber_issue(False)
+            return
+        if self._tibber_task is not None and not self._tibber_task.done():
+            return
+        if not tibber_refresh_due(now, _local_tz(), self._tibber_attempt, self.tibber_slots):
+            return
+        self._tibber_attempt = now
+        self._tibber_task = self.entry.async_create_background_task(
+            self.hass, self._async_refresh_tibber(now), "nibepi tibber prices"
+        )
+
+    def _set_tibber_issue(self, missing: bool) -> None:
+        if missing:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_TIBBER_MISSING,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_TIBBER_MISSING,
+            )
+        else:
+            self._tibber_missing = 0
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TIBBER_MISSING)
+
+    def _tibber_problem(self, message: str) -> None:
+        """Show ``message`` on the price level sensor; log it once."""
+        self.price_status = message
+        if message != self._tibber_logged:
+            _LOGGER.warning("Tibber prices: %s", message)
+            self._tibber_logged = message
+
+    async def _async_refresh_tibber(self, now: datetime) -> None:
+        tz = _local_tz()
+        try:
+            if not self.hass.services.has_service(TIBBER_DOMAIN, TIBBER_SERVICE):
+                raise ServiceNotFound(TIBBER_DOMAIN, TIBBER_SERVICE)
+            response = await asyncio.wait_for(
+                self.hass.services.async_call(
+                    TIBBER_DOMAIN,
+                    TIBBER_SERVICE,
+                    tibber_request(now, tz),
+                    blocking=True,
+                    return_response=True,
+                ),
+                TIBBER_TIMEOUT_SECONDS,
+            )
+        except ServiceNotFound:
+            self._tibber_missing += 1
+            if self._tibber_missing >= TIBBER_MISSING_ATTEMPTS:
+                self._set_tibber_issue(True)
+            self._tibber_problem(
+                "%s.%s is not available; set up the Tibber integration or choose "
+                "another price source" % (TIBBER_DOMAIN, TIBBER_SERVICE)
+            )
+            return
+        except asyncio.TimeoutError:
+            self._set_tibber_issue(False)
+            self._tibber_problem("%s.%s timed out" % (TIBBER_DOMAIN, TIBBER_SERVICE))
+            return
+        except Exception as err:  # noqa: BLE001 - keep the cached prices
+            self._set_tibber_issue(False)
+            self._tibber_problem(
+                "%s.%s failed: %s" % (TIBBER_DOMAIN, TIBBER_SERVICE, str(err) or repr(err))
+            )
+            return
+        self._set_tibber_issue(False)
+        result = normalize_tibber_response(response, tz, self.opt(OPT_TIBBER_HOME))
+        if result.warning and result.warning != self._tibber_logged:
+            _LOGGER.warning("Tibber prices: %s", result.warning)
+            self._tibber_logged = result.warning
+        if not result.slots:
+            self._tibber_problem(result.warning or "no prices for Tibber home %r" % result.home)
+            return
+        self.tibber_slots = result.slots
+        self.tibber_home = result.home
+        self.tibber_fetched = dt_util.utcnow()
+        self.price_status = result.warning or "ok"
+        if result.warning is None:
+            self._tibber_logged = None
+        self._notify()
 
     def _weather_settings(self, hours: float) -> WeatherSettings:
         return WeatherSettings(

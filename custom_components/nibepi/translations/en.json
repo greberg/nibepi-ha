@@ -27,7 +27,9 @@
         "title": "Price, forecast and sensors",
         "data": {
           "sensor_timeout": "Sensor timeout (min, 0 = never stale)",
-          "price_entity": "Price sensor",
+          "price_source": "Price source",
+          "tibber_home": "Tibber home (empty = the only one)",
+          "price_entity": "Price sensor (entity attributes source)",
           "price_unit_factor": "Price unit to öre factor",
           "price_time_window": "Price analysis window (h)",
           "price_min_spread": "Minimum spread (öre)",
@@ -48,8 +50,10 @@
         },
         "data_description": {
           "sensor_timeout": "An indoor or outdoor value older than this counts as missing and its component gives 0.",
-          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes ({startsAt, total}).",
-          "price_unit_factor": "100 when the sensor is in SEK/kWh, 1 when it is in öre/kWh.",
+          "price_source": "Tibber: the Tibber integration's tibber.get_prices action. Entity attributes: a Nordpool or similar price sensor.",
+          "tibber_home": "The home's nickname in the Tibber app. Only needed when the Tibber account has several homes.",
+          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes ({startsAt, total}). Only used with the entity attributes source.",
+          "price_unit_factor": "100 when prices are in SEK/kWh (Tibber, most sensors), 1 when they are in öre/kWh.",
           "price_very_cheap_below": "Set both thresholds to replace the optimiser's level."
         }
       },
@@ -152,6 +156,20 @@
       "gateway_online": {
         "name": "Gateway"
       }
+    }
+  },
+  "selector": {
+    "price_source": {
+      "options": {
+        "tibber_action": "Tibber integration (tibber.get_prices)",
+        "entity_attributes": "Price sensor attributes (Nordpool and similar)"
+      }
+    }
+  },
+  "issues": {
+    "tibber_missing": {
+      "title": "Tibber prices are not available",
+      "description": "NibePi is set to read electricity prices with the tibber.get_prices action, but the Tibber integration is not set up or not loaded. Set up the Tibber integration, or choose another price source in NibePi's options. Until then the price component contributes 0."
     }
   }
 }
