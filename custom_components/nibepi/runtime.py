@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
@@ -88,6 +89,7 @@ from .const import (
     SHARED_DEFAULTS,
     SYSTEM_DEFAULTS,
     TICK_SECONDS,
+    VV_IMPORT_MAX_BYTES,
     VV_STORE_SAVE_DELAY,
     VV_STORE_VERSION,
     price_source,
@@ -130,6 +132,7 @@ from .logic.price import (
     tibber_request,
 )
 from .logic.rmu import RoomTemperature, rmu_decide, rmu_lease_manager
+from .logic.vvimport import convert_nodered_store, read_json_file
 from .logic.vvlearn import VvProfile
 from .logic.vvplan import PlanSettings
 from .logic.weather import WeatherSettings, compute_weather
@@ -504,6 +507,31 @@ class NibePiRuntime:
         hw = self.hotwater
         # Looked up at write time: an import replaces the profile object.
         self.vv_store.async_delay_save(lambda: hw.controller.profile.to_dict(), VV_STORE_SAVE_DELAY)
+
+    async def async_import_vv_profile(self, path: str) -> Dict[str, Any]:
+        """Replace the learned profile with Node-RED's ``vv_ai_profile.json``.
+
+        ``path`` must lie inside the configuration directory. Raises
+        ``ProfileImportError`` (a ValueError) with the reason.
+        """
+        config_dir = self.hass.config.config_dir
+        real, data = await self.hass.async_add_executor_job(
+            read_json_file, config_dir, path, VV_IMPORT_MAX_BYTES
+        )
+        source = os.path.relpath(real, os.path.realpath(config_dir))
+        profile, summary = convert_nodered_store(data, source)
+        hw = self.hotwater
+        async with hw.lock:
+            hw.controller.profile = profile
+            hw.controller.detector.reset()
+            hw.controller.vv.reset()
+            await self.vv_store.async_save(profile.to_dict())
+        _LOGGER.info(
+            "Imported the Node-RED hot water profile from %s: %d learned hours",
+            source, summary["learned_slots"],
+        )
+        self._notify()
+        return summary
 
     def _hw_settings(self) -> HotWaterSettings:
         return HotWaterSettings(

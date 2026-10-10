@@ -388,5 +388,21 @@
       "title": "Tibber prices are not available",
       "description": "NibePi is set to read electricity prices with the tibber.get_prices action, but the Tibber integration is not set up or not loaded. Set up the Tibber integration, or choose another price source in NibePi's options. Until then the price component contributes 0."
     }
+  },
+  "services": {
+    "import_vv_profile": {
+      "name": "Import Node-RED hot water profile",
+      "description": "Replaces the learned hot water draw profile with the one NibePi's Node-RED VV-AI learned (vv_ai_profile.json). Copy the file into Home Assistant's configuration directory first.",
+      "fields": {
+        "path": {
+          "name": "File",
+          "description": "Path of vv_ai_profile.json, relative to the configuration directory (e.g. nibepi/vv_ai_profile.json). Files outside the configuration directory are refused."
+        },
+        "config_entry_id": {
+          "name": "NibePi entry",
+          "description": "Only needed with more than one NibePi integration."
+        }
+      }
+    }
   }
 }

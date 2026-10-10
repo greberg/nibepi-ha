@@ -8,21 +8,70 @@ water control and, in ``active`` mode, holds the registers (47011/47010,
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
+import voluptuous as vol
 from homeassistant.components import mqtt
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
 
-from .const import PLATFORMS, VV_STORE_VERSION, vv_store_key
+from .const import (
+    ATTR_CONFIG_ENTRY_ID,
+    ATTR_PATH,
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_IMPORT_VV_PROFILE,
+    VV_STORE_VERSION,
+    vv_store_key,
+)
+from .logic.vvimport import ProfileImportError
 from .runtime import NibePiRuntime
 
 if TYPE_CHECKING:
     NibePiConfigEntry = ConfigEntry[NibePiRuntime]
 else:
     NibePiConfigEntry = ConfigEntry
+
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+IMPORT_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_PATH): cv.string, vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string}
+)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    async def _import_vv_profile(call: ServiceCall) -> Dict[str, Any]:
+        entries = [
+            e for e in hass.config_entries.async_entries(DOMAIN) if e.state is ConfigEntryState.LOADED
+        ]
+        wanted = call.data.get(ATTR_CONFIG_ENTRY_ID)
+        if wanted:
+            entries = [e for e in entries if e.entry_id == wanted]
+        if len(entries) != 1:
+            raise ServiceValidationError(
+                "No loaded NibePi entry %s" % wanted
+                if wanted
+                else "Choose the NibePi entry (config_entry_id): %d are loaded" % len(entries)
+            )
+        runtime: NibePiRuntime = entries[0].runtime_data
+        try:
+            return await runtime.async_import_vv_profile(call.data[ATTR_PATH])
+        except (ProfileImportError, OSError) as err:
+            raise ServiceValidationError(str(err)) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_VV_PROFILE,
+        _import_vv_profile,
+        schema=IMPORT_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> bool:

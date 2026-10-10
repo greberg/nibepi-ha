@@ -1,0 +1,12 @@
+import_vv_profile:
+  fields:
+    path:
+      required: true
+      example: "nibepi/vv_ai_profile.json"
+      selector:
+        text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: nibepi
