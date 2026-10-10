@@ -345,21 +345,18 @@ class NibePiRuntime:
         timeout = self.opt(OPT_SENSOR_TIMEOUT)
         indoor = self._indoor_reading(sys)
         setpoint = self._setpoint(sys)
-        decisions: Dict[str, Decision] = {}
+        try:
+            self.price_level = self._price_level(now)
+        except Exception:  # noqa: BLE001 - bad price attributes: no level
+            _LOGGER.exception("Could not compute the price level")
+            self.price_level = None
 
-        if sys.enabled.get("indoor", True):
-            decisions["indoor"] = compute_indoor(
-                indoor, setpoint, self.opt(OPT_INDOOR_FACTOR, sys.system), now, timeout
-            )
-        else:
-            decisions["indoor"] = Decision.zero("disabled", inputs_ok=True)
+        def indoor_part() -> Decision:
+            return compute_indoor(indoor, setpoint, self.opt(OPT_INDOOR_FACTOR, sys.system), now, timeout)
 
-        self.price_level = self._price_level(now)
-        if sys.enabled.get("price", True):
-            offsets = {
-                level: self.opt(key, sys.system) for level, key in PRICE_LEVEL_OPTIONS.items()
-            }
-            decisions["price"] = compute_price(
+        def price_part() -> Decision:
+            offsets = {level: self.opt(key, sys.system) for level, key in PRICE_LEVEL_OPTIONS.items()}
+            return compute_price(
                 self.price_level,
                 offsets,
                 now,
@@ -369,12 +366,10 @@ class NibePiRuntime:
                 setpoint=setpoint,
                 sensor_timeout_min=timeout,
             )
-        else:
-            decisions["price"] = Decision.zero("disabled", inputs_ok=True)
 
-        if sys.enabled.get("weather", True):
+        def weather_part() -> Decision:
             hours = to_float(self.opt(OPT_WEATHER_HOURS, sys.system)) or 0.0
-            decisions["weather"] = compute_weather(
+            return compute_weather(
                 self.readings.get(REG_OUTDOOR),
                 self._value(sys.registers["curve"]),
                 self.forecast,
@@ -384,11 +379,21 @@ class NibePiRuntime:
                 daylight=self._daylight(now + timedelta(hours=hours)),
                 sensor_timeout_min=timeout,
             )
-        else:
-            decisions["weather"] = Decision.zero("disabled", inputs_ok=True)
+
+        parts = {"indoor": indoor_part, "price": price_part, "weather": weather_part}
+        decisions: Dict[str, Decision] = {}
+        for name, part in parts.items():
+            if not sys.enabled.get(name, True):
+                decisions[name] = Decision.zero("disabled", inputs_ok=True)
+                continue
+            try:
+                decisions[name] = part()
+            except Exception as err:  # noqa: BLE001 - a broken input counts as missing
+                _LOGGER.exception("NibePi %s %s component failed", sys.system, name)
+                decisions[name] = Decision.zero("error: %r" % err)
 
         if sys.mode == MODE_ACTIVE and sys.lease.held and sys.lease.value is not None:
-            reference = float(sys.lease.value)
+            reference: Optional[float] = float(sys.lease.value)
         else:
             reference = self._value(sys.registers["offset"])
         sys.decisions = decisions
