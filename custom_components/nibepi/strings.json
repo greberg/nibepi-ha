@@ -52,7 +52,7 @@
           "sensor_timeout": "An indoor or outdoor value older than this counts as missing and its component gives 0.",
           "price_source": "Tibber: the Tibber integration's tibber.get_prices action. Entity attributes: a Nordpool or similar price sensor.",
           "tibber_home": "The home's nickname in the Tibber app. Only needed when the Tibber account has several homes.",
-          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes ({startsAt, total}). Only used with the entity attributes source.",
+          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes (startsAt/total). Only used with the entity attributes source.",
           "price_unit_factor": "100 when prices are in SEK/kWh (Tibber, most sensors), 1 when they are in öre/kWh.",
           "price_very_cheap_below": "Set both thresholds to replace the optimiser's level."
         }
