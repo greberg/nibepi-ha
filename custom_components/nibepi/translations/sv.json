@@ -179,6 +179,40 @@
           "indoor_entity": "Används av inomhusdelen, som justerar kurvförskjutningen. Rekommenderas: en rumsgivare som Netatmos innemodul. Aktualitet bedöms efter senaste rapport, så ett oförändrat värde räknas inte som inaktuellt. Lämnas den tom används pumpens rumsgivare BT50 (register 40033/40032).",
           "rmu_entity": "Skickas till pumpen som rumstemperatur från en virtuell RMU40 när brytaren 'Skicka rumstemperatur till pumpen (RMU40)' är på (av som standard). Med pumpens egen rumsgivarkorrigering på ska inomhusdelen stängas av, annars korrigeras det två gånger (se README)."
         }
+      },
+      "hotwater": {
+        "title": "Varmvatten",
+        "description": "Varmvattenstyrning och VV-lärande, porterat från NibePis VV-AI i Node-RED. Slå på funktionerna med varmvattenbrytarna och väljaren Varmvattenläge (skugga först). Se docs/hotwater.md.",
+        "data": {
+          "hw_learning_rate": "Lärhastighet (1-10 % per tapp och dygn)",
+          "hw_min_drop": "Minsta BT6-fall som räknas som tapp (°C)",
+          "hw_day_small": "Dygnssumma för ekonomi (°C)",
+          "hw_day_medium": "Dygnssumma för normal (°C)",
+          "hw_day_large": "Dygnssumma för lyx (°C)",
+          "hw_peak_threshold": "Tröskel för andra topp (°C)",
+          "hw_preheat_hours": "Uppvärmningsfönster före en topp (h)",
+          "hw_use_price": "Värm under de billigaste timmarna",
+          "hw_price_window": "Sökfönster för pris före en topp (h)",
+          "hw_min_temp_enable": "Lägsta temperatur",
+          "hw_min_temp": "Lägsta temperatur, BT7 (°C)",
+          "hw_autolux_diff": "Automatisk lyx: BT6-fall (°C)",
+          "hw_autolux_time": "Automatisk lyx: inom (min)",
+          "hw_comfort_very_cheap": "Komfortläge vid väldigt billigt",
+          "hw_comfort_cheap": "Komfortläge vid billigt",
+          "hw_comfort_normal": "Komfortläge vid normalt",
+          "hw_comfort_expensive": "Komfortläge vid dyrt",
+          "hw_comfort_very_expensive": "Komfortläge vid väldigt dyrt"
+        },
+        "data_description": {
+          "hw_learning_rate": "Hur mycket ett tapp flyttar det inlärda värdet för sin timme, och hur snabbt timmar utan tapp bleknar (vv_ai_learning_rate).",
+          "hw_min_drop": "Ett fall i BT6 (varmvattenladdning) som är mindre än så lärs inte in (vv_ai_min_drop).",
+          "hw_day_small": "Ett dygn (02:00-02:00) vars inlärda tapp summerar till mindre än så får ingen planerad uppvärmning.",
+          "hw_peak_threshold": "En andra timme med minst så mycket, 6 h eller mer från dygnets största, får ett eget uppvärmningsfönster.",
+          "hw_use_price": "VV-AI-styrningen lägger varje fönster i de billigaste timmarna före toppen och värmer bara under dess två billigaste timmar (eller de två sista före toppen).",
+          "hw_min_temp_enable": "Med VV-AI-styrning värms BT7 under gränsen till gränsen + 4 °C. VV-AI-styrningen hindrar pumpen från att själv värma varmvatten, så låt den vara på.",
+          "hw_autolux_diff": "Ett så stort fall i BT6 inom tiden nedan startar en engångshöjning (tillfällig lyx).",
+          "hw_comfort_very_cheap": "Med komfortläge efter elpris: pumpens varmvattenläge (47041) för varje prisnivå. Oförändrat: pumpens egen inställning."
+        }
       }
     },
     "error": {
@@ -189,6 +223,14 @@
     "select": {
       "mode": {
         "name": "Läge {system}",
+        "state": {
+          "off": "Av",
+          "shadow": "Skugga (beräkna bara)",
+          "active": "Aktiv (skriv via lease)"
+        }
+      },
+      "hw_mode": {
+        "name": "Varmvattenläge",
         "state": {
           "off": "Av",
           "shadow": "Skugga (beräkna bara)",
@@ -208,6 +250,21 @@
       },
       "rmu_feed": {
         "name": "Skicka rumstemperatur till pumpen (RMU40) {system}"
+      },
+      "hw_learning": {
+        "name": "Varmvatten inlärning"
+      },
+      "hw_vv_control": {
+        "name": "Varmvatten VV-AI-styrning"
+      },
+      "hw_autoluxury": {
+        "name": "Varmvatten automatisk lyx"
+      },
+      "hw_priority": {
+        "name": "Varmvattenprioritering"
+      },
+      "hw_price_comfort": {
+        "name": "Varmvatten komfortläge efter elpris"
       }
     },
     "sensor": {
@@ -255,6 +312,52 @@
           "expensive": "Dyrt",
           "very_expensive": "Väldigt dyrt"
         }
+      },
+      "hw_planned_action": {
+        "name": "Varmvatten planerad åtgärd",
+        "state": {
+          "off": "Av",
+          "fault": "Fel (indata saknas)",
+          "idle": "Vilar",
+          "heat_now": "Värm nu",
+          "block": "Spärrad (väntar på planen)",
+          "economy": "Ekonomi",
+          "normal": "Normal",
+          "luxury": "Lyx"
+        }
+      },
+      "hw_draw_profile": {
+        "name": "Varmvatten nästa väntade tapp"
+      },
+      "hw_comfort_lease_state": {
+        "name": "Lease varmvattenläge",
+        "state": {
+          "active": "Aktiv",
+          "grace": "Respit (efter omstart av gateway)",
+          "restoring": "Återställer",
+          "inactive": "Inaktiv",
+          "error": "Fel"
+        }
+      },
+      "hw_period_lease_state": {
+        "name": "Lease varmvattenperiod",
+        "state": {
+          "active": "Aktiv",
+          "grace": "Respit (efter omstart av gateway)",
+          "restoring": "Återställer",
+          "inactive": "Inaktiv",
+          "error": "Fel"
+        }
+      },
+      "hw_temp_lux_lease_state": {
+        "name": "Lease tillfällig lyx",
+        "state": {
+          "active": "Aktiv",
+          "grace": "Respit (efter omstart av gateway)",
+          "restoring": "Återställer",
+          "inactive": "Inaktiv",
+          "error": "Fel"
+        }
       }
     },
     "binary_sensor": {
@@ -269,6 +372,14 @@
         "tibber_action": "Tibber-integrationen (tibber.get_prices)",
         "entity_attributes": "Prissensor (attribut)",
         "none": "Ingen"
+      }
+    },
+    "hw_comfort": {
+      "options": {
+        "unchanged": "Oförändrat",
+        "0": "Ekonomi",
+        "1": "Normal",
+        "2": "Lyx"
       }
     }
   },

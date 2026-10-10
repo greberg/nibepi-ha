@@ -3,7 +3,7 @@
 Setup:   user (name, prefix, S2) -> price -> [tibber_warning] ->
          [tibber_home | price_entity] -> system_s1 -> [system_s2]
 Options: init (shared) -> [tibber_warning] -> [tibber_home | price_entity]
-         -> system_s1 -> [system_s2]
+         -> system_s1 -> [system_s2] -> hotwater
 
 Setup asks only for what is needed to get going (price source, room
 sensors, setpoint); the options flow has everything. Both store the same
@@ -48,6 +48,20 @@ from .const import (
     DEFAULT_NAME,
     DEFAULT_PREFIX,
     DOMAIN,
+    HW_COMFORT_OPTIONS,
+    OPT_HW_AUTOLUX_DIFF,
+    OPT_HW_AUTOLUX_TIME,
+    OPT_HW_DAY_LARGE,
+    OPT_HW_DAY_MEDIUM,
+    OPT_HW_DAY_SMALL,
+    OPT_HW_LEARNING_RATE,
+    OPT_HW_MIN_DROP,
+    OPT_HW_MIN_TEMP,
+    OPT_HW_MIN_TEMP_ENABLE,
+    OPT_HW_PEAK,
+    OPT_HW_PREHEAT,
+    OPT_HW_PRICE_WINDOW,
+    OPT_HW_USE_PRICE,
     OPT_INDOOR_ENTITY,
     OPT_INDOOR_FACTOR,
     OPT_PRICE_ENTITY,
@@ -87,6 +101,7 @@ from .const import (
     price_source,
     system_key,
 )
+from .logic.hotwater import COMFORT_CHOICES
 from .logic.price import TIBBER_DOMAIN, TIBBER_SERVICE, tibber_homes, tibber_request
 
 _LOGGER = logging.getLogger(__name__)
@@ -115,6 +130,13 @@ def _number(low: float, high: float, step: float) -> NumberSelector:
 OFFSET = _number(-10, 10, 0.5)
 FACTOR = _number(0, 10, 0.1)
 BOOL = BooleanSelector()
+HW_COMFORT = SelectSelector(
+    SelectSelectorConfig(
+        options=list(COMFORT_CHOICES), mode=SelectSelectorMode.DROPDOWN, translation_key="hw_comfort"
+    )
+)
+# Whole numbers in the hot water step.
+HW_INT_OPTIONS = (OPT_HW_LEARNING_RATE, OPT_HW_PREHEAT, OPT_HW_PRICE_WINDOW, OPT_HW_AUTOLUX_TIME)
 TEMPERATURE_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
 
 
@@ -456,4 +478,30 @@ class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=schema)
 
     async def _async_finish(self) -> ConfigFlowResult:
-        return self.async_create_entry(data=self._options)
+        return await self.async_step_hotwater()
+
+    async def async_step_hotwater(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        """Hot water: VV learning, VV-AI plan, automatic luxury, comfort mode."""
+        if user_input is not None:
+            for key, value in user_input.items():
+                self._options[key] = int(value) if key in HW_INT_OPTIONS else value
+            return self.async_create_entry(data=self._options)
+        current = self._options
+        fields: Dict[Any, Any] = {
+            _required(OPT_HW_LEARNING_RATE, current, SHARED_DEFAULTS): _number(1, 10, 1),
+            _required(OPT_HW_MIN_DROP, current, SHARED_DEFAULTS): _number(1, 12, 0.5),
+            _required(OPT_HW_DAY_SMALL, current, SHARED_DEFAULTS): _number(0.5, 15, 0.5),
+            _required(OPT_HW_DAY_MEDIUM, current, SHARED_DEFAULTS): _number(0.5, 25, 0.5),
+            _required(OPT_HW_DAY_LARGE, current, SHARED_DEFAULTS): _number(0.5, 40, 0.5),
+            _required(OPT_HW_PEAK, current, SHARED_DEFAULTS): _number(0.5, 7, 0.5),
+            _required(OPT_HW_PREHEAT, current, SHARED_DEFAULTS): _number(0, 12, 1),
+            _required(OPT_HW_USE_PRICE, current, SHARED_DEFAULTS): BOOL,
+            _required(OPT_HW_PRICE_WINDOW, current, SHARED_DEFAULTS): _number(1, 24, 1),
+            _required(OPT_HW_MIN_TEMP_ENABLE, current, SHARED_DEFAULTS): BOOL,
+            _required(OPT_HW_MIN_TEMP, current, SHARED_DEFAULTS): _number(20, 60, 0.5),
+            _required(OPT_HW_AUTOLUX_DIFF, current, SHARED_DEFAULTS): _number(5, 50, 1),
+            _required(OPT_HW_AUTOLUX_TIME, current, SHARED_DEFAULTS): _number(1, 50, 1),
+        }
+        for key in HW_COMFORT_OPTIONS.values():
+            fields[_required(key, current, SHARED_DEFAULTS)] = HW_COMFORT
+        return self.async_show_form(step_id="hotwater", data_schema=vol.Schema(fields))

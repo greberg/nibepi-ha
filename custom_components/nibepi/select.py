@@ -1,4 +1,4 @@
-"""Mode select per system: off / shadow / active (restored on restart)."""
+"""Mode selects: per system and for hot water, off / shadow / active (restored)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: NibePiConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     runtime = entry.runtime_data
-    async_add_entities(ModeSelect(runtime, system) for system in runtime.systems)
+    entities: list = [ModeSelect(runtime, system) for system in runtime.systems]
+    entities.append(HotWaterModeSelect(runtime))
+    async_add_entities(entities)
 
 
 class ModeSelect(NibePiEntity, SelectEntity, RestoreEntity):
@@ -41,4 +43,31 @@ class ModeSelect(NibePiEntity, SelectEntity, RestoreEntity):
         if option not in MODES:
             raise ValueError("Unknown mode %s" % option)
         self.runtime.set_mode(self.system, option)
+        self.async_write_ha_state()
+
+
+class HotWaterModeSelect(NibePiEntity, SelectEntity, RestoreEntity):
+    """Hot water control mode, separate from the curve-offset modes."""
+
+    _attr_options = list(MODES)
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:water-boiler"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime, "hw_mode")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        mode = last.state if last is not None and last.state in MODES else MODE_SHADOW
+        self.runtime.set_hw_mode(mode)
+
+    @property
+    def current_option(self) -> str:
+        return self.runtime.hotwater.mode
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in MODES:
+            raise ValueError("Unknown mode %s" % option)
+        self.runtime.set_hw_mode(option)
         self.async_write_ha_state()

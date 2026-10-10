@@ -14,6 +14,8 @@ from logic.vvlearn import (
     is_charging,
     learning_alpha,
     min_drop,
+    next_draw,
+    top_slots,
     week_slot,
 )
 
@@ -260,6 +262,33 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(broken.profile, [0.0] * SLOTS)
         self.assertIsNone(broken.seen_day)
         self.assertEqual(VvProfile.from_dict(None), VvProfile())
+
+
+class SummaryTest(unittest.TestCase):
+    def test_next_draw_and_confidence(self) -> None:
+        values = [0.0] * SLOTS
+        values[24 + 7] = 2.0  # Tuesday 07
+        values[24 + 19] = 4.0  # Tuesday 19
+        expected = next_draw(values, local(2026, 10, 6, 7, 30), STHLM, 1.0)
+        self.assertEqual(expected.when, local(2026, 10, 6, 19))
+        self.assertEqual(expected.confidence, 1.0)
+        expected = next_draw(values, local(2026, 10, 6, 20, 0), STHLM, 1.0)
+        self.assertEqual(expected.when, local(2026, 10, 13, 7))
+        self.assertEqual(expected.confidence, 0.5)
+        self.assertIsNone(next_draw(values, local(2026, 10, 6, 20, 0), STHLM, 5.0))
+        self.assertIsNone(next_draw([0.0] * SLOTS, local(2026, 10, 6, 20, 0), STHLM, 1.0))
+        self.assertEqual(top_slots(values, 1), ["Tue 19:00 4.0"])
+
+    def test_next_draw_across_dst(self) -> None:
+        values = [0.0] * SLOTS
+        values[6 * 24 + 3] = 2.0  # Sunday 03
+        expected = next_draw(values, local(2026, 10, 24, 23, 0), STHLM, 1.0)
+        self.assertEqual(expected.when, utc(2026, 10, 25, 2, 0))
+        # 25 real hours on that day: the 02:00 hour comes twice, 03:00 once.
+        values[6 * 24 + 3] = 0.0
+        values[6 * 24 + 2] = 2.0
+        expected = next_draw(values, utc(2026, 10, 25, 0, 10), STHLM, 1.0)
+        self.assertEqual(expected.when, utc(2026, 10, 25, 1, 0))
 
 
 class DstTest(unittest.TestCase):

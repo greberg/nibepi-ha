@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .inputs import to_fixed, to_float
@@ -230,6 +230,43 @@ def clean_profile(values: Any) -> Optional[List[float]]:
         number = to_float(value)
         result.append(number if number is not None and number > 0 else 0.0)
     return result
+
+
+@dataclass(frozen=True)
+class ExpectedDraw:
+    when: datetime  # start of the hour (UTC)
+    slot: int
+    drop: float  # the slot's learned value, °C
+    confidence: float  # the value relative to the largest slot, 0..1
+
+
+def next_draw(
+    profile: List[float], now: datetime, tz: tzinfo, threshold: float
+) -> Optional[ExpectedDraw]:
+    """The next hour within a week whose learned value reaches ``threshold``.
+
+    Hours are stepped in real time from the start of the current local
+    hour, so a DST night has 23 or 25 of them.
+    """
+    largest = max(profile) if profile else 0.0
+    if largest <= 0:
+        return None
+    local = now.astimezone(tz)
+    # UTC: adding hours to a zoneinfo datetime is wall-clock arithmetic.
+    hour = local.replace(minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    for step in range(1, SLOTS + 2):
+        when = hour + timedelta(hours=step)
+        slot = week_slot(when, tz)
+        value = profile[slot]
+        if value > 0 and value >= threshold:
+            return ExpectedDraw(when, slot, value, round(min(1.0, value / largest), 2))
+    return None
+
+
+def top_slots(profile: List[float], count: int = 5) -> List[str]:
+    """The largest learned slots, e.g. ``["Tue 07:00 4.2", ...]``."""
+    ranked = sorted((v, i) for i, v in enumerate(profile) if v > 0)[::-1][:count]
+    return ["%s %.1f" % (slot_name(i), v) for v, i in ranked]
 
 
 @dataclass(frozen=True)

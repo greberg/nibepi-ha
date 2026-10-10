@@ -179,6 +179,40 @@
           "indoor_entity": "Used by the indoor component, which adjusts the curve offset. Recommended: a room sensor such as Netatmo's indoor module. Staleness is judged by its last report, so an unchanged value is not stale. Left empty, the pump's BT50 room sensor (register 40033/40032) is used.",
           "rmu_entity": "Sent to the pump as the room temperature of a virtual RMU40 when the switch 'Send room temperature to pump (RMU40)' is on (off by default). With the pump's own room sensor correction on, switch the indoor component off, or the correction is applied twice (see the README)."
         }
+      },
+      "hotwater": {
+        "title": "Hot water",
+        "description": "Hot water control and VV learning, ported from NibePi's Node-RED VV-AI. Turn the features on with the hot water switches and the Hot water mode select (shadow first). See docs/hotwater.md.",
+        "data": {
+          "hw_learning_rate": "Learning rate (1-10 % per draw and day)",
+          "hw_min_drop": "Smallest BT6 drop that counts as a draw (°C)",
+          "hw_day_small": "Day sum for economy (°C)",
+          "hw_day_medium": "Day sum for normal (°C)",
+          "hw_day_large": "Day sum for luxury (°C)",
+          "hw_peak_threshold": "Second peak threshold (°C)",
+          "hw_preheat_hours": "Heating window before a peak (h)",
+          "hw_use_price": "Heat in the cheapest hours",
+          "hw_price_window": "Price search window before a peak (h)",
+          "hw_min_temp_enable": "Min-temp floor",
+          "hw_min_temp": "Min-temp floor, BT7 (°C)",
+          "hw_autolux_diff": "Automatic luxury: BT6 drop (°C)",
+          "hw_autolux_time": "Automatic luxury: within (min)",
+          "hw_comfort_very_cheap": "Comfort mode at very cheap",
+          "hw_comfort_cheap": "Comfort mode at cheap",
+          "hw_comfort_normal": "Comfort mode at normal",
+          "hw_comfort_expensive": "Comfort mode at expensive",
+          "hw_comfort_very_expensive": "Comfort mode at very expensive"
+        },
+        "data_description": {
+          "hw_learning_rate": "How much one draw moves the learned value of its hour, and how fast hours without draws fade (vv_ai_learning_rate).",
+          "hw_min_drop": "A fall of BT6 (hot water load) smaller than this is not learned (vv_ai_min_drop).",
+          "hw_day_small": "A day (02:00-02:00) whose learned draws sum to less than this gets no planned heating.",
+          "hw_peak_threshold": "A second hour of at least this, 6 h or more from the day's largest, gets its own heating window.",
+          "hw_use_price": "VV-AI control places each window in the cheapest hours before the peak and heats only in its two cheapest hours (or the last two before the peak).",
+          "hw_min_temp_enable": "With VV-AI control, BT7 under the floor heats to the floor + 4 °C. VV-AI control keeps the pump from heating hot water on its own, so keep this on.",
+          "hw_autolux_diff": "A BT6 fall this large within the time below starts a one-time increase (temporary lux).",
+          "hw_comfort_very_cheap": "With price comfort mode on, the pump's hot water comfort mode (47041) for each price level. Unchanged: the pump's own setting."
+        }
       }
     },
     "error": {
@@ -189,6 +223,14 @@
     "select": {
       "mode": {
         "name": "Mode {system}",
+        "state": {
+          "off": "Off",
+          "shadow": "Shadow (compute only)",
+          "active": "Active (write via lease)"
+        }
+      },
+      "hw_mode": {
+        "name": "Hot water mode",
         "state": {
           "off": "Off",
           "shadow": "Shadow (compute only)",
@@ -208,6 +250,21 @@
       },
       "rmu_feed": {
         "name": "Send room temperature to pump (RMU40) {system}"
+      },
+      "hw_learning": {
+        "name": "Hot water learning"
+      },
+      "hw_vv_control": {
+        "name": "Hot water VV-AI control"
+      },
+      "hw_autoluxury": {
+        "name": "Hot water automatic luxury"
+      },
+      "hw_priority": {
+        "name": "Hot water priority"
+      },
+      "hw_price_comfort": {
+        "name": "Hot water comfort mode by price"
       }
     },
     "sensor": {
@@ -255,6 +312,52 @@
           "expensive": "Expensive",
           "very_expensive": "Very expensive"
         }
+      },
+      "hw_planned_action": {
+        "name": "Hot water planned action",
+        "state": {
+          "off": "Off",
+          "fault": "Fault (inputs missing)",
+          "idle": "Idle",
+          "heat_now": "Heat now",
+          "block": "Blocked (waiting for the plan)",
+          "economy": "Economy",
+          "normal": "Normal",
+          "luxury": "Luxury"
+        }
+      },
+      "hw_draw_profile": {
+        "name": "Hot water next expected draw"
+      },
+      "hw_comfort_lease_state": {
+        "name": "Hot water comfort mode lease",
+        "state": {
+          "active": "Active",
+          "grace": "Grace (after gateway restart)",
+          "restoring": "Restoring",
+          "inactive": "Inactive",
+          "error": "Error"
+        }
+      },
+      "hw_period_lease_state": {
+        "name": "Hot water period lease",
+        "state": {
+          "active": "Active",
+          "grace": "Grace (after gateway restart)",
+          "restoring": "Restoring",
+          "inactive": "Inactive",
+          "error": "Error"
+        }
+      },
+      "hw_temp_lux_lease_state": {
+        "name": "Temporary lux lease",
+        "state": {
+          "active": "Active",
+          "grace": "Grace (after gateway restart)",
+          "restoring": "Restoring",
+          "inactive": "Inactive",
+          "error": "Error"
+        }
       }
     },
     "binary_sensor": {
@@ -269,6 +372,14 @@
         "tibber_action": "Tibber integration (tibber.get_prices)",
         "entity_attributes": "Price sensor entity (attributes)",
         "none": "None"
+      }
+    },
+    "hw_comfort": {
+      "options": {
+        "unchanged": "Unchanged",
+        "0": "Economy",
+        "1": "Normal",
+        "2": "Luxury"
       }
     }
   },

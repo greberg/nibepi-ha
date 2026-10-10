@@ -1,20 +1,32 @@
-"""Sensors: planned offset, component offsets, pump offset, lease state, price level."""
+"""Sensors: planned offset, component offsets, pump offset, lease states,
+price level, and the hot water plan, draw profile and leases."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
-from .const import COMPONENTS, PRICE_SOURCE_TIBBER, price_source
+from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
+from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
 from .logic.lease import LeaseManager
 from .logic.price import LEVELS
-from .runtime import NibePiRuntime, SystemRuntime
+from .logic.vvlearn import DAYS, next_draw, slot_name, top_slots
+from .logic.vvplan import PlanSettings, day_sums
+from .runtime import NibePiRuntime, SystemRuntime, _local_tz
+
+HW_LEASES = {
+    REG_COMFORT: "hw_comfort_lease_state",
+    REG_PERIOD: "hw_period_lease_state",
+    REG_TEMP_LUX: "hw_temp_lux_lease_state",
+}
 
 
 async def async_setup_entry(
@@ -28,6 +40,9 @@ async def async_setup_entry(
         entities.append(PumpOffsetSensor(runtime, system))
         entities.append(LeaseStateSensor(runtime, system))
         entities.append(RmuLeaseStateSensor(runtime, system))
+    entities.append(HotWaterActionSensor(runtime))
+    entities.append(DrawProfileSensor(runtime))
+    entities.extend(HotWaterLeaseSensor(runtime, reg, key) for reg, key in HW_LEASES.items())
     async_add_entities(entities)
 
 
@@ -123,19 +138,16 @@ class PumpOffsetSensor(_SystemSensor):
         }
 
 
-class LeaseStateSensor(_SystemSensor):
-    """The gateway's ``lease/<reg>/state``."""
+class _LeaseStateMixin:
+    """The gateway's ``lease/<reg>/state`` for the entity's ``lease``."""
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["active", "grace", "restoring", "inactive", "error"]
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, runtime: NibePiRuntime, system: str, key: str = "lease_state") -> None:
-        super().__init__(runtime, key, system)
-
     @property
     def lease(self) -> LeaseManager:
-        return self.sys.lease
+        raise NotImplementedError
 
     @property
     def native_value(self) -> Optional[str]:
@@ -172,6 +184,17 @@ class LeaseStateSensor(_SystemSensor):
             "retry_after": _iso(lease.retry_after),
             "last_state_received": _iso(lease.remote_at),
         }
+
+
+class LeaseStateSensor(_LeaseStateMixin, _SystemSensor):
+    """The curve offset's lease (47011 / 47010)."""
+
+    def __init__(self, runtime: NibePiRuntime, system: str, key: str = "lease_state") -> None:
+        super().__init__(runtime, key, system)
+
+    @property
+    def lease(self) -> LeaseManager:
+        return self.sys.lease
 
 
 class RmuLeaseStateSensor(LeaseStateSensor):
@@ -237,4 +260,137 @@ class PriceLevelSensor(NibePiEntity, SensorEntity):
                     "levels": level.levels,
                 }
             )
+        return attrs
+
+
+# --------------------------------------------------------------------------
+# Hot water
+# --------------------------------------------------------------------------
+
+
+class HotWaterLeaseSensor(_LeaseStateMixin, NibePiEntity, SensorEntity):
+    """Lease state of 47041 comfort mode, 47134 period or 48132 temporary lux."""
+
+    _attr_icon = "mdi:water-boiler"
+
+    def __init__(self, runtime: NibePiRuntime, register: int, key: str) -> None:
+        super().__init__(runtime, key)
+        self.register = register
+
+    @property
+    def lease(self) -> LeaseManager:
+        return self.runtime.hotwater.leases.leases[self.register]
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["last_action"] = self.runtime.hotwater.last_actions.get(self.register)
+        return attrs
+
+
+class HotWaterActionSensor(NibePiEntity, SensorEntity):
+    """What hot water control does now, and why."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = list(STATES)
+    _attr_icon = "mdi:water-boiler"
+    _unrecorded_attributes = frozenset({"plan_24h", "reasons", "inputs"})
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "hw_planned_action")
+
+    @property
+    def native_value(self) -> Optional[str]:
+        hw = self.runtime.hotwater
+        if not hw.healthy:
+            return "fault"
+        return hw.decision.state if hw.decision is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        hw = self.runtime.hotwater
+        decision = hw.decision
+        attrs: Dict[str, Any] = {
+            "mode": hw.mode,
+            "features": dict(hw.features),
+            "healthy": hw.healthy,
+            "error": hw.error,
+            "last_tick": _iso(hw.last_tick),
+        }
+        if decision is None:
+            return attrs
+        tz = _local_tz()
+        now = hw.last_tick or dt_util.utcnow()
+        horizon = now + timedelta(hours=24)
+        details = dict(decision.details)
+        closed = details.pop("closed_until", None)
+        attrs.update(
+            {
+                "reasons": decision.reasons,
+                "targets": {str(reg): value for reg, value in decision.targets.items()},
+                "inputs_ok": decision.inputs_ok,
+                "next_heat_start": _iso(decision.next_heat),
+                "closed_until": _iso(closed),
+                "plan_24h": [
+                    w.compact(tz) for w in decision.windows if w.end > now and w.start < horizon
+                ],
+                "inputs": details,
+                "last_actions": {str(reg): text for reg, text in hw.last_actions.items()},
+            }
+        )
+        return attrs
+
+
+class DrawProfileSensor(NibePiEntity, SensorEntity):
+    """The learned hot water draw profile: when the next draw is expected."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:chart-timeline-variant"
+    _unrecorded_attributes = frozenset({"profile", "day_sums", "top_slots"})
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "hw_draw_profile")
+
+    def _expected(self):
+        profile = self.runtime.hotwater.controller.profile.profile
+        threshold = PlanSettings.from_values(peak_threshold=self.runtime.opt(OPT_HW_PEAK)).peak_threshold
+        return next_draw(profile, dt_util.utcnow(), _local_tz(), threshold)
+
+    @property
+    def native_value(self):
+        expected = self._expected()
+        return expected.when if expected is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        controller = self.runtime.hotwater.controller
+        profile = controller.profile
+        expected = self._expected()
+        event = controller.last_event
+        attrs: Dict[str, Any] = {
+            "confidence": expected.confidence if expected is not None else None,
+            "expected_drop": expected.drop if expected is not None else None,
+            "slot": slot_name(expected.slot) if expected is not None else None,
+            "learned_draws": profile.learned,
+            "last_learned": profile.last_learn,
+            "last_drop": profile.last_drop,
+            "last_slot": slot_name(profile.last_slot) if profile.last_slot is not None else None,
+            "last_event": (
+                {
+                    "verdict": event.verdict,
+                    "span": round(event.span, 1),
+                    "minutes": event.minutes,
+                    "rate": round(event.rate, 2) if event.rate != float("inf") else None,
+                    "reason": event.reason,
+                    "at": _iso(controller.last_event_at),
+                }
+                if event is not None
+                else None
+            ),
+            "imported_from": profile.imported_from,
+            "day_sums": {DAYS[i]: round(v, 1) for i, v in enumerate(day_sums(profile.profile))},
+            "top_slots": top_slots(profile.profile),
+            # Monday 00:00 first, one value per hour, °C.
+            "profile": [round(v, 1) for v in profile.profile],
+        }
         return attrs
