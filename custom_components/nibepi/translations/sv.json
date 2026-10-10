@@ -1,0 +1,157 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NibePi",
+        "description": "Anslut till en NibePi-gateway via MQTT. MQTT-integrationen måste vara uppsatt först.",
+        "data": {
+          "name": "Namn",
+          "prefix": "Gatewayns topic-prefix",
+          "use_s2": "Styr även klimatsystem 2"
+        },
+        "data_description": {
+          "prefix": "config.mqtt.topic i gatewayn, t.ex. nibe/modbus/"
+        }
+      }
+    },
+    "error": {
+      "invalid_prefix": "Ogiltigt topic-prefix (inga jokertecken)."
+    },
+    "abort": {
+      "already_configured": "Den här gatewayn är redan konfigurerad."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Elpris, prognos och givare",
+        "data": {
+          "sensor_timeout": "Givartimeout (min, 0 = aldrig inaktuell)",
+          "price_entity": "Elprissensor",
+          "price_unit_factor": "Faktor från prisets enhet till öre",
+          "price_time_window": "Tidshorisont för prisanalys (h)",
+          "price_min_spread": "Minsta prisskillnad (öre)",
+          "price_very_cheap_below": "Egen gräns: väldigt billigt vid eller under (öre)",
+          "price_very_expensive_above": "Egen gräns: väldigt dyrt vid eller över (öre)",
+          "weather_entity": "Väderentitet",
+          "weather_forecast_adjust": "Justera prognosen mot uppmätt utetemperatur",
+          "weather_enable_up": "Tillåt höjning",
+          "weather_enable_down": "Tillåt sänkning",
+          "wind_enable": "Vindstyrning",
+          "wind_factor_n": "Vindfaktor norr",
+          "wind_factor_s": "Vindfaktor söder",
+          "wind_factor_w": "Vindfaktor väster",
+          "wind_factor_e": "Vindfaktor öster",
+          "sun_enable": "Solfaktor",
+          "sun_clear": "Solfaktor, klart",
+          "sun_half_clear": "Solfaktor, halvklart"
+        },
+        "data_description": {
+          "sensor_timeout": "Ett inne- eller utevärde som är äldre än så räknas som saknat och dess del blir 0.",
+          "price_entity": "Nordpool (raw_today/raw_tomorrow eller today/tomorrow) eller Tibber-liknande attribut ({startsAt, total}).",
+          "price_unit_factor": "100 när sensorn är i kr/kWh, 1 när den är i öre/kWh.",
+          "price_very_cheap_below": "Ange båda gränserna för att ersätta optimerarens nivå."
+        }
+      },
+      "system_s1": {
+        "title": "Klimatsystem {system}",
+        "data": {
+          "indoor_entity": "Inomhusgivare (tom = pumpens BT50)",
+          "setpoint": "Börvärde inomhus (°C)",
+          "setpoint_entity": "Börvärdesentitet (ersätter talet)",
+          "indoor_factor": "Inomhusfaktor",
+          "price_very_cheap": "Justering vid väldigt billigt",
+          "price_cheap": "Justering vid billigt",
+          "price_normal": "Justering vid normalt",
+          "price_expensive": "Justering vid dyrt",
+          "price_very_expensive": "Justering vid väldigt dyrt",
+          "price_guard": "Sänk bara vid dyra nivåer när det är varmt nog inne",
+          "price_temp_low": "Marginal över börvärdet (°C)",
+          "weather_hours": "Prognos timmar framåt"
+        }
+      },
+      "system_s2": {
+        "title": "Klimatsystem {system}",
+        "data": {
+          "indoor_entity": "Inomhusgivare (tom = pumpens BT50)",
+          "setpoint": "Börvärde inomhus (°C)",
+          "setpoint_entity": "Börvärdesentitet (ersätter talet)",
+          "indoor_factor": "Inomhusfaktor",
+          "price_very_cheap": "Justering vid väldigt billigt",
+          "price_cheap": "Justering vid billigt",
+          "price_normal": "Justering vid normalt",
+          "price_expensive": "Justering vid dyrt",
+          "price_very_expensive": "Justering vid väldigt dyrt",
+          "price_guard": "Sänk bara vid dyra nivåer när det är varmt nog inne",
+          "price_temp_low": "Marginal över börvärdet (°C)",
+          "weather_hours": "Prognos timmar framåt"
+        }
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "mode": {
+        "name": "Läge {system}",
+        "state": {
+          "off": "Av",
+          "shadow": "Skugga (beräkna bara)",
+          "active": "Aktiv (skriv via lease)"
+        }
+      }
+    },
+    "switch": {
+      "indoor_enabled": {
+        "name": "Inomhusreglering {system}"
+      },
+      "price_enabled": {
+        "name": "Elprisreglering {system}"
+      },
+      "weather_enabled": {
+        "name": "Prognosreglering {system}"
+      }
+    },
+    "sensor": {
+      "planned_offset": {
+        "name": "Planerad kurvjustering {system}"
+      },
+      "indoor_offset": {
+        "name": "Inomhusjustering {system}"
+      },
+      "price_offset": {
+        "name": "Elprisjustering {system}"
+      },
+      "weather_offset": {
+        "name": "Prognosjustering {system}"
+      },
+      "pump_offset": {
+        "name": "Värmepumpens kurvjustering {system}"
+      },
+      "lease_state": {
+        "name": "Lease {system}",
+        "state": {
+          "active": "Aktiv",
+          "grace": "Respit (efter omstart av gateway)",
+          "restoring": "Återställer",
+          "inactive": "Inaktiv",
+          "error": "Fel"
+        }
+      },
+      "price_level": {
+        "name": "Prisnivå",
+        "state": {
+          "very_cheap": "Väldigt billigt",
+          "cheap": "Billigt",
+          "normal": "Normalt",
+          "expensive": "Dyrt",
+          "very_expensive": "Väldigt dyrt"
+        }
+      }
+    },
+    "binary_sensor": {
+      "gateway_online": {
+        "name": "Gateway"
+      }
+    }
+  }
+}

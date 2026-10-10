@@ -1,0 +1,157 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NibePi",
+        "description": "Connect to a NibePi gateway over MQTT. The MQTT integration must be set up first.",
+        "data": {
+          "name": "Name",
+          "prefix": "Gateway topic prefix",
+          "use_s2": "Control climate system 2 as well"
+        },
+        "data_description": {
+          "prefix": "config.mqtt.topic on the gateway, e.g. nibe/modbus/"
+        }
+      }
+    },
+    "error": {
+      "invalid_prefix": "Invalid topic prefix (no wildcards)."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Price, forecast and sensors",
+        "data": {
+          "sensor_timeout": "Sensor timeout (min, 0 = never stale)",
+          "price_entity": "Price sensor",
+          "price_unit_factor": "Price unit to öre factor",
+          "price_time_window": "Price analysis window (h)",
+          "price_min_spread": "Minimum spread (öre)",
+          "price_very_cheap_below": "Own threshold: very cheap at or below (öre)",
+          "price_very_expensive_above": "Own threshold: very expensive at or above (öre)",
+          "weather_entity": "Weather entity",
+          "weather_forecast_adjust": "Shift forecast by measured outdoor temperature",
+          "weather_enable_up": "Allow raising",
+          "weather_enable_down": "Allow lowering",
+          "wind_enable": "Wind control",
+          "wind_factor_n": "Wind factor north",
+          "wind_factor_s": "Wind factor south",
+          "wind_factor_w": "Wind factor west",
+          "wind_factor_e": "Wind factor east",
+          "sun_enable": "Sun factor",
+          "sun_clear": "Sun factor, clear sky",
+          "sun_half_clear": "Sun factor, partly cloudy"
+        },
+        "data_description": {
+          "sensor_timeout": "An indoor or outdoor value older than this counts as missing and its component gives 0.",
+          "price_entity": "Nordpool (raw_today/raw_tomorrow or today/tomorrow) or Tibber-style attributes ({startsAt, total}).",
+          "price_unit_factor": "100 when the sensor is in SEK/kWh, 1 when it is in öre/kWh.",
+          "price_very_cheap_below": "Set both thresholds to replace the optimiser's level."
+        }
+      },
+      "system_s1": {
+        "title": "Climate system {system}",
+        "data": {
+          "indoor_entity": "Indoor temperature sensor (empty = pump's BT50)",
+          "setpoint": "Indoor setpoint (°C)",
+          "setpoint_entity": "Setpoint entity (overrides the number)",
+          "indoor_factor": "Indoor factor",
+          "price_very_cheap": "Offset at very cheap",
+          "price_cheap": "Offset at cheap",
+          "price_normal": "Offset at normal",
+          "price_expensive": "Offset at expensive",
+          "price_very_expensive": "Offset at very expensive",
+          "price_guard": "Only lower at expensive levels while indoor is warm enough",
+          "price_temp_low": "Guard margin over setpoint (°C)",
+          "weather_hours": "Forecast hours ahead"
+        }
+      },
+      "system_s2": {
+        "title": "Climate system {system}",
+        "data": {
+          "indoor_entity": "Indoor temperature sensor (empty = pump's BT50)",
+          "setpoint": "Indoor setpoint (°C)",
+          "setpoint_entity": "Setpoint entity (overrides the number)",
+          "indoor_factor": "Indoor factor",
+          "price_very_cheap": "Offset at very cheap",
+          "price_cheap": "Offset at cheap",
+          "price_normal": "Offset at normal",
+          "price_expensive": "Offset at expensive",
+          "price_very_expensive": "Offset at very expensive",
+          "price_guard": "Only lower at expensive levels while indoor is warm enough",
+          "price_temp_low": "Guard margin over setpoint (°C)",
+          "weather_hours": "Forecast hours ahead"
+        }
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "mode": {
+        "name": "Mode {system}",
+        "state": {
+          "off": "Off",
+          "shadow": "Shadow (compute only)",
+          "active": "Active (write via lease)"
+        }
+      }
+    },
+    "switch": {
+      "indoor_enabled": {
+        "name": "Indoor control {system}"
+      },
+      "price_enabled": {
+        "name": "Price control {system}"
+      },
+      "weather_enabled": {
+        "name": "Forecast control {system}"
+      }
+    },
+    "sensor": {
+      "planned_offset": {
+        "name": "Planned curve offset {system}"
+      },
+      "indoor_offset": {
+        "name": "Indoor offset {system}"
+      },
+      "price_offset": {
+        "name": "Price offset {system}"
+      },
+      "weather_offset": {
+        "name": "Forecast offset {system}"
+      },
+      "pump_offset": {
+        "name": "Pump curve offset {system}"
+      },
+      "lease_state": {
+        "name": "Lease {system}",
+        "state": {
+          "active": "Active",
+          "grace": "Grace (after gateway restart)",
+          "restoring": "Restoring",
+          "inactive": "Inactive",
+          "error": "Error"
+        }
+      },
+      "price_level": {
+        "name": "Price level",
+        "state": {
+          "very_cheap": "Very cheap",
+          "cheap": "Cheap",
+          "normal": "Normal",
+          "expensive": "Expensive",
+          "very_expensive": "Very expensive"
+        }
+      }
+    },
+    "binary_sensor": {
+      "gateway_online": {
+        "name": "Gateway"
+      }
+    }
+  }
+}
