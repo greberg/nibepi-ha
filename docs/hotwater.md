@@ -101,7 +101,7 @@ observes); `off` stops everything.
 | Window arithmetic on slot indexes | Peaks at local wall-clock hours, windows as real durations | DST-safe; same result on all other days |
 | Settings as switch + slider pairs (`*_enable`) | One option each, default = the value used when the switch was off | Fewer settings, same behaviour |
 | Price comfort mode: no price for 30 min → back to `hotwater_normal` | No price for the current hour → release 47041 at once | As the curve offset's price component; the baseline is the pump's own setting |
-| Automatic luxury followed the pump's 48132 reading as "running" | Own state, plus a 3 h limit | The lease value is not read back; the limit ends a charge whose target is never reached (e.g. in shadow mode) |
+| Automatic luxury and hot water priority followed the pump's 48132 reading as "running"; a missing input skipped the run | Own state, a 3 h limit, and a missing input ends the charge | The lease value is not read back; the limit ends a charge whose target is never reached (e.g. in shadow mode) |
 | A draw booked before midnight but closed after it could decay a day twice | Decay is driven by the tick's date only | Bug fix |
 | Time schedule (`vv_manual_schedule_*`) | Not ported | Use an HA schedule/automation on the mode select; it also fought the leases (it released 47134 5 s after each start) |
 | Learned profile in `/etc/nibepi/vv_ai_profile.json` | HA storage (`.storage/nibepi_vv_profile_<entry>`), versioned, debounced saves | Survives restarts; import with `nibepi.import_vv_profile` |
