@@ -26,9 +26,11 @@ level offsets 0 (unset), ``temp_low`` 0, guard off.
 
 Deliberate differences:
 
-- Prices come from a Home Assistant entity (Nordpool ``raw_today``,
-  numeric ``today``/``tomorrow`` lists, or Tibber-style
-  ``{startsAt, total}`` lists) instead of Tibber's API / elprisetjustnu.se.
+- Prices come from Home Assistant instead of Tibber's API /
+  elprisetjustnu.se: the Tibber integration's ``tibber.get_prices`` action
+  (``normalize_tibber_response``), or an entity's attributes (Nordpool
+  ``raw_today``, numeric ``today``/``tomorrow`` lists, or Tibber-style
+  ``{startsAt, total}`` lists, ``normalize_prices``).
   Slot length is never assumed: it comes from start/end or from spreading
   the values over the real length of the local day (23/24/25 h).
 - Hours are grouped by the real instant, not by the first 13 characters of
@@ -53,6 +55,7 @@ Deliberate differences:
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -245,6 +248,173 @@ def hourly_average(slots: Sequence[PriceSlot]) -> List[PriceSlot]:
         price = sum(s.price for s in items) / len(items)
         result.append(PriceSlot(start, end, price))
     return result
+
+
+# --------------------------------------------------------------------------
+# Tibber: the tibber.get_prices action
+# --------------------------------------------------------------------------
+#
+# Home Assistant's Tibber integration has no price-list attributes; prices
+# come from the ``tibber.get_prices`` action (response only):
+#
+#   request:  {"start": "<datetime>", "end": "<datetime>"}, both optional
+#             (default today 00:00 to tomorrow 00:00 local); filtered as
+#             start <= start_time < end
+#   response: {"prices": {"<home nickname>": [
+#                 {"start_time": "2025-10-10T00:00:00.000+02:00",
+#                  "price": 1.2345}, ...]}}
+#
+# ``start_time`` is Tibber's ``startsAt`` as given (pyTibber fetches
+# QUARTER_HOURLY, so 96 slots a day; older versions gave 24), ``price`` its
+# ``total`` (energy + tax) in currency/kWh, e.g. SEK/kWh. There is no end
+# time. Homes are keyed by their Tibber app nickname (address as fallback).
+
+TIBBER_DOMAIN = "tibber"
+TIBBER_SERVICE = "get_prices"
+TIBBER_MIN_REFRESH = timedelta(minutes=15)
+TIBBER_PUBLISH_HOUR = 13  # tomorrow's day-ahead prices come 13:00-14:00 local
+# A gap between two starts longer than this (and than the typical slot) is
+# a hole in the data, not one long slot.
+_MAX_SLOT = timedelta(hours=1)
+
+
+@dataclass(frozen=True)
+class TibberPrices:
+    slots: List[PriceSlot]
+    home: Optional[str] = None
+    homes: List[str] = field(default_factory=list)
+    warning: Optional[str] = None
+
+
+def tibber_request(now: datetime, tz: tzinfo) -> Dict[str, str]:
+    """``tibber.get_prices`` data: today 00:00 through tomorrow 24:00 local."""
+    day = now.astimezone(tz).date()
+    start = datetime.combine(day, time(0), tzinfo=tz)
+    end = datetime.combine(day + timedelta(days=2), time(0), tzinfo=tz)
+    return {"start": start.isoformat(), "end": end.isoformat()}
+
+
+def typical_length(starts: Sequence[datetime]) -> Optional[timedelta]:
+    """Most common gap between consecutive starts (ties: the shorter)."""
+    gaps = Counter(
+        b - a for a, b in zip(starts, starts[1:]) if b > a
+    )
+    if not gaps:
+        return None
+    return min(gaps, key=lambda gap: (-gaps[gap], gap))
+
+
+def slots_from_starts(items: Iterable[Tuple[datetime, float]]) -> List[PriceSlot]:
+    """Start-only prices -> slots.
+
+    A slot ends where the next one starts; the last one, and one followed
+    by a hole, gets the typical slot length. With fewer than two distinct
+    starts the length cannot be known and nothing is returned.
+    """
+    by_start: Dict[float, Tuple[datetime, float]] = {}
+    for start, price in items:
+        by_start.setdefault(start.timestamp(), (start, price))
+    ordered = [by_start[key] for key in sorted(by_start)]
+    typical = typical_length([start for start, _ in ordered])
+    if typical is None:
+        return []
+    limit = max(typical, _MAX_SLOT)
+    slots = []
+    for index, (start, price) in enumerate(ordered):
+        end = start + typical
+        if index + 1 < len(ordered):
+            following = ordered[index + 1][0]
+            if following - start <= limit:
+                end = following
+        slots.append(PriceSlot(start, end, price))
+    return slots
+
+
+def _select_home(prices: Mapping[Any, Any], home: Optional[str]) -> Tuple[Any, Optional[str]]:
+    """(key in ``prices`` or None, warning)."""
+    keys = list(prices)
+    names = ", ".join(repr(str(k)) for k in keys)
+    if not keys:
+        return None, "the response has no Tibber homes"
+    wanted = (home or "").strip()
+    if wanted:
+        for key in keys:
+            if str(key) == wanted:
+                return key, None
+        for key in keys:
+            if str(key).strip().casefold() == wanted.casefold():
+                return key, None
+        return None, "Tibber home %r not in the response (homes: %s)" % (wanted, names)
+    if len(keys) > 1:
+        return keys[0], (
+            "several Tibber homes (%s), using %r; set the Tibber home option to choose"
+            % (names, str(keys[0]))
+        )
+    return keys[0], None
+
+
+def normalize_tibber_response(
+    response: Any, tz: tzinfo, home: Optional[str] = None
+) -> TibberPrices:
+    """``tibber.get_prices`` response -> slots for one home.
+
+    ``home`` picks a home by nickname (exact, then case-insensitive); empty
+    takes the only one, or the first with a warning when there are several.
+    Prices stay in the response's unit (currency/kWh); ``compute_level``
+    applies ``unit_factor``.
+    """
+    prices = response.get("prices") if isinstance(response, Mapping) else None
+    if not isinstance(prices, Mapping):
+        return TibberPrices([], warning="the response has no 'prices'")
+    homes = [str(k) for k in prices]
+    key, warning = _select_home(prices, home)
+    if key is None:
+        return TibberPrices([], None, homes, warning)
+    items = prices.get(key)
+    parsed: List[Tuple[datetime, float]] = []
+    for item in items if isinstance(items, (list, tuple)) else []:
+        if not isinstance(item, Mapping):
+            continue
+        start = parse_time(item.get("start_time"), tz)
+        price = to_float(item.get("price"))
+        if start is not None and price is not None:
+            parsed.append((start, price))
+    return TibberPrices(slots_from_starts(parsed), str(key), homes, warning)
+
+
+def tibber_refresh_due(
+    now: datetime,
+    tz: tzinfo,
+    last_attempt: Optional[datetime],
+    slots: Sequence[PriceSlot],
+) -> bool:
+    """Whether to call ``tibber.get_prices`` again.
+
+    - first call, or the clock went backwards;
+    - a new local hour since the last call;
+    - otherwise at most every 15 minutes, and only while the list does not
+      cover now, or from 13:00 local while tomorrow is still missing (the
+      day-ahead prices are published 13:00-14:00).
+    """
+    if last_attempt is None or now < last_attempt:
+        return True
+
+    def hour_of(when: datetime) -> datetime:
+        local = when.astimezone(tz)
+        return local.replace(minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+    if hour_of(now) != hour_of(last_attempt):
+        return True
+    if now - last_attempt < TIBBER_MIN_REFRESH:
+        return False
+    if slot_at(slots, now) is None:
+        return True
+    local_now = now.astimezone(tz)
+    if local_now.hour >= TIBBER_PUBLISH_HOUR:
+        tomorrow, _ = local_day_bounds(local_now.date() + timedelta(days=1), tz)
+        if not any(slot.start >= tomorrow for slot in slots):
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------
