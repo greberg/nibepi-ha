@@ -22,8 +22,10 @@ current one (`curveAdjust`).
 
 Default mode **shadow**. Separately, it can feed a room temperature to
 the pump's virtual RMU40 room unit (see [Room temperature to the
-pump](#room-temperature-to-the-pump-rmu40)), and control hot water with a
-learned draw profile (see [Hot water](#hot-water-and-vv-learning)).
+pump](#room-temperature-to-the-pump-rmu40)), control hot water with a
+learned draw profile (see [Hot water](#hot-water-and-vv-learning)), and
+plan heating and hot water against the electricity price with a learned
+model of the house (see [Cost optimiser](#cost-optimiser)).
 
 ## Safety model
 
@@ -89,6 +91,11 @@ Setup asks, in this order:
 3. Per climate system: the indoor temperature sensor for the indoor
    component, the room temperature entity for the RMU40 feed (empty =
    the indoor sensor) and the indoor setpoint.
+4. The house, for the cost optimiser: heated floor area, floors, building
+   era, construction, heat emitters, how many indoor sensors are
+   averaged, an optional electricity meter and the model confidence the
+   optimiser needs before it may steer (see [House
+   profile](#house-profile)).
 
 Everything, including the above, can be changed later in the
 integration's **Configure** dialog. Entries set up with an older version
@@ -110,6 +117,10 @@ Shared:
 | Forecast adjust, allow raising/lowering | off, on, on | `forecast_adjust`, `enable_up`, `enable_down` |
 | Wind control and factors N/S/W/E | off, 0 | `wind_enable`, `wind_factor_*` |
 | Sun factor and values | off, 0 | `sun_enable`, `clear`, `half_clear` |
+| House: floor area, floors, era, construction, emitters, sensors | 150 m², 1.5, unknown, unknown, radiators, 1 | see [House profile](#house-profile) |
+| Electricity meter | - | optional power or energy sensor, for calibration only |
+| Minimum model confidence to steer | high | low / medium / high |
+| Optimiser hot water floor (hot water step) | 40 °C | BT6, for the optimiser's tank plan |
 
 Per climate system:
 
@@ -117,11 +128,13 @@ Per climate system:
 |---|---|---|
 | Indoor sensor | pump's BT50 | a room temperature sensor such as Netatmo (recommended), see below |
 | RMU40 room temperature | the indoor sensor | the entity fed to the pump's RMU40, see below |
-| Setpoint | 20.0 °C | or an `input_number`/`number` entity |
+| Setpoint | 20.0 °C | or an `input_number`/`number` entity; also the optimiser's target |
 | Indoor factor | 2.0 | Nibe's default for menu 1.9.4 |
 | Offsets per price level | 0 | `heat_very_cheap_sN` ... `heat_very_expensive_sN` |
 | Price guard, margin | off, 0 | `enable_temp_sN`, `temp_low_sN` |
 | Forecast hours ahead | 6 | `hours_sN` |
+| Comfort band below / above the setpoint | 0.5 / 1.0 °C | cost optimiser |
+| Hard floor below the setpoint | 1.5 °C | cost optimiser: below it, heat whatever the price |
 
 The defaults are Node-RED's. When migrating, copy your values from the
 gateway's `config.json` (`price`, `weather`, `indoor`, `home` sections).
@@ -319,15 +332,217 @@ Removing the container kept that folder.
 Only paths inside the configuration directory are accepted. The import
 replaces the current profile; days since Node-RED stopped are not decayed.
 
+## Cost optimiser
+
+The cost optimiser plans the curve offset for every price slot ahead (up
+to 36 h), and optionally the hot water charges, so that the heat pump
+runs when electricity is cheap without the house getting cold. The design
+and its evaluation are in the NibePi workspace's `docs/optimizer.md`; the
+pure Python core is in `custom_components/nibepi/logic/optimizer/`.
+
+### House profile
+
+The optimiser starts from a small physical model of the house: how fast it
+loses heat (W/K), how much heat it stores (kWh/K), how much heat the
+emitters give per degree of supply temperature, and gains from people and
+sun. The *House* step of the setup and options flow gives the starting
+values ("priors"); the optimiser learns the real ones from the history.
+
+| Field | Default | Used for |
+|---|---|---|
+| Heated floor area | 150 m² | heat loss, stored heat, gains |
+| Floors (1, 1.5, 2, 3 or more) | 1.5 | heat loss per m²; one sensor on one floor of a taller house gets a safety margin (0.1-0.3 °C) |
+| Built (before 1960 ... 2011 or later, unknown) | unknown | heat loss per m²; unknown gives a wider range |
+| Construction (light, medium, heavy, unknown) | unknown | stored heat |
+| Heat emitters (radiators, floor heating, both) | radiators | shown with the house model; not used in the model yet |
+| Indoor sensors averaged | 1 | two or more halve the margin |
+| Electricity meter | none | calibrates the pump's efficiency; see below |
+| Minimum model confidence to steer | high | the gate, see below |
+
+The location (sun position, design outdoor temperature) and the time zone
+are Home Assistant's own (Settings -> System -> General); the step shows
+them. The target indoor temperature is the system's **setpoint**, the
+same one the indoor component uses, so the rules and the optimiser can't
+disagree about it. Around it, per system, the **comfort band** (default
+0.5 °C below to 1.0 °C above: no comfort penalty inside it) and the **hard
+floor** (default 1.5 °C below the setpoint).
+
+The meter may be a power sensor (W, kW) or an energy meter counting up
+(Wh, kWh, MWh); the kind is taken from its unit and device class. It
+almost certainly measures the whole house, so it is only used to check
+and calibrate the heat pump's share and efficiency, never to steer.
+
+### History
+
+Every minute the integration reads the indoor sensor, BT1, BT2 (40008 /
+40007), the curve offset, brine in (BT10 40015), BT6, the priority
+(43086), compressor power (43141) and frequency (43136), the electric
+addition (43084), the heat meters (44300 heating, 44298 hot water) and the
+meter, and keeps 10-minute means for 35 days in
+`.storage/nibepi_optimizer_<entry id>` (saved hourly and at shutdown).
+These registers are added to the gateway's polling.
+
+At the first start (and when the indoor sensor or the meter is changed)
+it imports the last 28 days from Home Assistant's **recorder**, so the
+model can be fitted at once. The gateway's register sensors are found
+through its MQTT discovery: the gateway publishes
+`homeassistant/device/<id>/config` with `<prefix>status` as availability,
+and each register sensor has the unique id `<id>_<register>`. Without
+discovery (`config.mqtt.discovery` off on the gateway), or with the
+registers not recorded, the import of those columns is skipped (logged
+once, listed in the diagnostics) and the history builds up live.
+
+### Fitting
+
+Ten minutes after start and every night at 03:15 the models are fitted on
+the last 28 days, in the background: the house model (one thermal mass:
+heat loss, emitter gain, solar and internal gains), the heat curve (bias,
+slope, offset gain from BT1, offset and BT2), the emitter conductance
+from the heat meter (one climate system only; the meter is shared), the
+compressor's efficiency (Carnot fraction, from the heat meter and the
+compressor power) and the heat pump's share of the meter. A fit that is
+implausible is rejected and the priors are used. The *House model* sensor
+shows the result; its state is the confidence (`prior`, `low`, `medium`,
+`high`), from the amount of data, how well the model predicts the indoor
+temperature 24 h ahead and how certain the emitter gain is.
+
+The confidence only becomes high with offset movement in the history:
+the supply follows the outdoor temperature through the curve, so without
+the offset changing, heat loss and emitter gain can't be told apart. The
+price and indoor components, and the optimiser in shadow mode, provide
+that movement.
+
+### How it decides
+
+Every 15 minutes, and on new prices or a mode or strategy change, it
+plans in the background:
+
+- **Horizon**: the known prices from the configured price source (15
+  minutes or hourly, up to 36 h), the outdoor forecast from the weather
+  entity (shifted to match BT1 now), and the sun.
+- **Heating**: for each slot the curve offset, within ±3 of the offset
+  that would hold the setpoint at the horizon's mean outdoor temperature
+  (the *base offset*), that minimises electricity cost (price ×
+  heat / COP) plus a comfort penalty for leaving the band, and a small
+  cost for each change. It stores heat in cheap slots and coasts through
+  expensive ones as far as the band allows, and counts the heat left in
+  the house at the end. Each block of the plan is explained in a
+  sentence, e.g. *"16:00-21:00 offset -3: expensive (2.30 SEK/kWh vs 1.58
+  average), coasting on stored heat, indoor 20.6 °C at 21:00"*.
+- **Savings** are the plan's cost against holding the base offset on the
+  same model, heat left at the end included.
+- **Hot water**: charges are planned against a tank model and the draws
+  the hot water learning expects, keeping BT6 above the optimiser's hot
+  water floor (default 40 °C).
+
+### Heating strategy, the gate and shadow comparison
+
+Each system has a **Heating strategy** select:
+
+| Strategy | Curve offset |
+|---|---|
+| `rules` (default) | the sum of the indoor, price and forecast components, as before |
+| `optimiser` | the optimiser's planned offset for the current slot, **instead of** the sum, while the gate passes; otherwise the sum |
+
+The planned offset replaces the whole sum, base adjustment included: the
+plan already takes the price, the forecast and the indoor temperature
+into account. The gate passes only when the house model is fitted with
+at least the configured confidence (default high), the prices cover at
+least 6 h, the indoor sensor is fresh and the plan is less than 40 min
+old. Whenever the indoor temperature is below the hard floor, the gate
+heats at the base offset + 3 whatever the price or the confidence. When
+the gate refuses, the rules are used and the *Planned curve offset*
+sensor's `strategy_reason` says why.
+
+The **Mode** select still decides whether anything is written: optimiser
+in `shadow` mode only computes and shows, and the lease, its TTL and the
+gateway's fall-back work as before.
+
+The plan is computed whatever the strategy, so it can be compared with
+the rules in shadow mode: *Optimiser plan* (the planned offset now) next
+to *Planned curve offset* (what would be written) and the price/indoor
+offsets, *Expected savings today*, and in the *Optimiser plan*
+attributes the predicted indoor temperature for the next 24 h, to set
+against the measured one.
+
+### When to switch to the optimiser
+
+1. Leave the strategy at `rules` and the mode as it is for at least two
+   weeks, with the price component on, so the history has offset
+   movement.
+2. Wait for *House model* to show `high`, with `sim_rmse` (the model's
+   24 h indoor prediction error) around 0.25 °C or less.
+3. For a few days, compare *Optimiser plan*'s `plan_24h` predicted indoor
+   temperature with the real one; expect them within about 0.3 °C, and
+   *Expected savings today* above 0 on most days.
+4. Set the strategy to `optimiser` (with the mode `active`). Watch the
+   indoor temperature for a week; if it often goes under the band, widen
+   the band or raise the setpoint, or go back to `rules`.
+
+### Hot water charges
+
+The switch **Optimise hot water charges** (off by default) lets the
+optimiser's charge blocks replace the VV-AI plan's heating windows in the
+hot water controller, which stays the one owner of 47134 and 48132: the
+hot water period is held at 0, a block starts a charge with temporary lux
+and ends when BT7 reaches its target (the normal or luxury stop
+temperature), and the BT7 min-temp floor still applies. Automatic luxury
+or hot water priority on still make it stand aside. Without a current
+plan (BT6 or the stop temperatures missing, no prices) the VV-AI plan is
+used when *VV-AI control* is on; otherwise hot water is left to the pump.
+As before, nothing is written unless the **Hot water mode** is `active`.
+
+### Optimiser entities
+
+Per system:
+
+- `select` Heating strategy (`rules` / `optimiser`)
+- `sensor` Optimiser plan: the planned offset now; attributes `plan_24h`
+  (`[time, offset, predicted indoor]` at each change and every hour),
+  `explanation`, `summary`, `expected_cost`, `baseline_cost`, `savings`,
+  `savings_pct`, `gate` (use, offset, reason), `applied`, `strategy`,
+  `model_confidence`, `base_offset`, `planned_at`, `problem`
+- `sensor` House model (`prior` / `low` / `medium` / `high`): `a`, `b`,
+  `c`, `d`, `time_constant_h`, `heat_loss_w_per_k`,
+  `capacity_kwh_per_k`, `emitter_kw_per_k`, `carnot_eta`, `confidence`,
+  `sim_rmse`, `rel_se_b`, `data_hours`, `last_fit`, the fits of the
+  emitter, efficiency and meter share, and the history's size
+
+Shared:
+
+- `sensor` Expected savings today (the price currency): what the plans
+  expect to save today against the base offset, heating per system and
+  hot water as attributes. It is an expectation from the model, made in
+  shadow mode too, not a measurement.
+- `sensor` Hot water optimiser plan: when the next planned charge starts;
+  attributes `blocks` (next 24 h), `next_target`, `savings`, `min_temp`,
+  `enabled`, `in_use`, `problem`
+- `switch` Optimise hot water charges
+
+Long attributes (plans, explanations, fits) are not recorded in the
+history database.
+
+## Diagnostics
+
+Settings -> Devices & services -> NibePi -> menu -> **Download
+diagnostics** gives a JSON file with the options (Tibber home and location
+redacted), the register readings, each system's components, rules sum,
+strategy choice, gate and leases, the hot water decision and leases, and
+the optimiser's profile, fits, models, plans, savings and history
+coverage, including what the recorder import found. Attach it when
+reporting a problem.
+
 ## Entities
 
 Per system (`S1`, `S2`):
 
 - `select` Mode
+- `select` Heating strategy (see [Cost optimiser](#cost-optimiser))
 - `switch` Indoor control, Price control, Forecast control
 - `switch` Send room temperature to pump (RMU40), off by default
-- `sensor` Planned curve offset (attributes: total, components, reasons,
-  inputs_ok, base_adjust, last_tick, healthy, last_action)
+- `sensor` Planned curve offset (attributes: strategy, source, strategy_reason,
+  rules_total, total, components, reasons, inputs_ok, base_adjust,
+  last_tick, healthy, last_action)
 - `sensor` Indoor offset, Price offset, Forecast offset (attributes: reason
   and inputs)
 - `sensor` Pump curve offset (47011/47010 as last read)
@@ -338,16 +553,20 @@ Per system (`S1`, `S2`):
   lease was taken (never in shadow mode).
 - `sensor` RMU40 room temperature lease (same states and attributes, plus
   feed_enabled, source_entity, room_temperature, reason, last_action)
+- `sensor` Optimiser plan, House model (see [Optimiser
+  entities](#optimiser-entities))
 
 Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
 price_source, price_status, and for Tibber tibber_home and
-prices_fetched), `binary_sensor` Gateway (online/offline, see below).
+prices_fetched), `binary_sensor` Gateway (online/offline, see below),
+`sensor` Expected savings today and Hot water optimiser plan (see
+[Optimiser entities](#optimiser-entities)).
 
 Hot water:
 
 - `select` Hot water mode
 - `switch` Hot water learning, VV-AI control, automatic luxury, priority,
-  comfort mode by price
+  comfort mode by price, optimise hot water charges
 - `sensor` Hot water planned action (off / fault / idle / heat_now /
   block / economy / normal / luxury; attributes: reasons per feature,
   targets per register, next_heat_start, closed_until, plan_24h, inputs,

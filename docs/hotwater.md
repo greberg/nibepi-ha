@@ -107,3 +107,24 @@ observes); `off` stops everything.
 | Time schedule (`vv_manual_schedule_*`) | Not ported | Use an HA schedule/automation on the mode select; it also fought the leases (it released 47134 5 s after each start) |
 | Learned profile in `/etc/nibepi/vv_ai_profile.json` | HA storage (`.storage/nibepi_vv_profile_<entry>`), versioned, debounced saves | Survives restarts; import with `nibepi.import_vv_profile` |
 | Chart (`hotwaterAiBuildGraph`) | Sensor attributes (plan for 24 h, profile) | Use any HA chart card |
+
+## Optimised charges (G6)
+
+The cost optimiser (G6) can plan the charges instead of the VV-AI plan:
+switch **Optimise hot water charges** on. Its tank plan (BT6, the stop
+temperatures 47047-47049, the learned draw profile as expected draws, and
+the prices) gives charge blocks; the controller turns each into a heating
+window with the block's target and runs it like a VV-AI window:
+
+- 47134 is held at 0 and 48132 = 4 starts the charge; BT7 reaching the
+  target releases 48132 and closes the run;
+- the BT7 min-temp floor still applies, and automatic luxury or hot water
+  priority still make the VV path stand aside;
+- the plan assumes the pump does not charge on its own (period 0) and
+  keeps BT6 above the optimiser's hot water floor (default 40 °C);
+- without a current plan (made within 40 min) the VV-AI plan is used when
+  VV-AI control is on, otherwise the leases are released and hot water is
+  left to the pump.
+
+The decision's `reasons.optimiser` and `inputs.plan_source` (`optimiser`
+or `vv_ai`) on *Hot water planned action* show which plan drives.
