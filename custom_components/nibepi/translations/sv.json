@@ -432,6 +432,24 @@
           "inactive": "Inaktiv",
           "error": "Fel"
         }
+      },
+      "optimiser_plan": {
+        "name": "Optimerarens plan {system}"
+      },
+      "house_model": {
+        "name": "Husmodell {system}",
+        "state": {
+          "prior": "Startvärden (ej inlärd)",
+          "low": "Låg säkerhet",
+          "medium": "Medelsäkerhet",
+          "high": "Hög säkerhet"
+        }
+      },
+      "optimiser_savings_today": {
+        "name": "Förväntad besparing idag"
+      },
+      "hw_optimiser_plan": {
+        "name": "Varmvattenoptimerarens plan"
       }
     },
     "binary_sensor": {

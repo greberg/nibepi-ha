@@ -1,5 +1,6 @@
 """Sensors: planned offset, component offsets, pump offset, lease states,
-price level, and the hot water plan, draw profile and leases."""
+price level, the hot water plan, draw profile and leases, and the cost
+optimiser's plans, house model and expected savings."""
 
 from __future__ import annotations
 
@@ -13,10 +14,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
-from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
+from .const import COMPONENTS, OPT_HOUSE_EMITTER, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
-from .logic.lease import LeaseManager
+from .logic.lease import MODE_ACTIVE, LeaseManager
+from .logic.optrun import models_summary
+from .logic.optstrategy import SOURCE_RULES, offset_at
 from .logic.price import LEVELS
 from .logic.vvlearn import DAYS, next_draw, slot_name, top_slots
 from .logic.vvplan import PlanSettings, day_sums
@@ -40,8 +43,12 @@ async def async_setup_entry(
         entities.append(PumpOffsetSensor(runtime, system))
         entities.append(LeaseStateSensor(runtime, system))
         entities.append(RmuLeaseStateSensor(runtime, system))
+        entities.append(OptimiserPlanSensor(runtime, system))
+        entities.append(HouseModelSensor(runtime, system))
+    entities.append(SavingsTodaySensor(runtime))
     entities.append(HotWaterActionSensor(runtime))
     entities.append(DrawProfileSensor(runtime))
+    entities.append(HotWaterOptimiserSensor(runtime))
     entities.extend(HotWaterLeaseSensor(runtime, reg, key) for reg, key in HW_LEASES.items())
     async_add_entities(entities)
 
@@ -400,4 +407,258 @@ class DrawProfileSensor(NibePiEntity, SensorEntity):
             # Monday 00:00 first, one value per hour, °C.
             "profile": [round(v, 1) for v in profile.profile],
         }
+        return attrs
+
+
+# --------------------------------------------------------------------------
+# Cost optimiser
+# --------------------------------------------------------------------------
+
+PLAN_HOURS = 24
+MAX_BLOCKS = 12
+
+
+def _hm(when, tz) -> str:
+    return when.astimezone(tz).strftime("%H:%M")
+
+
+def _money(value: Optional[float]) -> Optional[float]:
+    return round(value, 2) if value is not None else None
+
+
+def _currency(runtime: NibePiRuntime) -> str:
+    return str(getattr(runtime.hass.config, "currency", None) or "SEK")
+
+
+class OptimiserPlanSensor(_SystemSensor):
+    """The optimiser's planned curve offset now, with the plan.
+
+    Computed whatever the strategy, so it can be compared with the rules
+    in shadow mode; ``applied`` says whether it is what goes to the lease.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:chart-timeline-variant-shimmer"
+    _unrecorded_attributes = frozenset({"plan_24h", "explanation", "summary"})
+
+    def __init__(self, runtime: NibePiRuntime, system: str) -> None:
+        super().__init__(runtime, "optimiser_plan", system)
+
+    @property
+    def native_value(self) -> Optional[int]:
+        result = self.runtime.optimizer.heating.get(self.system)
+        if result is None or result.plan is None:
+            return None
+        return offset_at(result.plan.plan.steps, dt_util.utcnow())
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        optimizer = self.runtime.optimizer
+        system = self.system
+        result = optimizer.heating.get(system)
+        decision = optimizer.gates.get(system)
+        choice = optimizer.choices.get(system)
+        models = optimizer.models.get(system)
+        applied = (
+            choice is not None and choice.source != SOURCE_RULES and self.sys.mode == MODE_ACTIVE
+        )
+        attrs: Dict[str, Any] = {
+            "strategy": optimizer.strategy.get(system),
+            "applied": applied,
+            "gate": (
+                {"use": decision.use_optimizer, "offset": decision.offset, "reason": decision.reason}
+                if decision is not None
+                else None
+            ),
+            "model_confidence": round(models.fit.confidence, 2) if models is not None else None,
+            "model_level": (models.fit.level if models.fit.ok else "prior") if models is not None else None,
+            "planned_at": _iso(result.planned_at) if result is not None else None,
+            "problem": result.problem if result is not None else optimizer.plan_error,
+        }
+        if result is None or result.plan is None:
+            return attrs
+        plan = result.plan
+        tz = _local_tz()
+        now = dt_util.utcnow()
+        horizon = now + timedelta(hours=PLAN_HOURS)
+        rows: List[List[Any]] = []
+        last_offset = None
+        for step in plan.plan.steps:
+            if step.end <= now or step.start >= horizon:
+                continue
+            on_hour = step.start.astimezone(tz).minute == 0
+            if step.offset != last_offset or on_hour:
+                rows.append([_hm(step.start, tz), step.offset, round(step.t_in_end, 1)])
+            last_offset = step.offset
+        base = plan.baseline.energy_adjusted
+        attrs.update(
+            {
+                "base_offset": result.base_offset,
+                "horizon_h": round(sum((s.end - s.start).total_seconds() for s in plan.plan.steps) / 3600.0, 1),
+                "expected_cost": _money(plan.plan.energy_adjusted),
+                "baseline_cost": _money(base),
+                "savings": _money(plan.savings),
+                "savings_pct": round(100.0 * plan.savings / base, 1) if base > 0 else None,
+                "currency": _currency(self.runtime),
+                "predicted_min": round(plan.plan.min_t_in, 2),
+                "predicted_max": round(plan.plan.max_t_in, 2),
+                "below_band_kh": round(plan.plan.below_band_kh, 2),
+                "changes": plan.plan.changes,
+                "elapsed_s": round(plan.elapsed_s, 3),
+                "summary": result.summary,
+                "explanation": [b.text for b in result.blocks if b.start < horizon][:MAX_BLOCKS],
+                "plan_24h": rows,
+            }
+        )
+        return attrs
+
+
+class SavingsTodaySensor(NibePiEntity, SensorEntity):
+    """What the optimiser's plans expect to save today against the base offset.
+
+    The plans' savings, spread over the day by the baseline's cost; what
+    earlier plans expected for the hours already passed is kept. Computed
+    in shadow mode too: it is an expectation, not a measurement.
+    """
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:piggy-bank-outline"
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "optimiser_savings_today")
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return _currency(self.runtime)
+
+    @property
+    def native_value(self) -> Optional[float]:
+        today = self.runtime.optimizer.savings_today
+        if not today:
+            return None
+        return round(sum(today.values()), 2)
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        optimizer = self.runtime.optimizer
+        attrs: Dict[str, Any] = {k: _money(v) for k, v in optimizer.savings_today.items()}
+        attrs["day"] = optimizer.savings.get("day")
+        return attrs
+
+
+class HouseModelSensor(_SystemSensor):
+    """The house model's confidence; the fitted figures as attributes."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["prior", "low", "medium", "high"]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:home-analytics"
+    _unrecorded_attributes = frozenset({"curve", "prior", "emitter_fit", "eta_fit", "meter_share", "history"})
+
+    def __init__(self, runtime: NibePiRuntime, system: str) -> None:
+        super().__init__(runtime, "house_model", system)
+
+    @property
+    def native_value(self) -> Optional[str]:
+        models = self.runtime.optimizer.models.get(self.system)
+        if models is None:
+            return None
+        return models.fit.level if models.fit.ok else "prior"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        optimizer = self.runtime.optimizer
+        models = optimizer.models.get(self.system)
+        if models is None:
+            return {}
+        attrs = models_summary(models)
+        fits = optimizer.fits or {}
+        system_fits = (fits.get("systems") or {}).get(self.system) or {}
+        log = optimizer.log
+        span = log.span()
+        attrs.update(
+            {
+                "last_fit": fits.get("fitted_at"),
+                "fit_error": optimizer.fit_error,
+                "emitter_type": self.runtime.opt(OPT_HOUSE_EMITTER),
+                "prior": system_fits.get("prior"),
+                "emitter_fit": system_fits.get("emitter"),
+                "eta_fit": fits.get("eta"),
+                "meter_share": fits.get("hp_share"),
+                "history": {
+                    "bins": len(log),
+                    "days": round((span[1] - span[0]) / 86400.0, 1) if span else 0.0,
+                    "imported_at": optimizer.bootstrap_at,
+                    "meter": optimizer.meter_entity,
+                    "meter_problem": optimizer.meter_problem,
+                },
+            }
+        )
+        return attrs
+
+
+class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
+    """The optimiser's hot water plan: when the next charge starts."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:water-boiler-auto"
+    _unrecorded_attributes = frozenset({"blocks"})
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "hw_optimiser_plan")
+
+    def _next(self):
+        tank = self.runtime.optimizer.tank
+        if tank is None or tank.plan is None:
+            return None
+        now = dt_util.utcnow()
+        return next((b for b in tank.plan.blocks if b.action == "charge" and b.end > now), None)
+
+    @property
+    def native_value(self):
+        block = self._next()
+        return block.start if block is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        runtime = self.runtime
+        tank = runtime.optimizer.tank
+        decision = runtime.hotwater.decision
+        attrs: Dict[str, Any] = {
+            "enabled": bool(runtime.hotwater.features.get("optimiser")),
+            "in_use": bool(decision is not None and decision.details.get("plan_source") == "optimiser"),
+            "planned_at": _iso(tank.planned_at) if tank is not None else None,
+            "problem": tank.problem if tank is not None else "not planned yet",
+        }
+        if tank is None or tank.plan is None:
+            return attrs
+        plan = tank.plan
+        tz = _local_tz()
+        now = dt_util.utcnow()
+        horizon = now + timedelta(hours=PLAN_HOURS)
+        nxt = self._next()
+        attrs.update(
+            {
+                "next_target": nxt.target if nxt is not None else None,
+                "next_boost": nxt.boost if nxt is not None else None,
+                "expected_cost": _money(plan.cost),
+                "baseline_cost": _money(plan.baseline_cost),
+                "savings": _money(plan.savings),
+                "currency": _currency(runtime),
+                "min_temp": round(plan.min_temp, 1),
+                "blocks": [
+                    {
+                        "start": _hm(b.start, tz),
+                        "end": _hm(b.end, tz),
+                        "action": b.action,
+                        "target": b.target,
+                        "boost": b.boost,
+                        "reason": b.reason,
+                    }
+                    for b in plan.blocks
+                    if b.end > now and b.start < horizon
+                ],
+            }
+        )
         return attrs

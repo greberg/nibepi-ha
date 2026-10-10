@@ -432,6 +432,24 @@
           "inactive": "Inactive",
           "error": "Error"
         }
+      },
+      "optimiser_plan": {
+        "name": "Optimiser plan {system}"
+      },
+      "house_model": {
+        "name": "House model {system}",
+        "state": {
+          "prior": "Prior (not fitted)",
+          "low": "Low confidence",
+          "medium": "Medium confidence",
+          "high": "High confidence"
+        }
+      },
+      "optimiser_savings_today": {
+        "name": "Expected savings today"
+      },
+      "hw_optimiser_plan": {
+        "name": "Hot water optimiser plan"
       }
     },
     "binary_sensor": {
