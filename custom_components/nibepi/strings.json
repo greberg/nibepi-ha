@@ -293,6 +293,13 @@
           "active": "Active (write via lease)"
         }
       },
+      "strategy": {
+        "name": "Heating strategy {system}",
+        "state": {
+          "rules": "Rules (indoor, price, forecast)",
+          "optimiser": "Cost optimiser"
+        }
+      },
       "hw_mode": {
         "name": "Hot water mode",
         "state": {

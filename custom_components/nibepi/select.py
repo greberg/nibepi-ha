@@ -1,4 +1,5 @@
-"""Mode selects: per system and for hot water, off / shadow / active (restored)."""
+"""Selects (restored): per system and for hot water the mode, off / shadow /
+active; per system the heating strategy, rules / optimiser."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from . import NibePiConfigEntry
 from .entity import NibePiEntity
 from .logic.lease import MODE_SHADOW, MODES
+from .logic.optstrategy import STRATEGIES, STRATEGY_RULES
 
 
 async def async_setup_entry(
@@ -18,6 +20,7 @@ async def async_setup_entry(
 ) -> None:
     runtime = entry.runtime_data
     entities: list = [ModeSelect(runtime, system) for system in runtime.systems]
+    entities.extend(StrategySelect(runtime, system) for system in runtime.systems)
     entities.append(HotWaterModeSelect(runtime))
     async_add_entities(entities)
 
@@ -70,4 +73,35 @@ class HotWaterModeSelect(NibePiEntity, SelectEntity, RestoreEntity):
         if option not in MODES:
             raise ValueError("Unknown mode %s" % option)
         self.runtime.set_hw_mode(option)
+        self.async_write_ha_state()
+
+
+class StrategySelect(NibePiEntity, SelectEntity, RestoreEntity):
+    """Rules (Phase 1 sum, default) or the cost optimiser's plan.
+
+    The mode still decides whether anything is written: optimiser in
+    shadow mode only computes and shows.
+    """
+
+    _attr_options = list(STRATEGIES)
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:strategy"
+
+    def __init__(self, runtime, system: str) -> None:
+        super().__init__(runtime, "strategy", system)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        strategy = last.state if last is not None and last.state in STRATEGIES else STRATEGY_RULES
+        self.runtime.optimizer.set_strategy(self.system, strategy)
+
+    @property
+    def current_option(self) -> str:
+        return self.runtime.optimizer.strategy.get(self.system, STRATEGY_RULES)
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in STRATEGIES:
+            raise ValueError("Unknown strategy %s" % option)
+        self.runtime.optimizer.set_strategy(self.system, option)
         self.async_write_ha_state()

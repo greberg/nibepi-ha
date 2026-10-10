@@ -15,20 +15,31 @@ Fitting (nightly and after start) per climate system:
 and once: ``fit_carnot_eta`` (heat meter vs. compressor power and
 addition) and ``fit_hp_share`` (the user's meter vs. the heat pump's
 activity), the latter for calibration and diagnostics only.
+
+Planning (every 15 minutes, on new prices and on a mode change):
+``plan_system`` builds the horizon from the prices (currency/kWh), the
+forecast and BT1, runs ``plan_heating`` from the measured indoor
+temperature and explains it; ``plan_tank`` plans the hot water charges
+against the VV learning profile's expected draws.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, tzinfo
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .inputs import ForecastPoint, PriceSlot
 from .opthistory import column, house_samples, hourly
 from .optimizer.energy import EnergyModel, fit_carnot_eta, fit_emitter
+from .optimizer.explain import Block, explain_plan, summary
 from .optimizer.heatcurve import DEFAULT_CURVE, HeatCurve, fit_heat_curve
+from .optimizer.horizon import build_horizon
 from .optimizer.house import HouseFit, HouseModel, fit_house_model
 from .optimizer.meter import fit_hp_share
+from .optimizer.planner import ComfortSettings, Plan, PlannerSettings, neutral_offset, plan_heating
 from .optimizer.profile import HousePrior, HouseProfile, house_prior
+from .optimizer.tank import HotWaterPlan, TankModel, TankSettings, draws_from_week_profile, plan_hot_water
 
 HEATING_SHARE = 0.5  # an hour counts as heating when prio was 30 this much
 HW_SHARE = 0.1  # ... and as free of hot water charging below this
@@ -300,3 +311,169 @@ def models_summary(models: Models) -> Dict[str, Any]:
         "rel_se_b": round(fit.rel_se_b, 3) if fit.rel_se_b != float("inf") else None,
         "data_hours": fit.samples,
     }
+
+
+# --------------------------------------------------------------------------
+# Planning
+# --------------------------------------------------------------------------
+
+PLAN_MAX_DOWN = 3
+PLAN_MAX_UP = 3
+
+
+@dataclass(frozen=True)
+class HeatingInputs:
+    system: str
+    models: Models
+    comfort: ComfortSettings
+    prices: Sequence[PriceSlot]  # currency/kWh
+    now: datetime
+    tz: tzinfo
+    t_in: Optional[float]
+    t_out: Optional[float]
+    forecast: Sequence[ForecastPoint] = ()
+    t_brine: Optional[float] = None
+    current_offset: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    currency: str = "SEK"
+
+
+@dataclass
+class HeatingResult:
+    system: str
+    planned_at: datetime
+    base_offset: int
+    plan: Optional[Plan] = None
+    blocks: List[Block] = field(default_factory=list)
+    summary: str = ""
+    problem: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.plan is not None and self.problem is None
+
+
+def comfort_settings(target: float, below: float, above: float, floor_below: float, margin: float) -> ComfortSettings:
+    return ComfortSettings(
+        target=target, below=below, above=above, hard_floor_below=floor_below, sensor_margin=margin
+    )
+
+
+def base_offset(models: Models, t_out: float, target: float) -> int:
+    return neutral_offset(models.house, models.curve, t_out, target)
+
+
+def plan_system(inputs: HeatingInputs) -> HeatingResult:
+    """The heating plan for one system, or the reason there is none."""
+    models = inputs.models
+    target = inputs.comfort.target
+    t_out_now = inputs.t_out if inputs.t_out is not None else 0.0
+    result = HeatingResult(inputs.system, inputs.now, base_offset(models, t_out_now, target))
+    if inputs.t_in is None:
+        result.problem = "indoor temperature missing"
+        return result
+    slots = build_horizon(
+        inputs.prices,
+        inputs.now,
+        inputs.t_out,
+        inputs.forecast,
+        latitude=inputs.latitude,
+        longitude=inputs.longitude,
+        t_brine=inputs.t_brine,
+    )
+    if not slots:
+        result.problem = "no prices cover now"
+        return result
+    hours = sum(s.hours for s in slots)
+    mean_out = sum(s.t_out * s.hours for s in slots) / hours
+    result.base_offset = base_offset(models, mean_out, target)
+    settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP)
+    plan = plan_heating(
+        slots, inputs.t_in, models.house, models.curve, models.energy, inputs.comfort, settings,
+        current_offset=inputs.current_offset,
+    )
+    result.plan = plan
+    result.blocks = explain_plan(plan, inputs.comfort, inputs.tz, "%s/kWh" % inputs.currency)
+    result.summary = summary(plan, inputs.currency)
+    return result
+
+
+@dataclass(frozen=True)
+class TankInputs:
+    prices: Sequence[PriceSlot]  # currency/kWh
+    now: datetime
+    tz: tzinfo
+    bt6: Optional[float]
+    economy_stop: Optional[float]
+    normal_start: Optional[float]
+    normal_stop: Optional[float]
+    lux_stop: Optional[float]
+    floor: float
+    profile: Sequence[float]  # VV learning's 168 hour-of-week BT6 drops
+    confidence: float = 0.7
+    t_brine: Optional[float] = None
+    pump_starts_itself: bool = False
+
+
+@dataclass
+class TankResult:
+    planned_at: datetime
+    plan: Optional[HotWaterPlan] = None
+    problem: Optional[str] = None
+
+
+def plan_tank(inputs: TankInputs) -> TankResult:
+    """The hot water charge plan, or the reason there is none.
+
+    The optimiser's charges run through the hot water controller's VV
+    path, which holds the hot water period (47134) at 0: the pump does not
+    charge by itself then, so the economy start is modelled away unless
+    ``pump_starts_itself``. The controller's BT7 min-temp floor stays as
+    the backstop.
+    """
+    result = TankResult(inputs.now)
+    if inputs.bt6 is None:
+        result.problem = "BT6 missing or stale"
+        return result
+    if None in (inputs.economy_stop, inputs.normal_stop, inputs.lux_stop):
+        result.problem = "stop temperatures unknown"
+        return result
+    slots = build_horizon(inputs.prices, inputs.now, None, None, t_brine=inputs.t_brine)
+    if not slots:
+        result.problem = "no prices cover now"
+        return result
+    normal_stop = float(inputs.normal_stop)  # type: ignore[arg-type]
+    normal_start = inputs.normal_start if inputs.normal_start is not None else normal_stop - 5.0
+    settings = TankSettings(
+        floor=inputs.floor,
+        economy_start=(min(float(inputs.economy_stop) - 7.0, inputs.floor - 2.0)  # type: ignore[arg-type]
+                       if inputs.pump_starts_itself else -50.0),
+        economy_stop=float(inputs.economy_stop),  # type: ignore[arg-type]
+        normal_start=float(normal_start),
+        normal_stop=normal_stop,
+        lux_stop=float(inputs.lux_stop),  # type: ignore[arg-type]
+    )
+    draws = draws_from_week_profile(
+        list(inputs.profile), slots[0].start, slots[-1].end, inputs.tz, inputs.confidence
+    )
+    result.plan = plan_hot_water(slots, inputs.bt6, draws, TankModel(), settings, inputs.tz)
+    return result
+
+
+def profile_confidence(learned: int, imported: bool) -> float:
+    """How far to trust VV learning's profile as a draw forecast (0.5..0.8)."""
+    if imported:
+        return 0.8
+    return 0.5 + 0.3 * min(1.0, max(0, learned) / 60.0)
+
+
+def scale_prices(slots: Sequence[PriceSlot], unit_factor: Any) -> List[PriceSlot]:
+    """Source prices -> currency/kWh (the option converts to öre: /100)."""
+    try:
+        factor = float(unit_factor) / 100.0
+    except (TypeError, ValueError):
+        factor = 1.0
+    if factor <= 0:
+        factor = 1.0
+    return [PriceSlot(s.start, s.end, s.price * factor) for s in slots]

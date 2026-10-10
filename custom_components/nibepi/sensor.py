@@ -77,8 +77,15 @@ class PlannedOffsetSensor(_SystemSensor):
     def extra_state_attributes(self) -> Dict[str, Any]:
         sys = self.sys
         plan = sys.plan
+        rules = sys.rules_plan
+        optimizer = self.runtime.optimizer
+        choice = optimizer.choices.get(sys.system)
         return {
             "mode": sys.mode,
+            "strategy": optimizer.strategy.get(sys.system),
+            "source": choice.source if choice is not None else None,
+            "strategy_reason": choice.reason if choice is not None else None,
+            "rules_total": round(rules.total, 2) if rules else None,
             "total": round(plan.total, 2) if plan else None,
             "components": plan.components if plan else {},
             "reasons": plan.reasons if plan else {},

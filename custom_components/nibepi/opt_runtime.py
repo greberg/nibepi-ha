@@ -27,6 +27,9 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from homeassistant.components import mqtt
 
 from .const import (
+    OPT_COMFORT_ABOVE,
+    OPT_COMFORT_BELOW,
+    OPT_COMFORT_FLOOR,
     OPT_HOUSE_AREA,
     OPT_HOUSE_CONSTRUCTION,
     OPT_HOUSE_ERA,
@@ -34,6 +37,8 @@ from .const import (
     OPT_HOUSE_SENSORS,
     OPT_INDOOR_ENTITY,
     OPT_METER_ENTITY,
+    OPT_OPT_MIN_LEVEL,
+    OPT_PRICE_UNIT_FACTOR,
     OPT_SENSOR_TIMEOUT,
     OPT_STORE_SAVE_DELAY,
     OPT_STORE_VERSION,
@@ -48,7 +53,9 @@ from .const import (
     opt_store_key,
     signal_update,
 )
+from .logic.curve import CurvePlan
 from .logic.hwcontrol import REG_BT6, REG_PRIO
+from .logic.lease import MODE_OFF
 from .logic.inputs import Reading, state_timestamp, state_value, to_float, usable
 from .logic.opthistory import (
     BOOTSTRAP_DAYS,
@@ -67,9 +74,33 @@ from .logic.opthistory import (
     register_unique_id,
     retention_start,
 )
+from .logic.optimizer.gate import GateDecision, gate
 from .logic.optimizer.meter import MeterConfig, MeterReading
+from .logic.optimizer.planner import ComfortSettings
 from .logic.optimizer.profile import HouseProfile
-from .logic.optrun import Models, SystemSetup, fit_all, models_for
+from .logic.optrun import (
+    PLAN_MAX_UP,
+    HeatingInputs,
+    HeatingResult,
+    Models,
+    SystemSetup,
+    base_offset,
+    comfort_settings,
+    fit_all,
+    models_for,
+    plan_system,
+    scale_prices,
+)
+from .logic.optstrategy import (
+    STRATEGY_RULES,
+    STRATEGIES,
+    StrategyChoice,
+    apply_choice,
+    choose_total,
+    hours_left,
+    offset_at,
+    savings_between,
+)
 
 if TYPE_CHECKING:
     from .runtime import NibePiRuntime
@@ -81,6 +112,10 @@ BOOTSTRAP_DELAY_S = 60
 FIT_DELAY_S = 600  # first fit after start (after the history import)
 FIT_TIME = (3, 15)  # nightly, local time
 DEFAULT_TARGET = 21.0
+PLAN_MINUTES = (0, 15, 30, 45)
+PLAN_MAX_AGE = timedelta(minutes=40)  # an older plan does not steer
+FIRST_PLAN_AFTER = timedelta(seconds=150)  # register values are in by then
+FORECAST_MAX_AGE = timedelta(hours=6)
 # Live samples: a register value older than this is left out of the bin.
 SAMPLE_MAX_AGE_MIN = 30.0
 METER_BUFFER = timedelta(hours=2)
@@ -167,6 +202,19 @@ class OptimizerRuntime:
         self.models: Dict[str, Models] = {}
         self.fit_running = False
         self.fit_error: Optional[str] = None
+        # Planning (in memory; replanned every 15 minutes).
+        self.strategy: Dict[str, str] = {system: STRATEGY_RULES for system in runtime.systems}
+        self.heating: Dict[str, HeatingResult] = {}
+        self.gates: Dict[str, Optional[GateDecision]] = {}
+        self.choices: Dict[str, StrategyChoice] = {}
+        self.plan_running = False
+        self.plan_error: Optional[str] = None
+        self.last_plan_at: Optional[datetime] = None
+        self._plan_again = False
+        self._price_key: Any = None
+        # Expected savings today: {"day", "heating": {system: banked}, ...}.
+        self.savings: Dict[str, Any] = {}
+        self.savings_today: Dict[str, float] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -176,6 +224,9 @@ class OptimizerRuntime:
         self._unsubs.append(async_at_started(self.hass, self._started))
         self._unsubs.append(
             async_track_time_change(self.hass, self._fit_cb, hour=FIT_TIME[0], minute=FIT_TIME[1], second=0)
+        )
+        self._unsubs.append(
+            async_track_time_change(self.hass, self._plan_cb, minute=list(PLAN_MINUTES), second=30)
         )
         self.refresh_models()
 
@@ -194,6 +245,7 @@ class OptimizerRuntime:
         # A new indoor sensor or meter may have history to import.
         self.meter_buffer = []
         self.refresh_models()
+        self.request_plan()
         if self.loaded and not self.bootstrap_running:
             self.rt.entry.async_create_background_task(
                 self.hass, self._async_import_and_fit(), "nibepi optimiser history import"
@@ -220,6 +272,8 @@ class OptimizerRuntime:
     def _load_extra(self, data: Dict[str, Any]) -> None:
         fits = data.get("fits")
         self.fits = fits if isinstance(fits, dict) else {}
+        savings = data.get("savings")
+        self.savings = savings if isinstance(savings, dict) else {}
 
     def _store_data(self) -> Dict[str, Any]:
         return {
@@ -227,6 +281,7 @@ class OptimizerRuntime:
             "imported": dict(self.imported),
             "bootstrap_at": self.bootstrap_at,
             "fits": self.fits,
+            "savings": self.savings,
         }
 
     def save_soon(self) -> None:
@@ -535,3 +590,201 @@ class OptimizerRuntime:
         finally:
             self.fit_running = False
         async_dispatcher_send(self.hass, signal_update(self.rt.entry.entry_id))
+
+    # -- strategy and the live gate -------------------------------------------
+
+    def set_strategy(self, system: str, strategy: str) -> None:
+        if strategy not in STRATEGIES or self.strategy.get(system) == strategy:
+            return
+        _LOGGER.info("NibePi %s heating strategy %s -> %s", system, self.strategy.get(system), strategy)
+        self.strategy[system] = strategy
+        self.request_plan()
+
+    def comfort(self, system: str) -> ComfortSettings:
+        rt = self.rt
+        sys = rt.systems[system]
+        target = rt._setpoint(sys)
+        models = self.models.get(system)
+        return comfort_settings(
+            target if target is not None else DEFAULT_TARGET,
+            to_float(rt.opt(OPT_COMFORT_BELOW, system)) or 0.0,
+            to_float(rt.opt(OPT_COMFORT_ABOVE, system)) or 0.0,
+            to_float(rt.opt(OPT_COMFORT_FLOOR, system)) or 1.5,
+            models.prior.sensor_margin if models is not None else 0.0,
+        )
+
+    def _indoor(self, system: str, now: datetime):
+        reading = self.rt._indoor_reading(self.rt.systems[system])
+        problem = usable(reading, now, self.rt.opt(OPT_SENSOR_TIMEOUT))
+        return (float(reading.value) if problem is None and reading is not None else None), problem
+
+    def live_gate(self, system: str, now: datetime) -> Optional[GateDecision]:
+        """The gate with this minute's indoor temperature and the last plan."""
+        models = self.models.get(system)
+        if models is None:
+            return None
+        comfort = self.comfort(system)
+        t_in, problem = self._indoor(system, now)
+        result = self.heating.get(system)
+        planned = None
+        horizon = 0.0
+        if result is not None:
+            base = result.base_offset
+            if result.plan is not None and now - result.planned_at <= PLAN_MAX_AGE:
+                steps = result.plan.plan.steps
+                planned = offset_at(steps, now)
+                horizon = hours_left(steps, now)
+        else:
+            t_out = self._fresh(self.rt.readings.get(REG_OUTDOOR), now)
+            base = base_offset(models, t_out if t_out is not None else 0.0, comfort.target)
+        decision = gate(
+            models.fit,
+            planned,
+            horizon,
+            t_in,
+            comfort.floor,
+            base,
+            PLAN_MAX_UP,
+            indoor_problem=problem,
+            min_level=str(self.rt.opt(OPT_OPT_MIN_LEVEL) or "high"),
+        )
+        if decision.reason == "no plan" and result is not None:
+            why = result.problem or ("plan older than %d min" % (PLAN_MAX_AGE.total_seconds() // 60))
+            decision = GateDecision(False, None, "no plan (%s)" % why)
+        return decision
+
+    def decide(self, system: str, now: datetime, rules: CurvePlan, current: Optional[float]) -> CurvePlan:
+        """The curve plan for this tick: the rules, or the optimiser's offset."""
+        decision = self.live_gate(system, now)
+        choice = choose_total(self.strategy.get(system, STRATEGY_RULES), rules.total, decision)
+        self.gates[system] = decision
+        self.choices[system] = choice
+        return apply_choice(rules, choice, current)
+
+    def on_tick(self, now: datetime) -> None:
+        """Replan when the prices changed, and the first time after start."""
+        started = self.rt.started
+        if started is None or now - started < FIRST_PLAN_AFTER:
+            return
+        slots = self.rt.price_slots
+        key = (len(slots), slots[0].start, slots[-1].end) if slots else None
+        if self.last_plan_at is None or key != self._price_key:
+            self._price_key = key
+            self.request_plan()
+
+    # -- planning ----------------------------------------------------------------
+
+    @callback
+    def _plan_cb(self, _now: Any) -> None:
+        self.request_plan()
+
+    def request_plan(self) -> None:
+        if not self.loaded or self.rt.started is None:
+            return
+        if self.plan_running:
+            self._plan_again = True
+            return
+        self.rt.entry.async_create_background_task(self.hass, self.async_plan(), "nibepi optimiser plan")
+
+    async def async_plan(self) -> None:
+        if self.plan_running:
+            self._plan_again = True
+            return
+        self.plan_running = True
+        try:
+            while True:
+                self._plan_again = False
+                try:
+                    await self._async_plan_once()
+                    self.plan_error = None
+                except Exception as err:  # noqa: BLE001 - the rules keep running
+                    _LOGGER.exception("NibePi optimiser: planning failed")
+                    self.plan_error = repr(err)
+                self.last_plan_at = dt_util.utcnow()
+                if not self._plan_again:
+                    break
+        finally:
+            self.plan_running = False
+        async_dispatcher_send(self.hass, signal_update(self.rt.entry.entry_id))
+
+    def _heating_inputs(self, now: datetime) -> List[HeatingInputs]:
+        rt = self.rt
+        tz = dt_util.get_default_time_zone()
+        prices = scale_prices(rt.price_slots, rt.opt(OPT_PRICE_UNIT_FACTOR))
+        fetched = rt.forecast_fetched
+        forecast = list(rt.forecast or []) if fetched is not None and now - fetched <= FORECAST_MAX_AGE else []
+        t_out = self._fresh(rt.readings.get(REG_OUTDOOR), now, rt.opt(OPT_SENSOR_TIMEOUT))
+        t_brine = self._fresh(rt.readings.get(REG_BRINE_IN), now)
+        currency = str(getattr(self.hass.config, "currency", None) or "SEK")
+        out = []
+        for system, sys in rt.systems.items():
+            if sys.mode == MODE_OFF or system not in self.models:
+                continue
+            t_in, _problem = self._indoor(system, now)
+            current = rt._value(sys.registers["offset"])
+            out.append(
+                HeatingInputs(
+                    system=system,
+                    models=self.models[system],
+                    comfort=self.comfort(system),
+                    prices=prices,
+                    now=now,
+                    tz=tz,
+                    t_in=t_in,
+                    t_out=t_out,
+                    forecast=forecast,
+                    t_brine=t_brine,
+                    current_offset=int(round(current)) if current is not None else None,
+                    latitude=self.hass.config.latitude,
+                    longitude=self.hass.config.longitude,
+                    currency=currency,
+                )
+            )
+        return out
+
+    async def _async_plan_once(self) -> None:
+        now = dt_util.utcnow()
+        self.refresh_models()
+        inputs = self._heating_inputs(now)
+        results = await self.hass.async_add_executor_job(_run_heating, inputs)
+        self._book_savings(now, results)
+        active = {r.system for r in results}
+        for system in list(self.heating):
+            if system not in active:
+                del self.heating[system]
+        for result in results:
+            self.heating[result.system] = result
+        self.save_soon()
+
+    # -- expected savings today ------------------------------------------------
+
+    def _book_savings(self, now: datetime, heating: List[HeatingResult]) -> None:
+        """Bank what the previous plans expected to save until now; add the
+        new plans' share of the rest of today."""
+        day_start = dt_util.start_of_local_day(dt_util.as_local(now))
+        day_end = dt_util.start_of_local_day(dt_util.as_local(now) + timedelta(days=1))
+        day = day_start.date().isoformat()
+        if self.savings.get("day") != day:
+            self.savings = {"day": day, "heating": {}, "hot_water": 0.0}
+        banked: Dict[str, float] = self.savings.setdefault("heating", {})
+        today: Dict[str, float] = {}
+        for result in heating:
+            prev = self.heating.get(result.system)
+            if prev is not None and prev.plan is not None:
+                since = max(prev.planned_at, day_start)
+                banked[result.system] = banked.get(result.system, 0.0) + savings_between(prev.plan, since, now)
+            ahead = savings_between(result.plan, now, day_end) if result.plan is not None else 0.0
+            today[result.system] = banked.get(result.system, 0.0) + ahead
+        self.savings_today = today
+
+
+def _run_heating(inputs: List[HeatingInputs]) -> List[HeatingResult]:
+    """Executor job: one plan per system; a failure is that system's problem."""
+    results = []
+    for item in inputs:
+        try:
+            results.append(plan_system(item))
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("NibePi optimiser: planning %s failed", item.system)
+            results.append(HeatingResult(item.system, item.now, 0, problem="error: %r" % err))
+    return results

@@ -293,6 +293,13 @@
           "active": "Aktiv (skriv via lease)"
         }
       },
+      "strategy": {
+        "name": "Värmestrategi {system}",
+        "state": {
+          "rules": "Regler (inomhus, elpris, prognos)",
+          "optimiser": "Kostnadsoptimerare"
+        }
+      },
       "hw_mode": {
         "name": "Varmvattenläge",
         "state": {

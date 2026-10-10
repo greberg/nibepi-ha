@@ -168,7 +168,8 @@ class SystemRuntime:
     mode: str = MODE_SHADOW
     enabled: Dict[str, bool] = field(default_factory=lambda: {c: True for c in COMPONENTS})
     decisions: Dict[str, Decision] = field(default_factory=dict)
-    plan: Optional[curve.CurvePlan] = None
+    plan: Optional[curve.CurvePlan] = None  # what goes to the lease
+    rules_plan: Optional[curve.CurvePlan] = None  # the Phase 1 sum
     last_tick: Optional[datetime] = None
     healthy: bool = True
     error: Optional[str] = None
@@ -463,6 +464,7 @@ class NibePiRuntime:
         sys.mode = mode
         if self.started is not None:
             self.entry.async_create_background_task(self.hass, self.async_tick(), "nibepi tick")
+            self.optimizer.request_plan()
 
     def set_enabled(self, system: str, component: str, enabled: bool) -> None:
         self.systems[system].enabled[component] = enabled
@@ -652,6 +654,7 @@ class NibePiRuntime:
             await self._async_rmu_step(sys, now)
         try:
             self.optimizer.sample(now)
+            self.optimizer.on_tick(now)
         except Exception:  # noqa: BLE001 - history is best effort
             _LOGGER.exception("NibePi optimiser: sampling failed")
         await self._async_hotwater_step(now)
@@ -708,6 +711,7 @@ class NibePiRuntime:
         if sys.mode == MODE_OFF:
             sys.decisions = {}
             sys.plan = None
+            sys.rules_plan = None
             return
         timeout = self.opt(OPT_SENSOR_TIMEOUT)
         indoor = self._indoor_reading(sys)
@@ -765,7 +769,15 @@ class NibePiRuntime:
         else:
             reference = self._value(sys.registers["offset"])
         sys.decisions = decisions
-        sys.plan = curve.plan(decisions, reference, self.base_adjust.get(sys.system, 0.0))
+        rules = curve.plan(decisions, reference, self.base_adjust.get(sys.system, 0.0))
+        sys.rules_plan = rules
+        try:
+            # Heating strategy "optimiser": its offset replaces the sum
+            # while the gate allows it.
+            sys.plan = self.optimizer.decide(sys.system, now, rules, reference)
+        except Exception:  # noqa: BLE001 - fall back to the rules
+            _LOGGER.exception("NibePi %s optimiser decision failed; using the rules", sys.system)
+            sys.plan = rules
 
     # -- inputs -----------------------------------------------------------
 
