@@ -186,20 +186,31 @@ price_source, price_status, and for Tibber tibber_home and
 prices_fetched), `binary_sensor` Gateway (online/offline
 from `<prefix>status`, with `gateway/state` as attributes).
 
-## Migrating from Node-RED
+## Going live
+
+The NibePi gateway (`ghcr.io/greberg/nibepi-gateway`, installed on the Pi
+with `pi/install.sh` from
+[nibepi-docker](https://github.com/greberg/nibepi-docker)) replaces the old
+Node-RED NibePi. Until this integration runs in `active` mode, the pump runs
+on its own heat curve with no price, indoor or weather adjustment.
 
 Leases move registers, not controllers: 47011 is the sum of indoor, price
-and weather, so all three move together.
+and weather, so all three are controlled together.
 
-1. **Phase 1 (now)**: update the gateway to a version with leases. Install
-   this integration in `shadow` mode next to the Node-RED controllers.
-   Compare *Planned curve offset* and its parts with what Node-RED writes.
-2. **Phase 2**: switch the system to `active`. The lease blocks other
-   writers to 47011 (including Node-RED), but turn off Node-RED's indoor,
-   price and weather control anyway to avoid error noise. Then set the
-   gateway's `raw_set` to `"none"`.
-3. Later phases: hot water and the cost optimiser move to Home Assistant,
-   and Node-RED is retired.
+1. Install the gateway on the Pi, pointing it at the same MQTT broker as
+   Home Assistant.
+2. Install this integration in `shadow` mode. Enter your settings (price
+   level offsets, setpoint, weather); the old values are still in the
+   Pi's `config.json` under `price`, `indoor` and `weather` for reference.
+3. Watch *Planned curve offset* and its parts for a few days.
+4. Switch the system to `active`, and check that the lease sensor shows
+   an active lease.
+5. Optionally set the gateway's `NIBEPI_RAW_SET=none`, so only leases can
+   write to the pump.
+
+Later phases move hot water and a cost optimiser into this integration.
+The Node-RED version of NibePi is kept under the `nodered-final` tag of
+the NibePi repositories.
 
 ## Development
 
