@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import unittest
+from datetime import timezone
 
 import context  # noqa: F401
 from context import utc
@@ -10,7 +11,22 @@ from logic.optimizer.energy import EnergyModel
 from logic.optimizer.heatcurve import HeatCurve
 from logic.optimizer.house import HouseModel, synthetic_history
 from logic.optimizer.profile import HouseProfile
-from logic.optrun import SystemSetup, curve_number, fit_all, house_fit_from, models_for, models_summary
+from datetime import timedelta
+
+from logic.inputs import PriceSlot
+from logic.optimizer.house import LagStep
+from logic.optimizer.planner import ComfortSettings
+from logic.optrun import (
+    HeatingInputs,
+    SystemSetup,
+    curve_number,
+    fit_all,
+    house_fit_from,
+    models_for,
+    models_summary,
+    plan_system,
+    slab_now,
+)
 
 START = utc(2026, 1, 1)
 TRUE = HouseModel(0.012, 0.02, 0.0, 0.05)
@@ -134,6 +150,94 @@ class ModelsFallbackTest(unittest.TestCase):
         self.assertEqual(curve_number(None), 9.0)
         self.assertEqual(curve_number(0), 9.0)
         self.assertEqual(curve_number(5), 5.0)
+
+
+FLOOR_PROFILE = HouseProfile(floor_area_m2=150, floors=1.5, target_temp=21.0, latitude=None, longitude=None,
+                             emitter="floor")
+FLOOR_TRUE = HouseModel(0.012, 0.03, 0.0, 0.05, 3.0, 9.0)
+FLOOR_CURVE = HeatCurve(curve=5)
+
+
+def make_floor_rows(days: int = 21, seed: int = 3):
+    """10-minute bins from a floor-heated house (slab lag 3 h)."""
+    rnd = random.Random(seed)
+    energy = EnergyModel(FLOOR_TRUE.b * CAPACITY, ETA)
+    lag = LagStep(FLOOR_TRUE, 1.0 / 60.0)
+    t_in, t_f = 21.0, None
+    heat_total = 1000.0
+    rows = {}
+    offset = 0
+    for i in range(days * 24 * 6):
+        when = START + timedelta(minutes=10 * i)
+        if i % 18 == 0:
+            offset = rnd.randint(-3, 3)
+        outdoor = t_out(when)
+        target = FLOOR_CURVE.supply(outdoor, offset)
+        if t_f is None:
+            t_f = target
+        reading = round(t_in + rnd.gauss(0, 0.05), 1)
+        free = FLOOR_TRUE.a * outdoor + FLOOR_TRUE.d
+        logged = heat = 0.0
+        for _ in range(10):
+            t_in, f_end, q = lag.step(t_in, t_f, free, target)
+            logged += target if q > 0.0 or target >= t_f else t_f
+            heat += q * energy.emitter_kw_per_k
+            t_f = f_end
+        heat_total += heat
+        power_kw = heat / energy.cop(target) * 6.0
+        rows[int(when.timestamp())] = {
+            "t_out": outdoor, "s1_t_in": reading, "s1_supply": logged / 10.0, "s1_offset": float(offset),
+            "prio_heat": 1.0, "prio_hw": 0.0, "heat_kwh": heat_total, "power_w": power_kw * 1000.0 * 0.9,
+            "add_kw": 0.0, "meter_kwh": (power_kw + 0.03) / 6.0,
+        }
+    return rows
+
+
+class FloorFitTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.rows = make_floor_rows()
+        cls.fits = fit_all(cls.rows, [SystemSetup("s1", FLOOR_PROFILE, 5)], START)
+
+    def test_fits_the_lag_and_emitter(self) -> None:
+        house = self.fits["systems"]["s1"]["house"]
+        self.assertTrue(house["ok"], house["reason"])
+        self.assertGreaterEqual(house["tau_f"], 2.0)
+        self.assertLessEqual(house["tau_f"], 4.5)
+        emitter = self.fits["systems"]["s1"]["emitter"]
+        self.assertTrue(emitter["ok"], emitter["reason"])
+        self.assertAlmostEqual(emitter["value"], FLOOR_TRUE.b * CAPACITY, delta=0.15 * FLOOR_TRUE.b * CAPACITY)
+
+    def test_models_plan_on_the_slab(self) -> None:
+        models = models_for(SystemSetup("s1", FLOOR_PROFILE, 5), self.fits)
+        self.assertTrue(models.lag_planner)
+        summary = models_summary(models)
+        self.assertEqual(summary["planner"], "lagged")
+        self.assertEqual(summary["emitter"], "floor")
+        self.assertGreater(summary["slab_capacity_kwh_per_k"], 0)
+        now = START + timedelta(days=21)
+        last_day = {k: v for k, v in self.rows.items() if k >= now.timestamp() - 86400}
+        slab = slab_now(last_day, "s1", models.house, now)
+        self.assertIsNotNone(slab)
+        prices = [PriceSlot(now + timedelta(minutes=15 * i), now + timedelta(minutes=15 * (i + 1)),
+                            0.8 if i < 24 else 2.0) for i in range(96)]
+        result = plan_system(HeatingInputs("s1", models, ComfortSettings(target=21.0), prices, now, timezone.utc,
+                                           21.0, -3.0, current_offset=0, history=last_day))
+        self.assertIsNone(result.problem)
+        self.assertEqual(result.slab, slab)
+        steps = result.plan.plan.steps
+        self.assertEqual(len(steps), 48)  # 30-minute slots
+        self.assertEqual(result.plan.settings.hold_slots, 2)
+        self.assertIsNotNone(steps[0].slab_start)
+        # Without history the slab is taken as settled at the current offset.
+        bare = plan_system(HeatingInputs("s1", models, ComfortSettings(target=21.0), prices, now, timezone.utc,
+                                         21.0, -3.0, current_offset=0))
+        self.assertAlmostEqual(bare.slab, models.curve.supply(-3.0, 0), places=3)
+
+    def test_old_fit_takes_the_prior_lag(self) -> None:
+        prior = HouseModel(0.01, 0.02, 0.0, 0.0, 3.0, 9.0)
+        fit = house_fit_from({"ok": True, "a": 0.012, "b": 0.025, "c": 0.0, "d": 0.05}, prior)
+        self.assertEqual((fit.model.a, fit.model.tau_f, fit.model.tau_d), (0.012, 3.0, 9.0))
 
 
 if __name__ == "__main__":

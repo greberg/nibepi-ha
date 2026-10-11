@@ -90,7 +90,7 @@
         "data_description": {
           "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
           "house_construction": "Thermal mass. Light: timber frame; medium: timber on a concrete slab; heavy: concrete or brick.",
-          "house_emitter": "Shown with the house model; floor heating responds more slowly than radiators.",
+          "house_emitter": "Floor heating: the optimiser models the slab, which delays the effect of an offset change by hours and keeps heating after it, and plans ahead for it.",
           "house_sensors": "How many room sensors the indoor value is an average of. One sensor in a house with several floors gets a safety margin.",
           "meter_entity": "A power sensor (W, kW) or an energy meter counting up (Wh, kWh, MWh), usually the whole house. Only calibrates the heat pump's efficiency; never used to steer.",
           "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do."
@@ -234,7 +234,7 @@
         "data_description": {
           "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
           "house_construction": "Thermal mass. Light: timber frame; medium: timber on a concrete slab; heavy: concrete or brick.",
-          "house_emitter": "Shown with the house model; floor heating responds more slowly than radiators.",
+          "house_emitter": "Floor heating: the optimiser models the slab, which delays the effect of an offset change by hours and keeps heating after it, and plans ahead for it.",
           "house_sensors": "How many room sensors the indoor value is an average of. One sensor in a house with several floors gets a safety margin.",
           "meter_entity": "A power sensor (W, kW) or an energy meter counting up (Wh, kWh, MWh), usually the whole house. Only calibrates the heat pump's efficiency; never used to steer.",
           "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do."

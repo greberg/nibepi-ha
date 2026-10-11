@@ -14,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
-from .const import COMPONENTS, OPT_HOUSE_EMITTER, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
+from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
 from .logic.lease import MODE_ACTIVE, LeaseManager
@@ -503,6 +503,7 @@ class OptimiserPlanSensor(_SystemSensor):
                 "predicted_min": round(plan.plan.min_t_in, 2),
                 "predicted_max": round(plan.plan.max_t_in, 2),
                 "below_band_kh": round(plan.plan.below_band_kh, 2),
+                "slab_temp": result.slab,
                 "changes": plan.plan.changes,
                 "elapsed_s": round(plan.elapsed_s, 3),
                 "summary": result.summary,
@@ -581,7 +582,6 @@ class HouseModelSensor(_SystemSensor):
             {
                 "last_fit": fits.get("fitted_at"),
                 "fit_error": optimizer.fit_error,
-                "emitter_type": self.runtime.opt(OPT_HOUSE_EMITTER),
                 "prior": system_fits.get("prior"),
                 "emitter_fit": system_fits.get("emitter"),
                 "eta_fit": fits.get("eta"),

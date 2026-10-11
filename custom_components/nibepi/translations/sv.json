@@ -90,7 +90,7 @@
         "data_description": {
           "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
           "house_construction": "Värmetröghet. Lätt: trästomme; medel: trä på betongplatta; tung: betong eller tegel.",
-          "house_emitter": "Visas med husmodellen; golvvärme reagerar långsammare än radiatorer.",
+          "house_emitter": "Golvvärme: optimeraren modellerar plattan, som fördröjer en ändrad förskjutning med timmar och fortsätter värma efteråt, och planerar i förväg för det.",
           "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
           "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh), oftast hela huset. Kalibrerar bara värmepumpens verkningsgrad; styr aldrig.",
           "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
@@ -234,7 +234,7 @@
         "data_description": {
           "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
           "house_construction": "Värmetröghet. Lätt: trästomme; medel: trä på betongplatta; tung: betong eller tegel.",
-          "house_emitter": "Visas med husmodellen; golvvärme reagerar långsammare än radiatorer.",
+          "house_emitter": "Golvvärme: optimeraren modellerar plattan, som fördröjer en ändrad förskjutning med timmar och fortsätter värma efteråt, och planerar i förväg för det.",
           "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
           "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh), oftast hela huset. Kalibrerar bara värmepumpens verkningsgrad; styr aldrig.",
           "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."

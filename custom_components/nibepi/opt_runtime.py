@@ -32,6 +32,7 @@ from .const import (
     OPT_COMFORT_FLOOR,
     OPT_HOUSE_AREA,
     OPT_HOUSE_CONSTRUCTION,
+    OPT_HOUSE_EMITTER,
     OPT_HOUSE_ERA,
     OPT_HOUSE_FLOORS,
     OPT_HOUSE_SENSORS,
@@ -51,6 +52,7 @@ from .const import (
     REG_HEAT_METER,
     REG_HW_METER,
     REG_OUTDOOR,
+    HOUSE_EMITTERS,
     UNKNOWN,
     opt_store_key,
     signal_update,
@@ -128,6 +130,7 @@ FORECAST_MAX_AGE = timedelta(hours=6)
 # Live samples: a register value older than this is left out of the bin.
 SAMPLE_MAX_AGE_MIN = 30.0
 METER_BUFFER = timedelta(hours=2)
+SLAB_HISTORY_S = 24 * 3600  # history for the slab temperature of a lagged house
 
 # Shared columns from gateway registers: (column, register, import kind, wanted).
 SHARED_SOURCES = (
@@ -547,6 +550,7 @@ class OptimizerRuntime:
         floors = to_float(str(rt.opt(OPT_HOUSE_FLOORS) or "").replace("_", ".")) or 1.5
         era = rt.opt(OPT_HOUSE_ERA)
         construction = rt.opt(OPT_HOUSE_CONSTRUCTION)
+        emitter = rt.opt(OPT_HOUSE_EMITTER)
         sensors = to_float(rt.opt(OPT_HOUSE_SENSORS)) or 1
         sys = rt.systems.get(system)
         target = rt._setpoint(sys) if sys is not None else None
@@ -557,6 +561,7 @@ class OptimizerRuntime:
             era=None if era in (None, UNKNOWN) else str(era),
             construction=None if construction in (None, UNKNOWN) else str(construction),
             indoor_sensors=int(sensors),
+            emitter=str(emitter) if emitter in HOUSE_EMITTERS else "floor",
             latitude=config.latitude,
             longitude=config.longitude,
             elevation_m=float(config.elevation or 0),
@@ -739,6 +744,7 @@ class OptimizerRuntime:
         t_out = self._fresh(rt.readings.get(REG_OUTDOOR), now, rt.opt(OPT_SENSOR_TIMEOUT))
         t_brine = self._fresh(rt.readings.get(REG_BRINE_IN), now)
         currency = str(getattr(self.hass.config, "currency", None) or "SEK")
+        history = self.log.snapshot(since=now.timestamp() - SLAB_HISTORY_S)
         out = []
         for system, sys in rt.systems.items():
             if sys.mode == MODE_OFF or system not in self.models:
@@ -761,6 +767,7 @@ class OptimizerRuntime:
                     latitude=self.hass.config.latitude,
                     longitude=self.hass.config.longitude,
                     currency=currency,
+                    history=history,
                 )
             )
         return out

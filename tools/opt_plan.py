@@ -15,15 +15,18 @@ No Home Assistant needed. The fixture (all keys but ``prices`` optional)::
       "forecast": [{"time": ISO, "temperature": °C, "condition": "cloudy"}, ...],
       "profile": {"floor_area_m2": 150, "floors": 1.5, "target_temp": 21,
                   "era": "1976-1990", "construction": "light",
+                  "emitter": "floor",                 # floor / mixed / radiators
                   "latitude": 59.3, "longitude": 18.1},
       "curve": {"curve": 9},
-      "house": {"a": .., "b": .., "c": .., "d": ..},   # overrides the prior
+      "house": {"a": .., "b": .., "c": .., "d": .., "tau_f": .., "tau_d": ..},
+                                                         # overrides the prior
+      "t_slab": 30.0,                    # lagged house: slab temperature now
       "history": [{"ts": ISO, "t_in": .., "t_out": .., "t_supply": ..}, ...],
                                                          # fitted when present
       "energy": {"emitter_kw_per_k": .., "carnot_eta": ..},
       "comfort": {"below": 0.5, "above": 1.0, ...},
       "planner": {"max_down": 3, "max_up": 3, "base_offset": null, ...},
-      "step_minutes": null,
+      "step_minutes": null,              # lagged house: 30 unless given
       "draws": [{"start": ISO, "end": ISO, "temperature_drop": 8, "confidence": 0.8}],
       "vv_profile": [168 BT6 drops, Monday 00:00 local first],
       "tank": {...}, "tank_settings": {...}
@@ -31,6 +34,10 @@ No Home Assistant needed. The fixture (all keys but ``prices`` optional)::
 
 Exported Home Assistant history can be turned into ``history`` (10-min
 means of the room sensor, BT1 40004 and BT2 40008) to try a real fit.
+
+A house with an emitter lag of 1.25 h or more (floor heating) is planned
+like the integration does it: 30-minute slots, offsets held for an hour,
+the slab as a second state; ``--one-node`` plans it without the lag.
 """
 
 from __future__ import annotations
@@ -52,7 +59,13 @@ from logic.optimizer.explain import explain_plan, summary  # noqa: E402
 from logic.optimizer.heatcurve import HeatCurve  # noqa: E402
 from logic.optimizer.horizon import build_horizon  # noqa: E402
 from logic.optimizer.house import HouseModel, HouseSample, fit_house_model  # noqa: E402
-from logic.optimizer.planner import ComfortSettings, PlannerSettings, neutral_offset, plan_heating  # noqa: E402
+from logic.optimizer.planner import (  # noqa: E402
+    LAG_PLANNER_MIN_H,
+    ComfortSettings,
+    PlannerSettings,
+    neutral_offset,
+    plan_heating,
+)
 from logic.optimizer.profile import HouseProfile, house_prior  # noqa: E402
 from logic.optimizer.tank import (  # noqa: E402
     DrawForecast,
@@ -61,6 +74,7 @@ from logic.optimizer.tank import (  # noqa: E402
     draws_from_week_profile,
     plan_hot_water,
 )
+from logic.optrun import LAG_CHANGE_COST, LAG_HOLD_SLOTS, LAG_STEP_COST, LAG_STEP_MINUTES  # noqa: E402
 from logic.price import normalize_tibber_response, parse_time, slots_from_dicts  # noqa: E402
 
 try:
@@ -84,6 +98,7 @@ def main(argv=None) -> int:
     ap.add_argument("fixture")
     ap.add_argument("--json", action="store_true", help="print the plan as JSON")
     ap.add_argument("--backtest", action="store_true", help="closed-loop replay against the model")
+    ap.add_argument("--one-node", action="store_true", help="plan without the emitter lag")
     args = ap.parse_args(argv)
     fx = load(args.fixture)
 
@@ -115,15 +130,23 @@ def main(argv=None) -> int:
         house = fit.model
     else:
         notes.append("house model from the profile prior (no history)")
+    if args.one_node:
+        house = house.one_node()
+    lagged = house.tau_f >= LAG_PLANNER_MIN_H
     energy = build(EnergyModel, dict(asdict(prior.energy_model()), **fx.get("energy", {})))
     comfort = build(ComfortSettings, dict({"target": profile.target_temp, "sensor_margin": prior.sensor_margin},
                                           **fx.get("comfort", {})))
-    slots = build_horizon(prices, now, fx.get("t_out"), forecast, step_minutes=fx.get("step_minutes"),
+    step_minutes = fx.get("step_minutes") or (LAG_STEP_MINUTES if lagged else None)
+    slots = build_horizon(prices, now, fx.get("t_out"), forecast, step_minutes=step_minutes,
                           latitude=profile.latitude, longitude=profile.longitude, t_brine=fx.get("t_brine"))
     if not slots:
         print("no prices cover %s" % now.isoformat(), file=sys.stderr)
         return 1
     pset = dict(fx.get("planner", {}))
+    if lagged:
+        for key, value in (("hold_slots", LAG_HOLD_SLOTS), ("change_cost", LAG_CHANGE_COST),
+                           ("step_cost", LAG_STEP_COST)):
+            pset.setdefault(key, value)
     if pset.get("base_offset") is None:
         mean_out = sum(s.t_out * s.hours for s in slots) / sum(s.hours for s in slots)
         pset["base_offset"] = neutral_offset(house, curve, mean_out, comfort.target)
@@ -131,14 +154,14 @@ def main(argv=None) -> int:
     t_in = fx.get("t_in", comfort.target)
 
     if args.backtest:
-        result = backtest_heating(slots, t_in, house, curve, energy, comfort, settings)
+        result = backtest_heating(slots, t_in, house, curve, energy, comfort, settings, t_f0=fx.get("t_slab"))
         print("backtest: %d replans, saves %.2f (%.1f %%), indoor %.2f-%.2f °C, slowest plan %.3f s"
               % (result.replans, result.savings, result.savings_pct, result.plan.min_t_in,
                  result.plan.max_t_in, result.max_plan_s))
         return 0
 
     plan = plan_heating(slots, t_in, house, curve, energy, comfort, settings,
-                        current_offset=fx.get("current_offset", settings.base_offset))
+                        current_offset=fx.get("current_offset", settings.base_offset), t_f0=fx.get("t_slab"))
     blocks = explain_plan(plan, comfort, tz)
 
     hw = None
@@ -158,7 +181,9 @@ def main(argv=None) -> int:
             "elapsed_s": plan.elapsed_s,
             "steps": [dict(start=s.start.isoformat(), offset=s.offset, price=s.price, t_out=s.t_out,
                            t_in=round(s.t_in_end, 3), supply=round(s.supply, 2), kwh=round(s.electric_kwh, 4),
-                           cost=round(s.energy_cost, 4)) for s in plan.plan.steps],
+                           cost=round(s.energy_cost, 4),
+                           slab=round(s.slab_end, 2) if s.slab_end is not None else None)
+                      for s in plan.plan.steps],
             "blocks": [dict(start=b.start.isoformat(), end=b.end.isoformat(), offset=b.offset,
                             reason=b.reason, text=b.text) for b in blocks],
         }
@@ -175,14 +200,15 @@ def main(argv=None) -> int:
 
     for note in notes:
         print("#", note)
-    print("# house a=%.4f b=%.4f c=%.3f d=%.3f (tau %.0f h), base offset %+d, %d slots, planned in %.3f s"
-          % (house.a, house.b, house.c, house.d, house.time_constant_h, settings.base_offset,
+    print("# house a=%.4f b=%.4f c=%.3f d=%.3f (tau %.0f h, emitter lag %.1f h), base offset %+d, "
+          "%d slots, planned in %.3f s"
+          % (house.a, house.b, house.c, house.d, house.time_constant_h, house.tau_f, settings.base_offset,
              len(slots), plan.elapsed_s))
-    print("%-5s %7s %6s %4s %6s %6s %6s" % ("time", "price", "t_out", "off", "supply", "t_in", "kWh"))
+    print("%-5s %7s %6s %4s %6s %6s %6s %6s" % ("time", "price", "t_out", "off", "supply", "slab", "t_in", "kWh"))
     for s in plan.plan.steps:
-        print("%-5s %7.2f %6.1f %+4d %6.1f %6.2f %6.2f" % (
+        print("%-5s %7.2f %6.1f %+4d %6.1f %6s %6.2f %6.2f" % (
             s.start.astimezone(tz).strftime("%H:%M"), s.price, s.t_out, s.offset, s.supply,
-            s.t_in_end, s.electric_kwh))
+            "%.1f" % s.slab_end if s.slab_end is not None else "-", s.t_in_end, s.electric_kwh))
     print()
     for b in blocks:
         print("-", b.text)

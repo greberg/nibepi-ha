@@ -19,7 +19,10 @@ activity), the latter for calibration and diagnostics only.
 Planning (every 15 minutes, on new prices and on a mode change):
 ``plan_system`` builds the horizon from the prices (currency/kWh), the
 forecast and BT1, runs ``plan_heating`` from the measured indoor
-temperature and explains it; ``plan_tank`` plans the hot water charges
+temperature and explains it. A house with an emitter lag (floor heating)
+is planned on 30-minute slots with offsets held for an hour, from the
+slab temperature filtered out of the last day's BT2 and indoor history
+(``slab_now``); ``plan_tank`` plans the hot water charges
 against the VV learning profile's expected draws.
 """
 
@@ -35,9 +38,16 @@ from .optimizer.energy import EnergyModel, fit_carnot_eta, fit_emitter
 from .optimizer.explain import Block, explain_plan, summary
 from .optimizer.heatcurve import DEFAULT_CURVE, HeatCurve, fit_heat_curve
 from .optimizer.horizon import build_horizon
-from .optimizer.house import HouseFit, HouseModel, fit_house_model
+from .optimizer.house import HouseFit, HouseModel, fit_house_model, slab_filter
 from .optimizer.meter import fit_hp_share
-from .optimizer.planner import ComfortSettings, Plan, PlannerSettings, neutral_offset, plan_heating
+from .optimizer.planner import (
+    LAG_PLANNER_MIN_H,
+    ComfortSettings,
+    Plan,
+    PlannerSettings,
+    neutral_offset,
+    plan_heating,
+)
 from .optimizer.profile import HousePrior, HouseProfile, house_prior
 from .optimizer.tank import HotWaterPlan, TankModel, TankSettings, draws_from_week_profile, plan_hot_water
 
@@ -77,22 +87,37 @@ def house_fit_dict(fit: HouseFit) -> Dict[str, Any]:
         "b": m.b,
         "c": m.c,
         "d": m.d,
+        "tau_f": m.tau_f,
+        "tau_d": m.tau_d,
         "hours": fit.samples,
         "r2": round(fit.r2, 3),
         "rmse_rate": round(fit.rmse_rate, 4),
         "sim_rmse": round(fit.sim_rmse, 3),
         "rel_se_b": round(fit.rel_se_b, 3) if fit.rel_se_b != float("inf") else None,
         "rejected": {k: v for k, v in fit.details.items() if v is not None} if not fit.ok else None,
+        "lag_grid": {str(k): v for k, v in fit.details.get("lag_grid", {}).items()} or None,
     }
 
 
 def house_fit_from(data: Any, prior: HouseModel) -> HouseFit:
-    """A stored fit, or the prior (not ok) when there is none or it is broken."""
+    """A stored fit, or the prior (not ok) when there is none or it is broken.
+
+    A fit stored before the emitter lag existed (0.2.0) keeps its a..d and
+    takes the prior's lag until the next fit; so does one stored for
+    another emitter type (lagged vs one node).
+    """
     if not isinstance(data, Mapping):
         return HouseFit(prior, False, "not fitted yet")
     try:
         ok = bool(data.get("ok"))
-        model = HouseModel(float(data["a"]), float(data["b"]), float(data["c"]), float(data["d"])) if ok else prior
+        tau_f, tau_d = prior.tau_f, prior.tau_d
+        if data.get("tau_f") is not None and (float(data["tau_f"]) > 0) == prior.lagged:
+            tau_f, tau_d = float(data["tau_f"]), float(data.get("tau_d") or 0.0)
+        model = (
+            HouseModel(float(data["a"]), float(data["b"]), float(data["c"]), float(data["d"]), tau_f, tau_d)
+            if ok
+            else prior
+        )
         rel = data.get("rel_se_b")
         return HouseFit(
             model,
@@ -145,11 +170,23 @@ def fit_system(
     curve_fit = fit_heat_curve(curve_rows, base_curve)
 
     if single_system:
-        emitter_rows = [
-            (v["heat_kwh"], 1.0, v[supply], v[t_in])
-            for hour, v in hourly(rows, ["heat_kwh", supply, t_in])
-            if hw.get(hour, 0.0) < HW_SHARE
-        ]
+        # The planner's energy model: the slab's for a lagged house, else the supply's.
+        lagged = fit.model.tau_f >= LAG_PLANNER_MIN_H
+        slab = _slab_by_bin(samples, fit.model) if lagged else {}
+        emitter_rows = []
+        for hour, v in hourly(rows, ["heat_kwh", supply, t_in]):
+            if hw.get(hour, 0.0) >= HW_SHARE:
+                continue
+            drive = v[supply]
+            if lagged:
+                # Heat = K_e ((T_f - T_in) + tau_d dT_f/dt): the slab's mean
+                # plus what it stored over the hour, in place of the supply.
+                inside = [slab.get(hour + i * 600) for i in range(6)]
+                start, end = slab.get(hour), slab.get(hour + 3600)
+                if None in inside or start is None or end is None:
+                    continue
+                drive = sum(inside) / 6.0 + fit.model.drain_h * (end - start)  # type: ignore[arg-type,operator]
+            emitter_rows.append((v["heat_kwh"], 1.0, drive, v[t_in]))
         emitter = _energy_fit_dict(fit_emitter(emitter_rows, prior.emitter_kw_per_k))
     else:
         emitter = {
@@ -182,8 +219,34 @@ def fit_system(
             "b": prior.model.b,
             "c": prior.model.c,
             "d": prior.model.d,
+            "tau_f": prior.model.tau_f,
         },
     }
+
+
+def _slab_by_bin(samples, model: HouseModel) -> Dict[int, float]:
+    """Filtered slab temperature per 10-minute bin start."""
+    ordered = sorted(samples, key=lambda x: x.ts.timestamp())
+    values = slab_filter(ordered, model.tau_f, model.drain_h)
+    return {int(x.ts.timestamp()): v for x, v in zip(ordered, values) if v is not None}
+
+
+def slab_now(
+    rows: Mapping[int, Mapping[str, float]], system: str, model: HouseModel, now: datetime,
+    max_age_s: float = 1800.0,
+) -> Optional[float]:
+    """The slab temperature now, filtered from the logged BT2 and indoor.
+
+    None without a lag, without enough recent history (a warm-up of
+    1.5 tau_f), or when the last bin is older than ``max_age_s``.
+    """
+    if not model.lagged:
+        return None
+    samples = sorted(house_samples(rows, system), key=lambda x: x.ts.timestamp())
+    if not samples or now.timestamp() - samples[-1].ts.timestamp() > max_age_s:
+        return None
+    value = slab_filter(samples, model.tau_f, model.drain_h)[-1]
+    return round(value, 2) if value is not None else None
 
 
 def fit_shared(rows: Mapping[int, Mapping[str, float]], supply_system: str) -> Dict[str, Any]:
@@ -245,6 +308,7 @@ class Models:
     fit: HouseFit
     curve: HeatCurve
     energy: EnergyModel
+    emitter: str = "radiators"
 
     @property
     def house(self) -> HouseModel:
@@ -257,6 +321,14 @@ class Models:
     @property
     def heat_loss_w_per_k(self) -> float:
         return 1000.0 * self.house.a * self.capacity_kwh_per_k
+
+    @property
+    def lag_planner(self) -> bool:
+        return self.house.tau_f >= LAG_PLANNER_MIN_H
+
+    @property
+    def slab_capacity_kwh_per_k(self) -> float:
+        return self.energy.emitter_kw_per_k * self.house.drain_h if self.house.lagged else 0.0
 
 
 def models_for(setup: SystemSetup, fits: Optional[Mapping[str, Any]]) -> Models:
@@ -285,7 +357,7 @@ def models_for(setup: SystemSetup, fits: Optional[Mapping[str, Any]]) -> Models:
     eta = (fits or {}).get("eta") if isinstance(fits, Mapping) else None
     if isinstance(eta, Mapping) and eta.get("ok"):
         energy = replace(energy, carnot_eta=float(eta["value"]))
-    return Models(prior, fit, curve, energy)
+    return Models(prior, fit, curve, energy, setup.profile.emitter)
 
 
 def models_summary(models: Models) -> Dict[str, Any]:
@@ -298,6 +370,11 @@ def models_summary(models: Models) -> Dict[str, Any]:
         "c": round(house.c, 4),
         "d": round(house.d, 4),
         "time_constant_h": round(house.time_constant_h, 1),
+        "emitter": models.emitter,
+        "emitter_lag_h": round(house.tau_f, 2),
+        "slab_coast_h": round(house.drain_h, 1) if house.lagged else None,
+        "slab_capacity_kwh_per_k": round(models.slab_capacity_kwh_per_k, 2) if house.lagged else None,
+        "planner": "lagged" if models.lag_planner else "one_node",
         "heat_loss_w_per_k": round(models.heat_loss_w_per_k, 1),
         "capacity_kwh_per_k": round(models.capacity_kwh_per_k, 2),
         "emitter_kw_per_k": round(models.energy.emitter_kw_per_k, 4),
@@ -319,6 +396,14 @@ def models_summary(models: Models) -> Dict[str, Any]:
 
 PLAN_MAX_DOWN = 3
 PLAN_MAX_UP = 3
+# Lagged houses (floor heating): 30-minute slots, offsets held for an hour
+# and a higher switching cost; with hours of lag, faster changes only
+# wear the compressor. The current slot's offset still applies every 15
+# minutes when the plan is refreshed.
+LAG_STEP_MINUTES = 30
+LAG_HOLD_SLOTS = 2
+LAG_CHANGE_COST = 0.3
+LAG_STEP_COST = 0.05
 
 
 @dataclass(frozen=True)
@@ -337,6 +422,8 @@ class HeatingInputs:
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     currency: str = "SEK"
+    # The log's recent bins (a day), for the slab temperature of a lagged house.
+    history: Optional[Mapping[int, Mapping[str, float]]] = None
 
 
 @dataclass
@@ -345,6 +432,7 @@ class HeatingResult:
     planned_at: datetime
     base_offset: int
     plan: Optional[Plan] = None
+    slab: Optional[float] = None  # lagged house: slab temperature the plan started from
     blocks: List[Block] = field(default_factory=list)
     summary: str = ""
     problem: Optional[str] = None
@@ -373,11 +461,13 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
     if inputs.t_in is None:
         result.problem = "indoor temperature missing"
         return result
+    lagged = models.lag_planner
     slots = build_horizon(
         inputs.prices,
         inputs.now,
         inputs.t_out,
         inputs.forecast,
+        step_minutes=LAG_STEP_MINUTES if lagged else None,
         latitude=inputs.latitude,
         longitude=inputs.longitude,
         t_brine=inputs.t_brine,
@@ -388,11 +478,20 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
     hours = sum(s.hours for s in slots)
     mean_out = sum(s.t_out * s.hours for s in slots) / hours
     result.base_offset = base_offset(models, mean_out, target)
-    settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP)
+    if lagged:
+        settings = PlannerSettings(
+            base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP,
+            change_cost=LAG_CHANGE_COST, step_cost=LAG_STEP_COST, hold_slots=LAG_HOLD_SLOTS,
+        )
+        result.slab = slab_now(inputs.history or {}, inputs.system, models.house, inputs.now)
+    else:
+        settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP)
     plan = plan_heating(
         slots, inputs.t_in, models.house, models.curve, models.energy, inputs.comfort, settings,
-        current_offset=inputs.current_offset,
+        current_offset=inputs.current_offset, t_f0=result.slab,
     )
+    if lagged and result.slab is None and plan.plan.steps:
+        result.slab = plan.plan.steps[0].slab_start
     result.plan = plan
     result.blocks = explain_plan(plan, inputs.comfort, inputs.tz, "%s/kWh" % inputs.currency)
     result.summary = summary(plan, inputs.currency)

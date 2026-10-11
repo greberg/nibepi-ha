@@ -195,7 +195,7 @@ OPTIMIZER_DEFAULTS: Dict[str, Any] = {
     OPT_HOUSE_FLOORS: "1_5",
     OPT_HOUSE_ERA: UNKNOWN,
     OPT_HOUSE_CONSTRUCTION: UNKNOWN,
-    OPT_HOUSE_EMITTER: "radiators",
+    OPT_HOUSE_EMITTER: "floor",  # entries keep their stored choice
     OPT_HOUSE_SENSORS: 1,
     OPT_OPT_MIN_LEVEL: "high",
     OPT_HW_OPT_FLOOR: 45.0,

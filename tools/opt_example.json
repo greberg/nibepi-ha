@@ -1214,10 +1214,11 @@
   "floors": 1.5,
   "target_temp": 21.0,
   "latitude": 59.33,
-  "longitude": 18.07
+  "longitude": 18.07,
+  "emitter": "floor"
  },
  "curve": {
-  "curve": 9
+  "curve": 5
  },
  "comfort": {
   "below": 0.5,
