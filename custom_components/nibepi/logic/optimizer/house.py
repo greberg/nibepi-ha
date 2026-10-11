@@ -63,6 +63,34 @@ simulation error wins (with a mild pull towards the emitter type's
 prior). Hourly bins do not resolve lags much below an hour: a radiator
 house fits as about 1 h, which the planner treats as one node
 (``planner.LAG_PLANNER_MIN_H``).
+
+``T_f`` is the slab's excess over the room scaled so that it settles at
+the supply. The slab's own temperature is ``tau_f / tau_d`` of the way
+back to the room (``slab_temp``): the water hands its heat to the slab
+with conductance ``U`` and the slab to the room with ``K_e``, so
+``tau_f = C_s / (U + K_e)``, ``tau_d = C_s / K_e`` and the max() above
+is "the pump charges while the supply is above the slab".
+
+BT3: the slab observed
+----------------------
+
+While the floor water circulates (heating medium pump on, no hot water
+charging: then BT2/BT3 show the tank circuit) the return BT3 leaves the
+loops a little above the slab: with constant flow the heat into the slab
+is proportional to BT2 - BT3, and so is BT3's gap to the slab::
+
+    T_slab = BT3 - kappa (BT2 - BT3)      kappa = 1 / (exp(NTU) - 1)
+
+BT3 rather than the mean of BT2 and BT3: floor loops are long (NTU of 1-3),
+so the water leaves close to the slab; the mean water temperature, right
+for radiators, would put the slab half of BT2 - BT3 too warm. kappa is
+fitted. ``fit_slab`` regresses these observations against the slab
+filtered from BT2 for a grid of (tau_f, tau_d): tau_f and tau_d come out
+directly, without going through the room temperature, and tau_d
+(otherwise fixed at ``DRAIN_RATIO`` x tau_f) is fitted when the data tell
+it. ``slab_track`` then follows the slab with BT3, the room regression
+uses it, and ``fit_house_model`` keeps whichever of the BT3 and the
+BT2-only fit simulates the room better (BT2-only without enough BT3).
 """
 
 from __future__ import annotations
@@ -94,6 +122,8 @@ class HouseModel:
     d: float = 0.0  # °C/h
     tau_f: float = 0.0  # h, emitter/slab lag; 0: one node (supply acts at once)
     tau_d: float = 0.0  # h, slab coasting (C_s / K_e); 0: DRAIN_RATIO x tau_f
+    # Slab below BT3 per K of BT2 - BT3 (``fit_slab``); None: BT3 not used.
+    kappa: Optional[float] = None
 
     @property
     def time_constant_h(self) -> float:
@@ -106,6 +136,15 @@ class HouseModel:
     @property
     def drain_h(self) -> float:
         return self.tau_d if self.tau_d > 0.0 else DRAIN_RATIO * self.tau_f
+
+    @property
+    def slab_coupling(self) -> float:
+        """Indoor gain per K of the slab's own temperature over the room, 1/h.
+
+        ``b`` is per K of the state T_f, which settles at the supply; the
+        slab itself sits ``tau_f / tau_d`` of the way back to the room.
+        """
+        return self.b * self.drain_h / (self.drain_h - self.tau_f) if self.lagged else self.b
 
     def one_node(self) -> "HouseModel":
         """The same house without the emitter lag."""
@@ -218,18 +257,41 @@ def slab_filter(
     None for ``warmup_h`` (default 1.5 tau_f) after that.
     """
     warm = 1.5 * tau_f if warmup_h is None else warmup_h
+    return _filter(_columns(samples), tau_f, tau_d, max_gap_s, warm)
+
+
+def _columns(samples: Sequence["HouseSample"]):
+    """Per-sample arrays for the filter: time, supply, indoor, heats floor."""
+    return (
+        [s.ts.timestamp() for s in samples],
+        [s.t_supply for s in samples],
+        [s.t_in for s in samples],
+        [heats_floor(s) for s in samples],
+    )
+
+
+def _filter(cols, tau_f: float, tau_d: float, max_gap_s: float, warm: float) -> List[Optional[float]]:
+    times, supply, t_in, heats = cols
     out: List[Optional[float]] = []
+    keep = 1.0 - tau_f / tau_d
+    exp = math.exp
     t_f = 0.0
-    prev = None
     since = 0.0
-    for s in samples:
-        ts = s.ts.timestamp()
-        if prev is None or ts - prev.ts.timestamp() > max_gap_s:
-            t_f = s.t_supply
+    last = None
+    for i, ts in enumerate(times):
+        if last is None or ts - last > max_gap_s:
+            t_f = supply[i]
             since = ts
         else:
-            t_f = _filter_step(prev, t_f, tau_f, tau_d, (ts - prev.ts.timestamp()) / 3600.0)
-        prev = s
+            j = i - 1
+            h = (ts - last) / 3600.0
+            room = t_in[j]
+            # Charge above the slab's own temperature (``slab_temp``), else coast.
+            if heats[j] and supply[j] > room + keep * (t_f - room):
+                t_f = supply[j] + (t_f - supply[j]) * exp(-h / tau_f)
+            else:
+                t_f = room + (t_f - room) * exp(-h / tau_d)
+        last = ts
         out.append(t_f if (ts - since) / 3600.0 >= warm else None)
     return out
 
@@ -335,6 +397,206 @@ def resample(
                 acc[6] / acc[5] if acc[5] else None, acc[7] / n)
         )
     return bins
+
+
+# --------------------------------------------------------------------------
+# BT3: the slab observed while the water circulates
+# --------------------------------------------------------------------------
+
+# Candidate coasting times over the lag (tau_d / tau_f) when BT3 shows
+# enough coasting to tell them apart.
+RATIO_GRID = (1.5, 2.0, 3.0, 4.0, 6.0)
+KAPPA_MAX = 1.0
+PUMP_ON_SHARE = 0.9  # GP1 ran this share of the sample: the water circulated
+IDLE_HZ = 5.0  # compressor below this: idle
+COAST_DT = 0.3  # K, BT2 - BT3 below this: no heat into the slab
+MIN_SLAB_OBS_H = 48.0  # hours of BT3 observations for a slab fit
+RATIO_MIN_GAIN = 0.05  # tau_d is fitted when that lowers BT3's RMSE this much
+SLAB_GAIN = 0.5  # weight of a BT3 observation in ``slab_track``, per sample
+SAMPLE_S = 600.0
+
+
+def slab_observable(samples: Sequence[HouseSample], max_gap_s: float = 1800.0) -> List[bool]:
+    """Whether each sample's BT3 shows the floor slab.
+
+    It does while floor water circulates: not while (or in the sample
+    right after) the pump charges hot water, when BT2/BT3 show the tank
+    circuit; not with the heating medium pump stopped (GP1 below
+    ``PUMP_ON_SHARE`` of the sample), when the water stands still in the
+    heat pump. Without pump data (history from before it was logged) a
+    coasting slab and still water look the same, BT2 ~ BT3, so BT3 is
+    only taken while the compressor runs, and not in a sample next to an
+    idle one (it may have started or stopped within it). A return above
+    the supply (cooling, or a sensor fault) is left out too.
+    """
+    n = len(samples)
+    times = [s.ts.timestamp() for s in samples]
+    out: List[bool] = []
+
+    def idle(j: int, i: int) -> bool:
+        if not 0 <= j < n or abs(times[j] - times[i]) > max_gap_s:
+            return False
+        hz = samples[j].compressor
+        return hz is not None and hz < IDLE_HZ
+
+    for i, s in enumerate(samples):
+        after_hw = i > 0 and times[i] - times[i - 1] <= max_gap_s and samples[i - 1].hw >= HW_SHARE
+        ok = (
+            s.t_return is not None
+            and s.hw < HW_SHARE
+            and not after_hw
+            and s.t_return <= s.t_supply + 0.5
+        )
+        if ok:
+            if s.pump is not None:
+                ok = s.pump >= PUMP_ON_SHARE
+            else:
+                ok = not (idle(i, i) or idle(i - 1, i) or idle(i + 1, i))
+        out.append(ok)
+    return out
+
+
+def slab_observation(s: HouseSample, kappa: float) -> float:
+    """The slab's own temperature from BT3: ``kappa`` (BT2 - BT3) below it.
+
+    The water leaves the loop between the slab and the supply; the heat it
+    hands over is proportional to BT2 - BT3 (constant flow), and so is the
+    gap between BT3 and the slab.
+    """
+    return s.t_return - kappa * max(0.0, s.t_supply - s.t_return)  # type: ignore[operator]
+
+
+@dataclass(frozen=True)
+class SlabFit:
+    """The slab's lag, coasting time and BT3 offset, fitted against BT3."""
+
+    ok: bool
+    reason: str
+    tau_f: float = 0.0
+    tau_d: float = 0.0
+    kappa: float = 0.0
+    rmse: float = 0.0  # °C, BT3's slab vs the slab filtered from BT2
+    hours: float = 0.0  # of BT3 observations
+    coast_hours: float = 0.0  # ... with no heat going in
+    ratio_fitted: bool = False  # tau_d fitted (else the prior's tau_d / tau_f)
+    grid: dict = field(default_factory=dict)
+
+
+def fit_slab(
+    samples: Sequence[HouseSample],
+    prior: HouseModel,
+    lag_grid: Optional[Sequence[float]] = None,
+    ratio_grid: Optional[Sequence[float]] = None,
+    max_gap_s: float = 1800.0,
+) -> SlabFit:
+    """tau_f, tau_d and kappa from BT3: the slab made observable.
+
+    For each candidate (tau_f, tau_d) the slab is filtered from BT2 as in
+    ``slab_filter``, turned into the slab's own temperature and compared
+    with BT3 on the observable samples (``slab_observable``):
+    BT3 - slab = kappa (BT2 - BT3) + noise, so kappa is a one-line least
+    squares per candidate. The lowest RMSE wins, pulled mildly towards the
+    prior. tau_d shows while the slab coasts, and in how fast it warms
+    while charged; unless another ratio beats the prior's tau_d / tau_f
+    by ``RATIO_MIN_GAIN`` the prior's ratio stays. ``samples`` in time
+    order.
+    """
+    obs = slab_observable(samples, max_gap_s)
+    hours = sum(obs) * SAMPLE_S / 3600.0
+    if hours < MIN_SLAB_OBS_H:
+        return SlabFit(False, "too little BT3 data (%.0f h)" % hours, hours=hours)
+    gap = [s.t_supply - s.t_return if o else 0.0 for s, o in zip(samples, obs)]  # type: ignore[operator]
+    coast = sum(1 for o, g in zip(obs, gap) if o and g < COAST_DT) * SAMPLE_S / 3600.0
+    prior_ratio = prior.drain_h / prior.tau_f
+    ratios = sorted(set(ratio_grid if ratio_grid is not None else RATIO_GRID) | {prior_ratio})
+    cols = _columns(samples)
+    times, t_in = cols[0], cols[2]
+    pairs = [i for i in range(len(samples) - 1) if obs[i] and times[i + 1] - times[i] <= max_gap_s]
+    bt3 = {i: samples[i].t_return for i in pairs}
+    dts = {i: max(0.0, gap[i]) for i in pairs}
+    best = None
+    best_prior = None
+    grid: dict = {}
+    for tau in (lag_grid if lag_grid is not None else LAG_GRID_H):
+        for ratio in ratios:
+            td = tau * ratio
+            est = _filter(cols, tau, td, max_gap_s, 1.5 * tau)
+            keep = 1.0 - tau / td
+            sxx = sxy = syy = 0.0
+            n = 0
+            for i in pairs:
+                e0, e1 = est[i], est[i + 1]
+                if e0 is None or e1 is None:
+                    continue
+                # BT3 is the sample's mean: compare with the slab's own
+                # temperature (``slab_temp``) halfway through it.
+                r0, r1 = t_in[i], t_in[i + 1]
+                mid = 0.5 * (r0 + keep * (e0 - r0) + r1 + keep * (e1 - r1))
+                y = bt3[i] - mid  # type: ignore[operator]
+                x = dts[i]
+                sxx += x * x
+                sxy += x * y
+                syy += y * y
+                n += 1
+            if n * SAMPLE_S / 3600.0 < MIN_SLAB_OBS_H / 2:
+                continue
+            kappa = min(KAPPA_MAX, max(0.0, sxy / sxx)) if sxx > 0 else 0.0
+            rmse = max(0.0, (syy - 2 * kappa * sxy + kappa * kappa * sxx) / n) ** 0.5
+            pull = math.log(tau / prior.tau_f) ** 2 + math.log(ratio / prior_ratio) ** 2
+            score = rmse * (1.0 + LAG_PRIOR_WEIGHT * pull)
+            grid["%g/%g" % (tau, ratio)] = round(rmse, 4)
+            cand = (score, tau, td, kappa, rmse)
+            if best is None or score < best[0]:
+                best = cand
+            if ratio == prior_ratio and (best_prior is None or score < best_prior[0]):
+                best_prior = cand
+    if best is None or best_prior is None:
+        return SlabFit(False, "BT3 does not overlap the filtered slab", hours=hours, coast_hours=coast)
+    # tau_d counts as identified when another coasting time fits BT3 clearly
+    # better than the prior's ratio; else that ratio stays.
+    fitted = best[4] < (1.0 - RATIO_MIN_GAIN) * best_prior[4]
+    _, tau, td, kappa, rmse = best if fitted else best_prior
+    return SlabFit(True, "ok", tau, td, kappa, rmse, hours, coast, fitted, grid)
+
+
+def slab_track(
+    samples: Sequence[HouseSample],
+    tau_f: float,
+    tau_d: float,
+    kappa: float,
+    gain: float = SLAB_GAIN,
+    max_gap_s: float = 1800.0,
+    warmup_h: Optional[float] = None,
+) -> List[Optional[float]]:
+    """T_f per sample, filtered from BT2 and pulled towards BT3.
+
+    ``slab_filter`` between observations; an observable sample moves the
+    state ``gain`` of the way to what BT3 says (``slab_observation``
+    turned into the state). After a gap the state restarts at BT3's slab
+    when it is observable (ready at once), else at BT2 with the warm-up.
+    """
+    obs = slab_observable(samples, max_gap_s)
+    warm = 1.5 * tau_f if warmup_h is None else warmup_h
+    out: List[Optional[float]] = []
+    t_f = 0.0
+    prev: Optional[HouseSample] = None
+    since = 0.0
+    ready = False
+    for s, seen in zip(samples, obs):
+        ts = s.ts.timestamp()
+        target = state_from_slab(slab_observation(s, kappa), s.t_in, tau_f, tau_d) if seen else None
+        if prev is None or ts - prev.ts.timestamp() > max_gap_s:
+            since = ts
+            ready = target is not None
+            t_f = target if target is not None else s.t_supply
+        else:
+            t_f = _filter_step(prev, t_f, tau_f, tau_d, (ts - prev.ts.timestamp()) / 3600.0)
+            if target is not None:
+                t_f += gain * (target - t_f)
+                ready = True
+        prev = s
+        out.append(t_f if ready or (ts - since) / 3600.0 >= warm else None)
+    return out
 
 
 @dataclass(frozen=True)
@@ -452,6 +714,14 @@ def _solve(bins, hours: float, prior: HouseModel, prior_hours: float, lagged: bo
     return theta, eq, ridge
 
 
+def _plausible(theta: Sequence[float], bounds: FitBounds) -> bool:
+    a, b, c, d = theta
+    if not (bounds.a[0] <= a <= bounds.a[1] and bounds.b[0] <= b <= bounds.b[1]
+            and bounds.c[0] <= c <= bounds.c[1] and bounds.d[0] <= d <= bounds.d[1]):
+        return False
+    return bounds.time_constant_h[0] <= 1.0 / (a + b) <= bounds.time_constant_h[1]
+
+
 def fit_house_model(
     samples: Sequence[HouseSample],
     prior: HouseModel,
@@ -483,6 +753,8 @@ def fit_house_model(
     chunk = int(round(24 / hours))
     ordered = sorted(samples, key=lambda s: s.ts.timestamp())
     grid_scores: dict = {}
+    kappa: Optional[float] = None
+    extra: dict = {}
     if prior.lagged:
         ratio = prior.drain_h / prior.tau_f
         best = None
@@ -497,15 +769,44 @@ def fit_house_model(
             score = rmse * (1.0 + LAG_PRIOR_WEIGHT * math.log(tau / prior.tau_f) ** 2)
             grid_scores[tau] = round(rmse, 4)
             if best is None or score < best[0]:
-                best = (score, tau, theta, eq, ridge, cand_bins)
+                best = (score, tau, theta, eq, ridge, cand_bins, rmse)
         if best is None:
             # Nothing usable: report why with the prior's lag.
             bins = resample(ordered, step_minutes, slab_filter(ordered, prior.tau_f, prior.drain_h))
             theta, eq, ridge = _solve(bins, hours, prior, prior_hours, True)
             tau_f, tau_d = prior.tau_f, prior.drain_h
         else:
-            _, tau_f, theta, eq, ridge, bins = best
+            _, tau_f, theta, eq, ridge, bins, bt2_rmse = best
             tau_d = tau_f * ratio
+        extra["slab_source"] = "bt2"
+        # BT3: the slab observed; kept when it simulates the room at least as well.
+        slab_fit = fit_slab(ordered, prior, lag_grid)
+        extra["bt3"] = {
+            "ok": slab_fit.ok, "reason": slab_fit.reason, "hours": round(slab_fit.hours, 1),
+            "coast_hours": round(slab_fit.coast_hours, 1),
+        }
+        if slab_fit.ok:
+            extra["bt3"].update({
+                "tau_f": slab_fit.tau_f, "tau_d": slab_fit.tau_d, "kappa": round(slab_fit.kappa, 3),
+                "slab_rmse": round(slab_fit.rmse, 3), "tau_d_fitted": slab_fit.ratio_fitted,
+            })
+            track = slab_track(ordered, slab_fit.tau_f, slab_fit.tau_d, slab_fit.kappa)
+            bins3 = resample(ordered, step_minutes, track)
+            theta3, eq3, ridge3 = _solve(bins3, hours, prior, prior_hours, True)
+            if theta3 is not None and _plausible(theta3, bounds):
+                cand = HouseModel(theta3[0], theta3[1], theta3[2], theta3[3], slab_fit.tau_f, slab_fit.tau_d,
+                                  slab_fit.kappa)
+                rmse3, _ = simulate_bins(cand, bins3, hours, chunk)
+                extra["bt3"]["sim_rmse"] = round(rmse3, 4)
+                if best is not None:
+                    extra["bt2_sim_rmse"] = round(bt2_rmse, 4)
+                if best is None or theta is None or not _plausible(theta, bounds) or rmse3 <= bt2_rmse:
+                    theta, eq, ridge, bins = theta3, eq3, ridge3, bins3
+                    tau_f, tau_d, kappa = slab_fit.tau_f, slab_fit.tau_d, slab_fit.kappa
+                    extra["slab_source"] = "bt3"
+            else:
+                extra["bt3"]["ok"] = False
+                extra["bt3"]["reason"] = "room fit on the BT3 slab implausible"
     else:
         bins = resample(ordered, step_minutes)
         theta, eq, ridge = _solve(bins, hours, prior, prior_hours, False)
@@ -516,7 +817,7 @@ def fit_house_model(
     if theta is None:
         return HouseFit(prior, False, "singular fit", samples=n)
     a, b, c, d = theta
-    model = HouseModel(a, b, c, d, tau_f, tau_d)
+    model = HouseModel(a, b, c, d, tau_f, tau_d, kappa)
 
     rss = eq.residual_sum(theta)
     mean_y = eq.xty[3] / eq.count  # the constant column sums y
@@ -533,7 +834,7 @@ def fit_house_model(
     sim_rmse, _ = simulate_bins(model, bins, hours, chunk) if a > 0 and b > 0 else (0.0, 0)
     details = {"a": a, "b": b, "c": c, "d": d, "tau_h": (1.0 / (a + b)) if a + b > 0 else None}
     if prior.lagged:
-        details.update({"tau_f": tau_f, "tau_d": tau_d, "lag_grid": grid_scores})
+        details.update({"tau_f": tau_f, "tau_d": tau_d, "lag_grid": grid_scores, **extra})
 
     def reject(why: str) -> HouseFit:
         return HouseFit(prior, False, why, n, r2, rmse_rate, sim_rmse, rel_se_b, 0.0, "low", details)
