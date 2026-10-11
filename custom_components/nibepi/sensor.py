@@ -5,7 +5,7 @@ measured cost."""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -425,6 +425,14 @@ def _hm(when, tz) -> str:
     return when.astimezone(tz).strftime("%H:%M")
 
 
+def _day_start(day: Any) -> Optional[datetime]:
+    """Local midnight of an ISO ``day``: the last reset of a daily total."""
+    try:
+        return dt_util.start_of_local_day(date.fromisoformat(str(day)))
+    except ValueError:
+        return None
+
+
 def _money(value: Optional[float]) -> Optional[float]:
     return round(value, 2) if value is not None else None
 
@@ -528,6 +536,9 @@ class SavingsTodaySensor(NibePiEntity, SensorEntity):
     """
 
     _attr_device_class = SensorDeviceClass.MONETARY
+    # A daily total (it can fall: negative prices), so long-term statistics
+    # give the savings per day.
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
     _attr_icon = "mdi:piggy-bank-outline"
 
@@ -537,6 +548,10 @@ class SavingsTodaySensor(NibePiEntity, SensorEntity):
     @property
     def native_unit_of_measurement(self) -> str:
         return _currency(self.runtime)
+
+    @property
+    def last_reset(self) -> Optional[datetime]:
+        return _day_start(self.runtime.optimizer.savings.get("day"))
 
     @property
     def native_value(self) -> Optional[float]:
@@ -563,6 +578,9 @@ class HeatPumpCostTodaySensor(NibePiEntity, SensorEntity):
     """
 
     _attr_device_class = SensorDeviceClass.MONETARY
+    # A daily total (negative prices can lower it): the cost per day in
+    # the long-term statistics.
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
     _attr_icon = "mdi:heat-pump"
     _unrecorded_attributes = frozenset({"yesterday"})
@@ -573,6 +591,10 @@ class HeatPumpCostTodaySensor(NibePiEntity, SensorEntity):
     @property
     def native_unit_of_measurement(self) -> str:
         return _currency(self.runtime)
+
+    @property
+    def last_reset(self) -> Optional[datetime]:
+        return _day_start(self.runtime.optimizer.hp_cost.get("day"))
 
     @property
     def native_value(self) -> Optional[float]:

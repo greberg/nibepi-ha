@@ -585,6 +585,9 @@ Shared:
   `predicted_hot_water_cost`, `baseline_heating_cost`,
   `cost_vs_predicted_pct`, `hours_measured`, `unpriced_kwh` and
   `yesterday`.
+
+  Both are daily totals (state class `total`, reset at local midnight),
+  so the long-term statistics give the savings and the cost per day.
 - `sensor` Hot water optimiser plan: when the next planned charge starts;
   attributes `blocks` (next 24 h), `next_target`, `savings`, `min_temp`,
   `enabled`, `in_use`, `problem`
