@@ -54,6 +54,7 @@ from .const import (
     HOUSE_ERAS,
     HOUSE_FLOORS,
     HW_COMFORT_OPTIONS,
+    METER_SCOPES,
     OPT_HW_AUTOLUX_DIFF,
     OPT_HW_AUTOLUX_TIME,
     OPT_HW_DAY_LARGE,
@@ -80,6 +81,7 @@ from .const import (
     OPT_INDOOR_ENTITY,
     OPT_INDOOR_FACTOR,
     OPT_METER_ENTITY,
+    OPT_METER_SCOPE,
     OPT_OPT_MIN_LEVEL,
     OPT_PRICE_ENTITY,
     OPT_PRICE_GUARD,
@@ -460,6 +462,7 @@ class _NibePiSteps:
             _required(OPT_HOUSE_EMITTER, current, SHARED_DEFAULTS): _choice(HOUSE_EMITTERS, "house_emitter"),
             _required(OPT_HOUSE_SENSORS, current, SHARED_DEFAULTS): _number(1, 10, 1),
             _optional(OPT_METER_ENTITY, current): METER_SENSOR,
+            _required(OPT_METER_SCOPE, current, SHARED_DEFAULTS): _choice(METER_SCOPES, "meter_scope"),
             _required(OPT_OPT_MIN_LEVEL, current, SHARED_DEFAULTS): _choice(CONFIDENCE_LEVELS, "confidence_level"),
         }
         return self.async_show_form(  # type: ignore[attr-defined]

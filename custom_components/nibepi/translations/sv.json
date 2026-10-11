@@ -85,6 +85,7 @@
           "house_emitter": "Värmesystem",
           "house_sensors": "Antal inomhusgivare i medelvärdet",
           "meter_entity": "Elmätare (valfri)",
+          "meter_scope": "Mätaren mäter",
           "optimizer_min_level": "Lägsta modellsäkerhet för att styra"
         },
         "data_description": {
@@ -92,7 +93,8 @@
           "house_construction": "Värmetröghet. Lätt: trästomme; medel: trä på betongplatta; tung: betong eller tegel.",
           "house_emitter": "Golvvärme: optimeraren modellerar plattan, som fördröjer en ändrad förskjutning med timmar och fortsätter värma efteråt, och planerar i förväg för det.",
           "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
-          "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh), oftast hela huset. Kalibrerar bara värmepumpens verkningsgrad; styr aldrig.",
+          "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh). Kalibrerar värmepumpens verkningsgrad; styr aldrig.",
+          "meter_scope": "Bara värmepumpen: värdena är värmepumpens el, kalibrerar verkningsgraden direkt och ger värmepumpens faktiska kostnad per dag. Hela huset: värmepumpens andel uppskattas från dess aktivitet, vilket kräver veckor av data.",
           "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
         }
       }
@@ -229,6 +231,7 @@
           "house_emitter": "Värmesystem",
           "house_sensors": "Antal inomhusgivare i medelvärdet",
           "meter_entity": "Elmätare (valfri)",
+          "meter_scope": "Mätaren mäter",
           "optimizer_min_level": "Lägsta modellsäkerhet för att styra"
         },
         "data_description": {
@@ -236,7 +239,8 @@
           "house_construction": "Värmetröghet. Lätt: trästomme; medel: trä på betongplatta; tung: betong eller tegel.",
           "house_emitter": "Golvvärme: optimeraren modellerar plattan, som fördröjer en ändrad förskjutning med timmar och fortsätter värma efteråt, och planerar i förväg för det.",
           "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
-          "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh), oftast hela huset. Kalibrerar bara värmepumpens verkningsgrad; styr aldrig.",
+          "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh). Kalibrerar värmepumpens verkningsgrad; styr aldrig.",
+          "meter_scope": "Bara värmepumpen: värdena är värmepumpens el, kalibrerar verkningsgraden direkt och ger värmepumpens faktiska kostnad per dag. Hela huset: värmepumpens andel uppskattas från dess aktivitet, vilket kräver veckor av data.",
           "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
         }
       },
@@ -498,6 +502,12 @@
         "light": "Lätt (trästomme)",
         "medium": "Medel (trä på betongplatta)",
         "heavy": "Tung (betong, tegel)"
+      }
+    },
+    "meter_scope": {
+      "options": {
+        "heat_pump": "Bara värmepumpen",
+        "whole_house": "Hela huset"
       }
     },
     "house_emitter": {

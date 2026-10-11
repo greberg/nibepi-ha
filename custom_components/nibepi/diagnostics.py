@@ -170,6 +170,7 @@ def _optimizer(runtime: NibePiRuntime) -> Dict[str, Any]:
             "entity": optimizer.meter_entity,
             "config": optimizer.meter_config,
             "problem": optimizer.meter_problem,
+            "scope": optimizer.meter_scope,
         },
     }
 

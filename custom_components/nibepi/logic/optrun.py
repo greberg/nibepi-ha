@@ -12,9 +12,12 @@ Fitting (nightly and after start) per climate system:
 - ``fit_emitter`` on the heating heat meter (44300) increments, only with
   one climate system (the meter is shared);
 
-and once: ``fit_carnot_eta`` (heat meter vs. compressor power and
-addition) and ``fit_hp_share`` (the user's meter vs. the heat pump's
-activity), the latter for calibration and diagnostics only.
+and once: ``fit_carnot_eta`` (heat meter vs. the heat pump's
+electricity) and, depending on what the user's meter measures
+(``meter_scope``): with ``heat_pump`` the meter is the electricity and
+calibrates the efficiency directly; with ``whole_house`` the efficiency
+uses the compressor power and addition, and ``fit_hp_share`` (the meter
+vs. the heat pump's activity) is kept for diagnostics only.
 
 Planning (every 15 minutes, on new prices and on a mode change):
 ``plan_system`` builds the horizon from the prices (currency/kWh), the
@@ -249,22 +252,69 @@ def slab_now(
     return round(value, 2) if value is not None else None
 
 
-def fit_shared(rows: Mapping[int, Mapping[str, float]], supply_system: str) -> Dict[str, Any]:
+METER_HEAT_PUMP = "heat_pump"
+METER_WHOLE_HOUSE = "whole_house"
+MIN_ETA_HOURS = 12
+
+
+def fit_shared(
+    rows: Mapping[int, Mapping[str, float]], supply_system: str, meter_scope: str = METER_WHOLE_HOUSE
+) -> Dict[str, Any]:
+    """The compressor's efficiency and how the user's meter relates to the pump.
+
+    ``meter_scope`` ``heat_pump``: the meter's kWh per hour is the heat
+    pump's electricity. The Carnot fraction is calibrated directly against
+    it (falling back to the compressor power estimate while the meter has
+    fewer than 12 usable hours), no share is regressed (beta = 1), and the
+    ratio of the meter to the pump's own estimate (43141 + 43084) is kept
+    as a check. ``whole_house``: as before, the efficiency comes from the
+    pump's estimate and the share is regressed from the house total.
+    """
     supply = column("supply", supply_system)
     hw = _hour_map(rows, "prio_hw")
     add = _hour_map(rows, "add_kw")
     brine = _hour_map(rows, "bt10")
-    eta_rows = []
-    for hour, v in hourly(rows, ["heat_kwh", "power_w", supply]):
-        if hw.get(hour, 0.0) >= HW_SHARE:
-            continue
-        electric = v["power_w"] / 1000.0 + max(0.0, add.get(hour, 0.0))
-        eta_rows.append((v["heat_kwh"], electric, v[supply], brine.get(hour)))
-    eta = _energy_fit_dict(fit_carnot_eta(eta_rows))
+    estimate = {hour: v["power_w"] / 1000.0 + max(0.0, add.get(hour, 0.0))
+                for hour, v in hourly(rows, ["power_w"])}
 
+    def eta_rows(electric: Mapping[int, float]):
+        return [
+            (v["heat_kwh"], electric[hour], v[supply], brine.get(hour))
+            for hour, v in hourly(rows, ["heat_kwh", supply])
+            if hour in electric and hw.get(hour, 0.0) < HW_SHARE
+        ]
+
+    if meter_scope == METER_HEAT_PUMP:
+        metered = _hour_map(rows, "meter_kwh")
+        rows_eta = eta_rows(metered)
+        source = "meter"
+        if len(rows_eta) < MIN_ETA_HOURS:
+            rows_eta = eta_rows(estimate)
+            source = "compressor power (meter has too few hours)"
+        eta = dict(_energy_fit_dict(fit_carnot_eta(rows_eta)), electricity=source)
+        both = [(metered[h], estimate[h]) for h in metered if h in estimate]
+        est_sum = sum(e for _, e in both)
+        ratio = sum(m for m, _ in both) / est_sum if both and est_sum > 0 else None
+        return {
+            "eta": eta,
+            "hp_share": {
+                "scope": METER_HEAT_PUMP,
+                "base_kw": 0.0,
+                "beta": 1.0,
+                "r2": None,
+                "hours": len(metered),
+                "ok": bool(metered),
+                "reason": "the meter measures the heat pump only" if metered else "no meter hours yet",
+                "signal": "meter",
+                "pump_estimate_ratio": round(ratio, 3) if ratio is not None else None,
+            },
+        }
+
+    eta = dict(_energy_fit_dict(fit_carnot_eta(eta_rows(estimate))), electricity="compressor power")
     share_rows = [
-        (v["meter_kwh"], v["power_w"] / 1000.0 + max(0.0, add.get(hour, 0.0)), 1.0)
-        for hour, v in hourly(rows, ["meter_kwh", "power_w"])
+        (v["meter_kwh"], estimate[hour], 1.0)
+        for hour, v in hourly(rows, ["meter_kwh"])
+        if hour in estimate
     ]
     signal = "compressor power + addition (kW)"
     expect: Optional[Tuple[float, float]] = (0.8, 1.4)
@@ -276,6 +326,7 @@ def fit_shared(rows: Mapping[int, Mapping[str, float]], supply_system: str) -> D
     return {
         "eta": eta,
         "hp_share": {
+            "scope": METER_WHOLE_HOUSE,
             "base_kw": round(share.base_kw, 3),
             "beta": round(share.beta, 4),
             "r2": round(share.r2, 3),
@@ -288,11 +339,14 @@ def fit_shared(rows: Mapping[int, Mapping[str, float]], supply_system: str) -> D
 
 
 def fit_all(
-    rows: Mapping[int, Mapping[str, float]], setups: Sequence[SystemSetup], now: datetime
+    rows: Mapping[int, Mapping[str, float]],
+    setups: Sequence[SystemSetup],
+    now: datetime,
+    meter_scope: str = METER_WHOLE_HOUSE,
 ) -> Dict[str, Any]:
     """All fits, as a dict to persist and to build the models from."""
     systems = {s.system: fit_system(rows, s, len(setups) == 1) for s in setups}
-    shared = fit_shared(rows, setups[0].system) if setups else {}
+    shared = fit_shared(rows, setups[0].system, meter_scope) if setups else {}
     data_hours = len(rows) * 10 / 60.0
     return {"fitted_at": now.isoformat(), "data_hours": round(data_hours, 1), "systems": systems, **shared}
 

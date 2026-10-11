@@ -234,6 +234,28 @@ class FloorFitTest(unittest.TestCase):
                                          21.0, -3.0, current_offset=0))
         self.assertAlmostEqual(bare.slab, models.curve.supply(-3.0, 0), places=3)
 
+    def test_heat_pump_meter_calibrates_directly(self) -> None:
+        # The pump's own power estimate reads 10 % low; the meter (heat
+        # pump only, plus 30 W of circulation) is right.
+        hp = fit_all(self.rows, [SystemSetup("s1", FLOOR_PROFILE, 5)], START, meter_scope="heat_pump")
+        self.assertEqual(hp["eta"]["electricity"], "meter")
+        self.assertTrue(hp["eta"]["ok"], hp["eta"]["reason"])
+        self.assertAlmostEqual(hp["eta"]["value"], ETA, delta=0.03)
+        share = hp["hp_share"]
+        self.assertEqual((share["scope"], share["beta"], share["ok"]), ("heat_pump", 1.0, True))
+        self.assertAlmostEqual(share["pump_estimate_ratio"], 1.0 / 0.9, delta=0.08)  # + standby
+        # Whole house: the efficiency comes from the pump's estimate.
+        whole = self.fits
+        self.assertEqual(whole["eta"]["electricity"], "compressor power")
+        self.assertGreater(whole["eta"]["value"], ETA / 0.9 - 0.02)
+        self.assertEqual(whole["hp_share"]["scope"], "whole_house")
+
+    def test_heat_pump_meter_without_data_falls_back(self) -> None:
+        rows = {k: {c: x for c, x in v.items() if c != "meter_kwh"} for k, v in self.rows.items()}
+        hp = fit_all(rows, [SystemSetup("s1", FLOOR_PROFILE, 5)], START, meter_scope="heat_pump")
+        self.assertIn("compressor power", hp["eta"]["electricity"])
+        self.assertFalse(hp["hp_share"]["ok"])
+
     def test_old_fit_takes_the_prior_lag(self) -> None:
         prior = HouseModel(0.01, 0.02, 0.0, 0.0, 3.0, 9.0)
         fit = house_fit_from({"ok": True, "a": 0.012, "b": 0.025, "c": 0.0, "d": 0.05}, prior)

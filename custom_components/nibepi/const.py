@@ -180,6 +180,7 @@ OPT_HOUSE_CONSTRUCTION = "house_construction"
 OPT_HOUSE_EMITTER = "house_emitter"
 OPT_HOUSE_SENSORS = "house_sensors"
 OPT_METER_ENTITY = "meter_entity"
+OPT_METER_SCOPE = "meter_scope"
 OPT_OPT_MIN_LEVEL = "optimizer_min_level"
 OPT_HW_OPT_FLOOR = "hw_optimizer_floor"
 
@@ -189,6 +190,11 @@ HOUSE_ERAS = (UNKNOWN, "pre1960", "1961-1975", "1976-1990", "1991-2010", "2011_l
 HOUSE_CONSTRUCTIONS = (UNKNOWN, "light", "medium", "heavy")
 HOUSE_EMITTERS = ("radiators", "floor", "mixed")
 CONFIDENCE_LEVELS = ("low", "medium", "high")
+# What the user's meter measures: the heat pump alone (its kWh is the heat
+# pump's electricity) or the whole house (the share is regressed out).
+METER_SCOPE_HEAT_PUMP = "heat_pump"
+METER_SCOPE_WHOLE_HOUSE = "whole_house"
+METER_SCOPES = (METER_SCOPE_HEAT_PUMP, METER_SCOPE_WHOLE_HOUSE)
 
 OPTIMIZER_DEFAULTS: Dict[str, Any] = {
     OPT_HOUSE_AREA: 150.0,
@@ -197,6 +203,7 @@ OPTIMIZER_DEFAULTS: Dict[str, Any] = {
     OPT_HOUSE_CONSTRUCTION: UNKNOWN,
     OPT_HOUSE_EMITTER: "floor",  # entries keep their stored choice
     OPT_HOUSE_SENSORS: 1,
+    OPT_METER_SCOPE: METER_SCOPE_HEAT_PUMP,
     OPT_OPT_MIN_LEVEL: "high",
     OPT_HW_OPT_FLOOR: 45.0,
 }

@@ -39,6 +39,7 @@ from .const import (
     OPT_HW_OPT_FLOOR,
     OPT_INDOOR_ENTITY,
     OPT_METER_ENTITY,
+    OPT_METER_SCOPE,
     OPT_OPT_MIN_LEVEL,
     OPT_PRICE_UNIT_FACTOR,
     OPT_SENSOR_TIMEOUT,
@@ -53,6 +54,8 @@ from .const import (
     REG_HW_METER,
     REG_OUTDOOR,
     HOUSE_EMITTERS,
+    METER_SCOPE_HEAT_PUMP,
+    METER_SCOPES,
     UNKNOWN,
     opt_store_key,
     signal_update,
@@ -345,6 +348,12 @@ class OptimizerRuntime:
             return None
         return registry.async_get_entity_id("sensor", "mqtt", register_unique_id(ids[0], register))
 
+    @property
+    def meter_scope(self) -> str:
+        """What the meter measures: ``heat_pump`` (default) or ``whole_house``."""
+        scope = self.rt.opt(OPT_METER_SCOPE)
+        return str(scope) if scope in METER_SCOPES else METER_SCOPE_HEAT_PUMP
+
     # -- live sampling ----------------------------------------------------------
 
     def _fresh(self, reading: Optional[Reading], now: datetime, timeout: Optional[float] = None) -> Optional[float]:
@@ -601,7 +610,7 @@ class OptimizerRuntime:
             now = dt_util.utcnow()
             rows = self.log.snapshot(since=now.timestamp() - BOOTSTRAP_DAYS * 86400)
             setups = [self.setup(system) for system in self.rt.systems]
-            fits = await self.hass.async_add_executor_job(fit_all, rows, setups, now)
+            fits = await self.hass.async_add_executor_job(fit_all, rows, setups, now, self.meter_scope)
             self.fits = fits
             self.fit_error = None
             self.refresh_models()
