@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import sys
 import unittest
 
 import context  # noqa: F401
@@ -233,6 +235,33 @@ class YamlTest(unittest.TestCase):
             self.skipTest("PyYAML not installed")
         for dash in (d.build_dashboard(full_ids(("s1", "s2"))), d.build_apexcharts(full_ids())):
             self.assertEqual(yaml.safe_load(d.dump_yaml(dash)), dash)
+
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import gen_dashboard  # noqa: E402
+
+
+class GeneratedFilesTest(unittest.TestCase):
+    def test_committed_files_are_current(self) -> None:
+        for path, text in gen_dashboard.render().items():
+            with open(os.path.join(ROOT, path), encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), text, "%s is stale: run tools/gen_dashboard.py" % path)
+
+    def test_default_entity_ids(self) -> None:
+        ids = gen_dashboard.default_entity_ids()
+        self.assertEqual(ids["planned_offset_s1"], "sensor.nibe_f1255_planned_curve_offset_s1")
+        self.assertEqual(ids["gateway_online"], "binary_sensor.nibe_f1255_gateway")
+        self.assertEqual(ids["rmu_feed_s1"], "switch.nibe_f1255_send_room_temperature_to_pump_rmu40_s1")
+        self.assertEqual(ids["outdoor"], "sensor.nibe_f1255_bt1_outdoor_temperature")
+        self.assertEqual(ids["indoor_s1"], ids["bt50_s1"])
+        self.assertEqual(len(set(ids.values())), len(ids) - 1)  # indoor_s1 is BT50
+
+    def test_static_dashboard_is_complete(self) -> None:
+        ids = gen_dashboard.default_entity_ids()
+        refs = set(d.referenced_entities(d.build_dashboard(ids)))
+        unused = set(ids.values()) - refs
+        self.assertEqual(unused, set())
 
 
 if __name__ == "__main__":
