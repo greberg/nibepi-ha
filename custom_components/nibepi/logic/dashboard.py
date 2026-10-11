@@ -83,7 +83,6 @@ SYSTEM_REGISTERS: Dict[str, Dict[str, int]] = {
     "supply": {"s1": 40008, "s2": 40007},  # BT2 / EP21-BT2
 }
 
-COMPONENT_LABELS = (("indoor", "Indoor"), ("price", "Price"), ("weather", "Forecast"))
 HW_FEATURES = ("vv_control", "optimiser", "learning", "autoluxury", "priority", "price_comfort")
 
 CARD_TYPES = frozenset(
@@ -120,11 +119,12 @@ def gateway_registers(systems: Iterable[str]) -> Dict[str, int]:
     return found
 
 
-def systems_in(entities: Mapping[str, Any]) -> List[str]:
-    return [s for s in SYSTEMS if any(k.endswith("_" + s) and k[: -len(s) - 1] in _SYSTEM_KEYS for k in entities)]
-
-
 _SYSTEM_KEYS = frozenset(key for key, _ in SYSTEM_ENTITIES)
+
+
+def systems_in(entities: Mapping[str, Any]) -> List[str]:
+    """The systems with at least one of the integration's entities."""
+    return [s for s in SYSTEMS if any("%s_%s" % (key, s) in entities for key in _SYSTEM_KEYS)]
 
 
 # --------------------------------------------------------------------------
@@ -962,12 +962,12 @@ def _emit(value: Any, indent: int, lines: List[str]) -> None:
                 lines.append(pad + "-")
                 _emit(item, indent + 2, lines)
             else:
-                lines.append(pad + "- " + _inline(item, indent + 2, lines))
+                lines.append(pad + "- " + _inline(item))
     else:
         lines.append(pad + _scalar(value))
 
 
-def _inline(value: Any, indent: int, lines: List[str]) -> str:
+def _inline(value: Any) -> str:
     if isinstance(value, dict):
         return "{}"
     if isinstance(value, list):
@@ -989,7 +989,7 @@ def _emit_pair(prefix: str, key: str, value: Any, indent: int, lines: List[str])
         for line in body.split("\n"):
             lines.append((" " * (indent + 2) + line) if line else "")
     else:
-        lines.append(head + " " + _inline(value, indent + 2, lines))
+        lines.append(head + " " + _inline(value))
 
 
 def dump_yaml(data: Any, header: str = "") -> str:
