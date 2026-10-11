@@ -20,9 +20,10 @@ No Home Assistant needed. The fixture (all keys but ``prices`` optional)::
       "curve": {"curve": 9},
       "house": {"a": .., "b": .., "c": .., "d": .., "tau_f": .., "tau_d": ..},
                                                          # overrides the prior
-      "t_slab": 30.0,                    # lagged house: slab temperature now
-      "history": [{"ts": ISO, "t_in": .., "t_out": .., "t_supply": ..}, ...],
-                                                         # fitted when present
+      "t_slab": 30.0,                    # lagged house: slab state now (T_f)
+      "history": [{"ts": ISO, "t_in": .., "t_out": .., "t_supply": ..,
+                   "t_return": .., "hw": 0..1, "pump": 0..1, "compressor": Hz}, ...],
+                                                         # fitted when present; BT3 etc. optional
       "energy": {"emitter_kw_per_k": .., "carnot_eta": ..},
       "comfort": {"below": 0.5, "above": 1.0, ...},
       "planner": {"max_down": 3, "max_up": 3, "base_offset": null, ...},
@@ -33,7 +34,9 @@ No Home Assistant needed. The fixture (all keys but ``prices`` optional)::
     }
 
 Exported Home Assistant history can be turned into ``history`` (10-min
-means of the room sensor, BT1 40004 and BT2 40008) to try a real fit.
+means of the room sensor, BT1 40004 and BT2 40008; for floor heating also
+BT3 40012, the hot water share of 43086 = 20, the share with GP1 43437
+running and 43136) to try a real fit.
 
 A house with an emitter lag of 1.25 h or more (floor heating) is planned
 like the integration does it: 30-minute slots, offsets held for an hour,
@@ -122,11 +125,13 @@ def main(argv=None) -> int:
         house = build(HouseModel, fx["house"])
         notes.append("house model from the fixture")
     elif fx.get("history"):
-        samples = [HouseSample(parse_time(h["ts"], tz), h["t_in"], h["t_out"], h["t_supply"], h.get("solar", 0.0))
+        samples = [HouseSample(parse_time(h["ts"], tz), h["t_in"], h["t_out"], h["t_supply"], h.get("solar", 0.0),
+                               h.get("t_return"), h.get("hw", 0.0), h.get("pump"), h.get("compressor"))
                    for h in fx["history"]]
         fit = fit_house_model(samples, prior.model, prior.bounds, sensor_margin=prior.sensor_margin)
-        notes.append("fit: %s, %s confidence %.2f, sim RMSE %.2f °C over %d h"
-                     % (fit.reason, fit.level, fit.confidence, fit.sim_rmse, fit.samples))
+        notes.append("fit: %s, %s confidence %.2f, sim RMSE %.2f °C over %d h, slab from %s"
+                     % (fit.reason, fit.level, fit.confidence, fit.sim_rmse, fit.samples,
+                        fit.details.get("slab_source", "-")))
         house = fit.model
     else:
         notes.append("house model from the profile prior (no history)")
