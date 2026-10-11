@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import context  # noqa: F401
+from const import OPT_HW_OPT_FLOOR, OPTIMIZER_DEFAULTS
 from logic.hwcontrol import (
     REG_BT6,
     REG_BT7,
@@ -159,8 +160,8 @@ class PlanTankTest(unittest.TestCase):
             prices.append(PriceSlot(a, a + timedelta(minutes=15), 0.8 if hour < 5 else 2.0))
         profile = [0.0] * 168
         profile[2 * 24 + 7] = 8.0  # Wednesday 07:00 local: a shower
-        data = dict(prices=prices, now=self.NOW, tz=STHLM, bt6=44.0, economy_stop=48.0, normal_start=45.0,
-                    normal_stop=52.0, lux_stop=56.0, floor=40.0, profile=profile, confidence=0.8)
+        data = dict(prices=prices, now=self.NOW, tz=STHLM, bt6=47.0, economy_stop=48.0, normal_start=45.0,
+                    normal_stop=52.0, lux_stop=56.0, floor=OPTIMIZER_DEFAULTS[OPT_HW_OPT_FLOOR], profile=profile, confidence=0.8)
         data.update(kw)
         return TankInputs(**data)
 
@@ -170,7 +171,10 @@ class PlanTankTest(unittest.TestCase):
         charges = [b for b in result.plan.blocks if b.action == "charge"]
         self.assertTrue(charges)
         self.assertLess(charges[0].start, self.NOW + timedelta(hours=5))
-        self.assertGreaterEqual(result.plan.min_temp, 40.0 - 0.5)
+        self.assertGreaterEqual(result.plan.min_temp, 45.0 - 0.5)
+
+    def test_default_floor_is_45(self) -> None:
+        self.assertEqual(OPTIMIZER_DEFAULTS[OPT_HW_OPT_FLOOR], 45.0)
 
     def test_problems(self) -> None:
         self.assertEqual(plan_tank(self.inputs(bt6=None)).problem, "BT6 missing or stale")

@@ -120,7 +120,7 @@ Shared:
 | House: floor area, floors, era, construction, emitters, sensors | 150 m², 1.5, unknown, unknown, radiators, 1 | see [House profile](#house-profile) |
 | Electricity meter | - | optional power or energy sensor, for calibration only |
 | Minimum model confidence to steer | high | low / medium / high |
-| Optimiser hot water floor (hot water step) | 40 °C | BT6, for the optimiser's tank plan |
+| Optimiser hot water floor (hot water step) | 45 °C | BT6, for the optimiser's tank plan |
 
 Per climate system:
 
@@ -433,7 +433,7 @@ plans in the background:
   same model, heat left at the end included.
 - **Hot water**: charges are planned against a tank model and the draws
   the hot water learning expects, keeping BT6 above the optimiser's hot
-  water floor (default 40 °C).
+  water floor (default 45 °C).
 
 ### Heating strategy, the gate and shadow comparison
 

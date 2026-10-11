@@ -121,7 +121,7 @@ window with the block's target and runs it like a VV-AI window:
 - the BT7 min-temp floor still applies, and automatic luxury or hot water
   priority still make the VV path stand aside;
 - the plan assumes the pump does not charge on its own (period 0) and
-  keeps BT6 above the optimiser's hot water floor (default 40 °C);
+  keeps BT6 above the optimiser's hot water floor (default 45 °C);
 - without a current plan (made within 40 min) the VV-AI plan is used when
   VV-AI control is on, otherwise the leases are released and hot water is
   left to the pump.

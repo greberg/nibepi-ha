@@ -198,7 +198,7 @@ OPTIMIZER_DEFAULTS: Dict[str, Any] = {
     OPT_HOUSE_EMITTER: "radiators",
     OPT_HOUSE_SENSORS: 1,
     OPT_OPT_MIN_LEVEL: "high",
-    OPT_HW_OPT_FLOOR: 40.0,
+    OPT_HW_OPT_FLOOR: 45.0,
 }
 
 # Options: comfort band per system, around the setpoint (the optimiser's

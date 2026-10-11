@@ -785,7 +785,7 @@ class OptimizerRuntime:
             normal_start=value(START_REGISTERS[1]),
             normal_stop=value(STOP_REGISTERS[1]),
             lux_stop=value(STOP_REGISTERS[2]),
-            floor=to_float(rt.opt(OPT_HW_OPT_FLOOR)) or 40.0,
+            floor=to_float(rt.opt(OPT_HW_OPT_FLOOR)) or 45.0,
             profile=list(profile.profile),
             confidence=profile_confidence(profile.learned, bool(profile.imported_from)),
             t_brine=self._fresh(readings.get(REG_BRINE_IN), now),
