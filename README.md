@@ -379,6 +379,17 @@ the compressor idles. The planner then buys heat hours before an
 expensive period instead of just before it, and counts what is stored in
 the slab.
 
+The return temperature **BT3** (40012) makes the slab visible: while the
+floor water circulates, the water comes back from the long floor loops
+just above the slab's temperature (slab = BT3 − κ × (BT2 − BT3), κ
+learned, typically 0.1-0.4). The fit uses it to learn the slab's lag and
+how slowly it coasts (otherwise fixed at 3 × the lag) directly, and the
+planner starts from the slab as BT3 shows it. BT3 is only used while the
+heating medium pump (GP1, 43437) runs and no hot water is being charged
+(BT2/BT3 then show the tank circuit); without pump data (older history)
+only while the compressor runs. Without enough BT3 (48 h) the slab is
+filtered from BT2 as before.
+
 The meter may be a power sensor (W, kW) or an energy meter counting up
 (Wh, kWh, MWh); the kind is taken from its unit and device class. **The
 meter measures** says what it covers:
@@ -398,8 +409,9 @@ Either way the meter is never used to steer.
 Every minute the integration reads the indoor sensor, BT1, BT2 (40008 /
 40007), the curve offset, brine in (BT10 40015), BT6, the priority
 (43086), compressor power (43141) and frequency (43136), the electric
-addition (43084), the heat meters (44300 heating, 44298 hot water) and the
-meter, and keeps 10-minute means for 35 days in
+addition (43084), the heat meters (44300 heating, 44298 hot water), the
+return BT3 (40012), whether the heating medium pump GP1 runs (43437 > 0)
+and the meter, and keeps 10-minute means for 35 days in
 `.storage/nibepi_optimizer_<entry id>` (saved hourly and at shutdown).
 These registers are added to the gateway's polling.
 
@@ -418,10 +430,14 @@ once, listed in the diagnostics) and the history builds up live.
 Ten minutes after start and every night at 03:15 the models are fitted on
 the last 28 days, in the background: the house model (heat loss, emitter
 gain, solar and internal gains and, with floor heating, the slab's lag,
-chosen from 0.25-10 h by how well each predicts the indoor temperature),
+chosen from 0.25-10 h by how well each predicts the indoor temperature;
+with BT3 also the slab's coasting time, fitted against BT3, and of the
+BT3 and the BT2-only fit the one that predicts the indoor temperature
+better is kept),
 the heat curve (bias, slope, offset gain from BT1, offset and BT2), the
 emitter conductance from the heat meter (one climate system only; the
-meter is shared), the compressor's efficiency (Carnot fraction, from the
+meter is shared), the floor loop's water flow from the heat meter and
+BT2 − BT3 (a check of the slab's coasting time), the compressor's efficiency (Carnot fraction, from the
 heat meter and the heat pump meter, or the compressor power with a
 whole-house meter) and, with a whole-house meter, the heat pump's share
 of it. A fit that is
@@ -452,7 +468,8 @@ plans in the background:
   cost for each change. It stores heat in cheap slots and coasts through
   expensive ones as far as the band allows, and counts the heat left in
   the house at the end. With floor heating it also tracks the slab
-  temperature (estimated from the last day's BT2 and indoor history),
+  temperature (estimated from the last day's BT2 and indoor history,
+  pulled towards BT3 when the fit uses it),
   changes the offset at most once an hour, at a higher cost per change,
   and counts the heat left in the slab. Each block of the plan is explained in a
   sentence, e.g. *"16:00-21:00 offset -3: expensive (2.30 SEK/kWh vs 1.58
@@ -537,11 +554,19 @@ Per system:
   `explanation`, `summary`, `expected_cost`, `baseline_cost`, `savings`,
   `savings_pct`, `gate` (use, offset, reason), `applied`, `strategy`,
   `model_confidence`, `base_offset`, `planned_at`, `problem`,
-  `slab_temp` (floor heating: the slab temperature the plan starts from)
+  `slab_temp` (floor heating: the slab temperature the plan starts from,
+  comparable with BT3), `slab_state` (the planner's slab state, which
+  settles at the supply) and `slab_source` (`bt3`, `bt2`, or `settled`
+  without history)
 - `sensor` House model (`prior` / `low` / `medium` / `high`): `a`, `b`,
   `c`, `d`, `time_constant_h`, `emitter`, `emitter_lag_h`,
-  `slab_coast_h`, `slab_capacity_kwh_per_k`, `planner` (`lagged` /
-  `one_node`), `heat_loss_w_per_k`, `capacity_kwh_per_k`,
+  `slab_coast_h` (`slab_coast_fitted`: from BT3, else 3 × the lag),
+  `slab_coupling_per_h` (indoor °C/h per K of slab over room),
+  `bt3_used`, `return_kappa` (κ), `slab_temperature` and `slab_source`
+  (the slab now), `slab_fit_source`, `bt3_fit` and `loop_fit` (the BT3
+  slab fit and the loop flow, unrecorded), `slab_capacity_kwh_per_k`,
+  `planner` (`lagged` / `one_node`), `heat_loss_w_per_k`,
+  `capacity_kwh_per_k`,
   `emitter_kw_per_k`, `carnot_eta`, `confidence`, `sim_rmse`,
   `rel_se_b`, `data_hours`, `last_fit`, the fits of the emitter,
   efficiency and meter (`meter_share`: the regressed share, or with a heat
