@@ -28,6 +28,35 @@ grid)), then takes the minimum over the previous offset with the
 switching cost (O(slots × actions² × grid)). The forward pass replays the
 policy from the real (continuous) start temperature, so the predicted
 trajectory is not quantised.
+
+Lagged houses (floor heating, ``house.tau_f >= LAG_PLANNER_MIN_H``)
+-------------------------------------------------------------------
+
+The slab temperature ``T_f`` is a second state (``house.py``): what the
+offset does now shows up indoors hours later, and heat in the slab keeps
+warming the room after the offset drops. A planner that ignores it heats
+too late for an expensive peak and overshoots after it. ``_plan_lagged``
+therefore runs the same DP on a 2-D grid, indoor temperature (default
+0.2 °C) × slab temperature (0.5 °C), with bilinear interpolation of the
+cost-to-go; the forward pass again replays the policy from the real
+(continuous) indoor and slab temperatures.
+
+- Discretising ``T_f`` keeps the DP exact in the sense the 1-D planner
+  is: every grid state has its own optimal continuation. Carrying ``T_f``
+  along candidate paths instead (one value per indoor grid point) would
+  merge paths with different stored heat and pick the wrong one exactly
+  when it matters, before a peak.
+- To stay fast, offsets are decided per block of ``hold_slots`` slots
+  (floor heating: 2 × 30 min, i.e. at most one change an hour; with hours
+  of lag more frequent changes cannot do anything), the slab grid of each
+  block covers only the supply temperatures reachable by then, and the
+  switching cost uses a distance transform (O(actions) per state instead
+  of O(actions²)).
+- The terminal value also counts the heat in the slab: ``(T_ref - T_f) ×
+  C_s`` with ``C_s = K_e × tau_d`` and ``T_ref`` the supply that holds the
+  target at the horizon's last outdoor temperature.
+- Energy: the pump's heat is the room's share plus what the slab stores,
+  ``K_e ∫(T_f - T_in) dt + C_s ΔT_f`` (none while the slab coasts).
 """
 
 from __future__ import annotations
@@ -40,7 +69,11 @@ from typing import List, Optional, Sequence, Tuple
 from .energy import EnergyModel
 from .heatcurve import OFFSET_LIMIT, HeatCurve
 from .horizon import HorizonSlot
-from .house import HouseModel
+from .house import HouseModel, LagStep
+
+# Below this emitter lag (h) the one-node planner is used: radiators react
+# within a slot or two, and hourly fits put lags under an hour at about 1 h.
+LAG_PLANNER_MIN_H = 1.25
 
 
 @dataclass(frozen=True)
@@ -92,6 +125,9 @@ class PlannerSettings:
     step_cost: float = 0.02
     grid_step: float = 0.1
     terminal_value: bool = True
+    hold_slots: int = 1  # lagged planner: offsets change only every this many slots
+    lag_grid_step: float = 0.2  # lagged planner: indoor grid, °C
+    slab_grid_step: float = 0.5  # lagged planner: slab grid, °C
 
     def offsets(self) -> List[int]:
         lo = max(-OFFSET_LIMIT, self.base_offset - self.max_down)
@@ -120,6 +156,8 @@ class PlanStep:
     electric_kwh: float
     energy_cost: float
     comfort_cost: float
+    slab_start: Optional[float] = None  # lagged model: slab temperature T_f
+    slab_end: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +172,7 @@ class Trajectory:
     max_t_in: float
     below_band_kh: float  # degree-hours under the lower band edge
     changes: int
+    above_band_kh: float = 0.0  # degree-hours over the upper band edge
 
     @property
     def total(self) -> float:
@@ -174,6 +213,7 @@ class _Ctx:
         self.energy = energy
         self.comfort = comfort
         self.settings = settings
+        self.lagged = house.tau_f >= LAG_PLANNER_MIN_H
         prices = [s.price for s in slots]
         hours = [s.hours for s in slots]
         total_h = sum(hours) or 1.0
@@ -183,34 +223,60 @@ class _Ctx:
         self.cop_ref = energy.cop(max(steady, comfort.target))
         self.capacity = energy.emitter_kw_per_k / house.b  # kWh/K
         self.heat_value = self.capacity * self.mean_price / self.cop_ref  # per K at the end
+        # Slab: capacity C_s = K_e tau_d, and the temperature that holds the
+        # target at the end of the horizon.
+        self.slab_capacity = energy.emitter_kw_per_k * house.drain_h if self.lagged else 0.0
+        self.slab_value = self.slab_capacity * self.mean_price / self.cop_ref
+        last_out = slots[-1].t_out if slots else mean_out
+        self.slab_ref = house.steady_supply(comfort.target, last_out)
+        self._steps: dict = {}
 
-    def terminal(self, t: float) -> float:
+    def lag(self, hours: float) -> LagStep:
+        key = round(hours, 6)
+        step = self._steps.get(key)
+        if step is None:
+            step = self._steps[key] = LagStep(self.house, hours)
+        return step
+
+    def terminal(self, t: float, t_f: Optional[float] = None) -> float:
         if not self.settings.terminal_value:
             return 0.0
-        return (self.comfort.target - t) * self.heat_value
+        value = (self.comfort.target - t) * self.heat_value
+        if self.lagged and t_f is not None:
+            value += (self.slab_ref - t_f) * self.slab_value
+        return value
 
-    def transition(self, slot: HorizonSlot, offset: int, t: float):
-        """(t_end, supply, cop, heat_kwh, electric_kwh) for one slot."""
+    def transition(self, slot: HorizonSlot, offset: int, t: float, t_f: Optional[float] = None):
+        """(t_end, supply, cop, heat_kwh, electric_kwh, t_f_end) for one slot."""
         h = slot.hours
         supply = self.curve.supply(slot.t_out, offset)
-        t_end = self.house.step(t, slot.t_out, supply, slot.solar, h)
         cop = self.energy.cop(supply, slot.t_brine)
+        if self.lagged and t_f is not None:
+            house = self.house
+            free = house.a * slot.t_out + house.c * slot.solar + house.d
+            t_end, f_end, heat = self.lag(h).step(t, t_f, free, supply)
+            heat *= self.energy.emitter_kw_per_k
+            return t_end, supply, cop, heat, heat / cop, f_end
+        t_end = self.house.step(t, slot.t_out, supply, slot.solar, h)
         if supply > t:
             heat = self.energy.emitter_kw_per_k * max(0.0, supply - 0.5 * (t + t_end)) * h
         else:
             heat = 0.0
-        return t_end, supply, cop, heat, heat / cop
+        return t_end, supply, cop, heat, heat / cop, None
 
 
-def _simulate(ctx: _Ctx, offsets: Sequence[int], t_in0: float, prev: Optional[int]) -> Trajectory:
+def _simulate(
+    ctx: _Ctx, offsets: Sequence[int], t_in0: float, prev: Optional[int], t_f0: Optional[float] = None
+) -> Trajectory:
     steps: List[PlanStep] = []
     t = t_in0
-    energy_cost = comfort_cost = switch_cost = kwh = below = 0.0
+    t_f = t_f0 if ctx.lagged else None
+    energy_cost = comfort_cost = switch_cost = kwh = below = above = 0.0
     lo = hi = t_in0
     changes = 0
     comfort = ctx.comfort
     for slot, offset in zip(ctx.slots, offsets):
-        t_end, supply, cop, heat, el = ctx.transition(slot, offset, t)
+        t_end, supply, cop, heat, el, f_end = ctx.transition(slot, offset, t, t_f)
         e_cost = el * slot.price
         c_cost = comfort.penalty_per_hour(t_end) * slot.hours
         s_cost = ctx.settings.switch_cost(prev, offset)
@@ -218,19 +284,26 @@ def _simulate(ctx: _Ctx, offsets: Sequence[int], t_in0: float, prev: Optional[in
             changes += 1
         steps.append(
             PlanStep(slot.start, slot.end, slot.price, slot.t_out, slot.solar, offset, supply, cop,
-                     t, t_end, heat, el, e_cost, c_cost)
+                     t, t_end, heat, el, e_cost, c_cost, t_f, f_end)
         )
         energy_cost += e_cost
         comfort_cost += c_cost
         switch_cost += s_cost
         kwh += el
         below += max(0.0, comfort.lower - t_end) * slot.hours
+        above += max(0.0, t_end - comfort.upper) * slot.hours
         lo = min(lo, t_end)
         hi = max(hi, t_end)
         t = t_end
+        t_f = f_end
         prev = offset
-    return Trajectory(steps, energy_cost, comfort_cost, switch_cost, ctx.terminal(t), kwh, lo, hi,
-                      below, changes)
+    return Trajectory(steps, energy_cost, comfort_cost, switch_cost, ctx.terminal(t, t_f), kwh, lo, hi,
+                      below, changes, above)
+
+
+def steady_slab(house: HouseModel, curve: HeatCurve, t_out: float, offset: int) -> float:
+    """Slab temperature after holding ``offset`` for long: the curve's supply."""
+    return curve.supply(t_out, offset)
 
 
 def simulate(
@@ -243,10 +316,18 @@ def simulate(
     comfort: ComfortSettings = ComfortSettings(),
     settings: PlannerSettings = PlannerSettings(),
     prev_offset: Optional[int] = None,
+    t_f0: Optional[float] = None,
 ) -> Trajectory:
-    """Run a given offset schedule through the model (baseline, backtests)."""
+    """Run a given offset schedule through the model (baseline, backtests).
+
+    A lagged house starts its slab at ``t_f0`` (default: settled at the
+    first slot's supply for ``prev_offset``, or the first offset).
+    """
     ctx = _Ctx(list(slots), house, curve, energy, comfort, settings)
-    return _simulate(ctx, offsets, t_in0, prev_offset)
+    if ctx.lagged and t_f0 is None and ctx.slots:
+        first = prev_offset if prev_offset is not None else (offsets[0] if offsets else settings.base_offset)
+        t_f0 = steady_slab(house, curve, ctx.slots[0].t_out, first)
+    return _simulate(ctx, offsets, t_in0, prev_offset, t_f0)
 
 
 def neutral_offset(
@@ -268,12 +349,16 @@ def plan_heating(
     settings: PlannerSettings = PlannerSettings(),
     current_offset: Optional[int] = None,
     clock=None,
+    t_f0: Optional[float] = None,
 ) -> Plan:
     """Cheapest offset schedule for ``slots`` from indoor ``t_in0``.
 
     ``current_offset`` is what the register holds now (switching away from
     it costs like any change). The baseline is the base offset held all
-    horizon long.
+    horizon long. A lagged house (floor heating) also needs the slab
+    temperature now, ``t_f0`` (``optrun.slab_now`` estimates it from the
+    history); without it the slab is taken as settled at the current
+    offset's supply.
     """
     import time as _time
 
@@ -281,6 +366,11 @@ def plan_heating(
     t0 = tick()
     slots = list(slots)
     ctx = _Ctx(slots, house, curve, energy, comfort, settings)
+    if ctx.lagged:
+        if t_f0 is None and slots:
+            held = current_offset if current_offset is not None else settings.base_offset
+            t_f0 = steady_slab(house, curve, slots[0].t_out, held)
+        return _plan_lagged(ctx, t_in0, t_f0, current_offset, tick, t0)
     actions = settings.offsets()
     n_act = len(actions)
     base = settings.base_offset
@@ -381,7 +471,7 @@ def plan_heating(
         best_t = t
         for ai in order:
             off = actions[ai]
-            tn, supply, cop, heat, el = ctx.transition(slot, off, t)
+            tn, supply, cop, heat, el, _ = ctx.transition(slot, off, t)
             v = (el * slot.price + comfort.penalty_per_hour(tn) * slot.hours
                  + settings.switch_cost(prev, off) + interp(values[k + 1][ai], tn))
             if best_v is None or v < best_v - 1e-9:
@@ -391,4 +481,219 @@ def plan_heating(
         t = best_t
 
     result = _simulate(ctx, chosen, t_in0, current_offset)
+    return Plan(result, baseline, chosen, settings, tick() - t0)
+
+
+def _distance_min(q_rows: List[List[float]], change: float, step: float) -> List[List[float]]:
+    """``out[p][x] = min_a q[a][x] + switch(p, a)`` for offsets in a row.
+
+    ``switch(p, a)`` is 0 for a == p, else ``change + step × |a - p|``;
+    a forward and a backward sweep give the ``step × |a - p|`` part in
+    O(actions) per state.
+    """
+    n = len(q_rows)
+    fwd = [q_rows[0]]
+    for a in range(1, n):
+        prev = fwd[-1]
+        fwd.append([x if x < y + step else y + step for x, y in zip(q_rows[a], prev)])
+    best = [None] * n  # type: ignore[list-item]
+    best[n - 1] = fwd[n - 1]
+    for a in range(n - 2, -1, -1):
+        nxt = best[a + 1]
+        best[a] = [x if x < y + step else y + step for x, y in zip(fwd[a], nxt)]
+    return [[q if q < m + change else m + change for q, m in zip(q_rows[p], best[p])] for p in range(n)]
+
+
+def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[int], tick, t0) -> Plan:
+    """The DP over (indoor, slab) for a lagged house; see the module docstring."""
+    slots = ctx.slots
+    settings = ctx.settings
+    comfort = ctx.comfort
+    house, curve, energy = ctx.house, ctx.curve, ctx.energy
+    actions = settings.offsets()
+    n_act = len(actions)
+    base = settings.base_offset
+    baseline = _simulate(ctx, [base] * len(slots), t_in0, current_offset, t_f0)
+    if not slots:
+        return Plan(baseline, baseline, [], settings, 0.0, ["no price slots"])
+
+    hold = max(1, int(settings.hold_slots))
+    blocks = [list(range(i, min(i + hold, len(slots)))) for i in range(0, len(slots), hold)]
+    n_blocks = len(blocks)
+
+    # Indoor grid (shared) and per-slot constants.
+    step_in = settings.lag_grid_step
+    g_lo = min(comfort.floor - 1.0, t_in0 - 0.5)
+    g_hi = max(comfort.upper + 1.5, t_in0 + 0.5)
+    n_in = int(math.ceil((g_hi - g_lo) / step_in)) + 1
+    grid_in = [g_lo + i * step_in for i in range(n_in)]
+    inv_in = 1.0 / step_in
+    last_in = n_in - 1
+
+    ke = energy.emitter_kw_per_k
+    a_, c_, d_ = house.a, house.c, house.d
+    td = house.drain_h
+    per_slot = []  # (hours, price, free, eq_coast, charge matrix, coast matrix, [(supply, eq_in, unit)])
+    sup_lo: List[float] = []
+    sup_hi: List[float] = []
+    for slot in slots:
+        lag = ctx.lag(slot.hours)
+        free = a_ * slot.t_out + c_ * slot.solar + d_
+        acts = []
+        for off in actions:
+            supply = curve.supply(slot.t_out, off)
+            unit = slot.price * ke / energy.cop(supply, slot.t_brine)
+            acts.append((supply, (free + lag.b * supply) / lag.k, unit))
+        per_slot.append((slot.hours, free, free / a_, lag.charge, lag.drain, acts))
+        sup_lo.append(min(x[0] for x in acts))
+        sup_hi.append(max(x[0] for x in acts))
+
+    # Slab grid at the start of each block: what is reachable by then.
+    step_f = settings.slab_grid_step
+    f_grids = []
+    lo = hi = t_f0
+    for k in range(n_blocks + 1):
+        if k > 0:
+            for i in blocks[k - 1]:
+                lo = min(lo, sup_lo[i])
+                hi = max(hi, sup_hi[i])
+        f_lo = max(g_lo, lo - step_f)
+        f_hi = max(f_lo + step_f, hi + step_f)
+        n_f = int(math.ceil((f_hi - f_lo) / step_f)) + 1
+        f_grids.append((f_lo, n_f))
+
+    tgt, tw = comfort.target, comfort.tracking_weight
+    lower, upper, floor = comfort.lower, comfort.upper, comfort.floor
+    wb, wa, fw = comfort.band_weight_below, comfort.band_weight_above, comfort.floor_weight
+    lb, la = comfort.band_linear_below, comfort.band_linear_above
+    inv_f = 1.0 / step_f
+
+    # Terminal values on the end grid.
+    f_lo, n_f = f_grids[n_blocks]
+    term = [ctx.terminal(grid_in[i], f_lo + j * step_f) for j in range(n_f) for i in range(n_in)]
+    values: List[Optional[List[List[float]]]] = [None] * (n_blocks + 1)
+    values[n_blocks] = [term] * n_act
+
+    def block_run(k: int, ai: int, ti: float, tf: float):
+        """(cost, T_in, T_f) at the end of block ``k`` with action ``ai``."""
+        cost = 0.0
+        for i in blocks[k]:
+            h, free, eqd, cm, dm, acts = per_slot[i]
+            sup, eqi, unit = acts[ai]
+            di = ti - eqi
+            df = tf - sup
+            ni = eqi + cm[0] * di + cm[1] * df
+            nf = sup + cm[3] * df
+            coasting = False
+            if sup < tf:
+                di2 = ti - eqd
+                df2 = tf - eqd
+                cf = eqd + dm[2] * di2 + dm[3] * df2
+                if cf > nf:
+                    ni = eqd + dm[0] * di2 + dm[1] * df2
+                    nf = cf
+                    coasting = True
+            if not coasting:
+                heat = 0.5 * (tf + nf - ti - ni) * h + td * (nf - tf)
+                if heat > 0.0:
+                    cost += unit * heat
+            dev = ni - tgt
+            pen = tw * dev * dev
+            if ni < lower:
+                x = lower - ni
+                pen += wb * x * x + lb * x
+                if ni < floor:
+                    pen += fw * (floor - ni)
+            elif ni > upper:
+                x = ni - upper
+                pen += wa * x * x + la * x
+            cost += pen * h
+            ti, tf = ni, nf
+        return cost, ti, tf
+
+    def interp(vals: List[float], k: int, ti: float, tf: float) -> float:
+        f_lo, n_f = f_grids[k]
+        x = (ti - g_lo) * inv_in
+        if x <= 0.0:
+            i0, wx = 0, 0.0
+        elif x >= last_in:
+            i0, wx = last_in - 1, 1.0
+        else:
+            i0 = int(x)
+            wx = x - i0
+        y = (tf - f_lo) * inv_f
+        if y <= 0.0:
+            j0, wy = 0, 0.0
+        elif y >= n_f - 1:
+            j0, wy = n_f - 2, 1.0
+        else:
+            j0 = int(y)
+            wy = y - j0
+        r0 = j0 * n_in + i0
+        r1 = r0 + n_in
+        v0 = vals[r0] + (vals[r0 + 1] - vals[r0]) * wx
+        v1 = vals[r1] + (vals[r1 + 1] - vals[r1]) * wx
+        return v0 + (v1 - v0) * wy
+
+    for k in range(n_blocks - 1, 0, -1):
+        f_lo, n_f = f_grids[k]
+        nxt = values[k + 1]
+        nf_lo, nn_f = f_grids[k + 1]
+        rows = []
+        for ai in range(n_act):
+            vn = nxt[ai]  # type: ignore[index]
+            row = []
+            append = row.append
+            for j in range(n_f):
+                tf0 = f_lo + j * step_f
+                for i in range(n_in):
+                    cost, ti, tf = block_run(k, ai, grid_in[i], tf0)
+                    # Bilinear interpolation of the next block's values (inlined).
+                    x = (ti - g_lo) * inv_in
+                    if x <= 0.0:
+                        i0, wx = 0, 0.0
+                    elif x >= last_in:
+                        i0, wx = last_in - 1, 1.0
+                    else:
+                        i0 = int(x)
+                        wx = x - i0
+                    y = (tf - nf_lo) * inv_f
+                    if y <= 0.0:
+                        j0, wy = 0, 0.0
+                    elif y >= nn_f - 1:
+                        j0, wy = nn_f - 2, 1.0
+                    else:
+                        j0 = int(y)
+                        wy = y - j0
+                    r0 = j0 * n_in + i0
+                    r1 = r0 + n_in
+                    v0 = vn[r0] + (vn[r0 + 1] - vn[r0]) * wx
+                    v1 = vn[r1] + (vn[r1 + 1] - vn[r1]) * wx
+                    append(cost + v0 + (v1 - v0) * wy)
+            rows.append(row)
+        values[k] = _distance_min(rows, settings.change_cost, settings.step_cost)
+
+    # Forward pass from the real indoor and slab temperatures.
+    chosen: List[int] = []
+    ti, tf = t_in0, t_f0
+    prev = current_offset
+    for k in range(n_blocks):
+        start_ref = prev if prev is not None else base
+        order = sorted(range(n_act), key=lambda i: (abs(actions[i] - start_ref), abs(actions[i] - base), actions[i]))
+        best = None
+        for ai in order:
+            cost, ni, nf = block_run(k, ai, ti, tf)
+            cost += settings.switch_cost(prev, actions[ai])
+            if k + 1 < n_blocks:
+                cost += interp(values[k + 1][ai], k + 1, ni, nf)  # type: ignore[index]
+            else:
+                cost += ctx.terminal(ni, nf)
+            if best is None or cost < best[0] - 1e-9:
+                best = (cost, ai, ni, nf)
+        assert best is not None
+        _, ai, ti, tf = best
+        chosen.extend([actions[ai]] * len(blocks[k]))
+        prev = actions[ai]
+
+    result = _simulate(ctx, chosen, t_in0, current_offset, t_f0)
     return Plan(result, baseline, chosen, settings, tick() - t0)
