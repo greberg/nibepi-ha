@@ -32,6 +32,13 @@ deliberately middle-of-the-road; see docs/optimizer.md):
   covers the design load: ``K_e = (H (T_target - DUT) - gains) /
   (T_supply(DUT) - T_target)``. The curve the user has set encodes how
   much emitter the house has.
+- Emitter lag (``tau_f``, see ``house.py``): floor heating in a concrete
+  slab 3 h, mixed floor heating and radiators 1.5 h, radiators 0.3 h; the
+  slab coasts ``DRAIN_RATIO`` (3) times slower than it charges, so its
+  stored heat ``C_s = tau_d K_e`` is ~9 h of emitter output for floor
+  heating (≈ 2-4 kWh/K for 150 m²: a 5-8 cm screed). The fit searches
+  0.25-10 h around these. Below ``LAG_PLANNER_MIN_H`` (1.25 h, planner.py)
+  the planner treats the house as one node.
 - Floors and indoor sensors: one sensor on one floor of a multi-floor
   house represents the house poorly (stratification, sun on one side).
   ``sensor_margin`` (°C) is 0 for 1 floor, 0.1 for 1.5, 0.2 for 2 and 0.3
@@ -47,7 +54,7 @@ from typing import Optional, Tuple
 
 from .energy import EnergyModel
 from .heatcurve import HeatCurve
-from .house import FitBounds, HouseModel
+from .house import DRAIN_RATIO, FitBounds, HouseModel
 
 ERA_LOSS_W_PER_K_M2 = {
     "pre1960": 1.3,
@@ -64,6 +71,10 @@ INTERNAL_GAINS_W_PER_M2 = 4.0
 SOLAR_GAIN_W_PER_M2 = 6.0
 FLOOR_FACTOR = {1.0: 1.10, 1.5: 1.0, 2.0: 0.92, 3.0: 0.88}
 SENSOR_MARGIN = {1.0: 0.0, 1.5: 0.1, 2.0: 0.2, 3.0: 0.3}
+EMITTER_FLOOR = "floor"
+EMITTER_MIXED = "mixed"
+EMITTER_RADIATORS = "radiators"
+EMITTER_LAG_H = {EMITTER_FLOOR: 3.0, EMITTER_MIXED: 1.5, EMITTER_RADIATORS: 0.3}
 
 
 @dataclass(frozen=True)
@@ -74,6 +85,9 @@ class HouseProfile:
     era: Optional[str] = None  # a key of ERA_LOSS_W_PER_K_M2
     construction: Optional[str] = None  # light / medium / heavy
     indoor_sensors: int = 1
+    # floor / mixed / radiators (the config flow defaults to floor heating);
+    # anything else is treated as radiators.
+    emitter: str = EMITTER_RADIATORS
     # From Home Assistant's core config unless overridden.
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -141,7 +155,10 @@ def house_prior(profile: HouseProfile, curve: HeatCurve = HeatCurve()) -> HouseP
     emitter = max(0.05, (ua * (target - dut) - gains) / lift)
     margin = SENSOR_MARGIN[key] * (0.5 if profile.indoor_sensors >= 2 else 1.0)
 
-    model = HouseModel(ua / capacity, emitter / capacity, solar / capacity, gains / capacity)
+    tau_f = EMITTER_LAG_H.get(profile.emitter, EMITTER_LAG_H[EMITTER_RADIATORS])
+    model = HouseModel(
+        ua / capacity, emitter / capacity, solar / capacity, gains / capacity, tau_f, DRAIN_RATIO * tau_f
+    )
     spread = 1.0 + 3.0 * uncertainty  # ~ ±3 sigma, multiplicative
 
     def rng(value: float) -> Tuple[float, float]:
