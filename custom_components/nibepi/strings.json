@@ -449,6 +449,9 @@
           "high": "High confidence"
         }
       },
+      "heat_pump_cost_today": {
+        "name": "Heat pump cost today"
+      },
       "optimiser_savings_today": {
         "name": "Expected savings today"
       },

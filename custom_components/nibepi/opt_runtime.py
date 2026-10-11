@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from homeassistant.const import UnitOfTemperature
@@ -27,6 +27,9 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from homeassistant.components import mqtt
 
 from .const import (
+    HOUSE_EMITTERS,
+    METER_SCOPE_HEAT_PUMP,
+    METER_SCOPES,
     OPT_COMFORT_ABOVE,
     OPT_COMFORT_BELOW,
     OPT_COMFORT_FLOOR,
@@ -53,9 +56,6 @@ from .const import (
     REG_HEAT_METER,
     REG_HW_METER,
     REG_OUTDOOR,
-    HOUSE_EMITTERS,
-    METER_SCOPE_HEAT_PUMP,
-    METER_SCOPES,
     UNKNOWN,
     opt_store_key,
     signal_update,
@@ -82,6 +82,7 @@ from .logic.opthistory import (
     register_unique_id,
     retention_start,
 )
+from .logic import optcost
 from .logic.optimizer.gate import GateDecision, gate
 from .logic.optimizer.meter import MeterConfig, MeterReading
 from .logic.optimizer.planner import ComfortSettings
@@ -237,6 +238,8 @@ class OptimizerRuntime:
         # Expected savings today: {"day", "heating": {system: banked}, ...}.
         self.savings: Dict[str, Any] = {}
         self.savings_today: Dict[str, float] = {}
+        # Heat pump electricity today, measured (heat pump meter) vs planned.
+        self.hp_cost: Dict[str, Any] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -296,6 +299,8 @@ class OptimizerRuntime:
         self.fits = fits if isinstance(fits, dict) else {}
         savings = data.get("savings")
         self.savings = savings if isinstance(savings, dict) else {}
+        hp_cost = data.get("hp_cost")
+        self.hp_cost = hp_cost if isinstance(hp_cost, dict) else {}
 
     def _store_data(self) -> Dict[str, Any]:
         return {
@@ -304,6 +309,7 @@ class OptimizerRuntime:
             "bootstrap_at": self.bootstrap_at,
             "fits": self.fits,
             "savings": self.savings,
+            "hp_cost": self.hp_cost,
         }
 
     def save_soon(self) -> None:
@@ -436,9 +442,27 @@ class OptimizerRuntime:
             energy = bin_meter_energy(self.meter_buffer, [start], self.meter_config)
             if start in energy:
                 result["meter_kwh"] = energy[start]
+                self._count_cost(start, energy[start])
         self.log.put(start, result)
         self.log.trim(retention_start(now, RETENTION_DAYS))
         self.save_soon()
+
+    @property
+    def measures_heat_pump(self) -> bool:
+        return bool(self.meter_entity) and self.meter_scope == METER_SCOPE_HEAT_PUMP
+
+    def _local_day(self, when: datetime) -> str:
+        return dt_util.as_local(when).date().isoformat()
+
+    def _count_cost(self, start: int, kwh: float) -> None:
+        """A finished bin of a heat pump meter: price it into today's cost."""
+        if not self.measures_heat_pump:
+            return
+        when = datetime.fromtimestamp(start, timezone.utc)
+        prices = scale_prices(self.rt.price_slots, self.rt.opt(OPT_PRICE_UNIT_FACTOR))
+        price = optcost.price_at(prices, when + timedelta(seconds=STEP_S / 2))
+        self.hp_cost = optcost.roll(self.hp_cost, self._local_day(when))
+        optcost.add_measured(self.hp_cost, kwh, price)
 
     # -- bootstrap from the recorder ----------------------------------------
 
@@ -846,11 +870,20 @@ class OptimizerRuntime:
             self.savings = {"day": day, "heating": {}, "hot_water": 0.0}
         banked: Dict[str, float] = self.savings.setdefault("heating", {})
         today: Dict[str, float] = {}
+        if self.measures_heat_pump:
+            self.hp_cost = optcost.roll(self.hp_cost, day)
         for result in heating:
             prev = self.heating.get(result.system)
             if prev is not None and prev.plan is not None:
                 since = max(prev.planned_at, day_start)
                 banked[result.system] = banked.get(result.system, 0.0) + savings_between(prev.plan, since, now)
+                if self.measures_heat_pump:
+                    optcost.add_planned(
+                        self.hp_cost, "heating", *optcost.energy_between(prev.plan.plan.steps, since, now)
+                    )
+                    optcost.add_planned(
+                        self.hp_cost, "baseline", *optcost.energy_between(prev.plan.baseline.steps, since, now)
+                    )
             ahead = savings_between(result.plan, now, day_end) if result.plan is not None else 0.0
             today[result.system] = banked.get(result.system, 0.0) + ahead
         # Hot water: spread over the plan's span by time.
@@ -859,6 +892,11 @@ class OptimizerRuntime:
         if prev_tank is not None and prev_tank.plan is not None and prev_tank.plan.steps:
             span = (prev_tank.plan.steps[0].start, prev_tank.plan.steps[-1].end)
             hw_banked += prev_tank.plan.savings * time_share(max(prev_tank.planned_at, day_start), now, *span)
+            if self.measures_heat_pump:
+                optcost.add_planned(
+                    self.hp_cost, "hot_water",
+                    *optcost.energy_between(prev_tank.plan.steps, max(prev_tank.planned_at, day_start), now),
+                )
         self.savings["hot_water"] = hw_banked
         if tank is not None and tank.plan is not None and tank.plan.steps:
             span = (tank.plan.steps[0].start, tank.plan.steps[-1].end)

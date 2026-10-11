@@ -1,6 +1,7 @@
 """Sensors: planned offset, component offsets, pump offset, lease states,
 price level, the hot water plan, draw profile and leases, and the cost
-optimiser's plans, house model and expected savings."""
+optimiser's plans, house model, expected savings and the heat pump's
+measured cost."""
 
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
 from .logic.lease import MODE_ACTIVE, LeaseManager
+from .logic.optcost import summary as cost_summary
 from .logic.optrun import models_summary
 from .logic.optstrategy import SOURCE_RULES, offset_at
 from .logic.price import LEVELS
@@ -46,6 +48,7 @@ async def async_setup_entry(
         entities.append(OptimiserPlanSensor(runtime, system))
         entities.append(HouseModelSensor(runtime, system))
     entities.append(SavingsTodaySensor(runtime))
+    entities.append(HeatPumpCostTodaySensor(runtime))
     entities.append(HotWaterActionSensor(runtime))
     entities.append(DrawProfileSensor(runtime))
     entities.append(HotWaterOptimiserSensor(runtime))
@@ -545,6 +548,46 @@ class SavingsTodaySensor(NibePiEntity, SensorEntity):
         optimizer = self.runtime.optimizer
         attrs: Dict[str, Any] = {k: _money(v) for k, v in optimizer.savings_today.items()}
         attrs["day"] = optimizer.savings.get("day")
+        return attrs
+
+
+class HeatPumpCostTodaySensor(NibePiEntity, SensorEntity):
+    """The heat pump's electricity cost today, from a heat pump meter.
+
+    Each 10-minute bin of the meter priced at its slot. The attributes
+    hold what the plans predicted for the same hours (heating, hot water,
+    and the heating baseline) and the gap; yesterday's figures too. Only
+    with a meter whose scope is the heat pump.
+    """
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:heat-pump"
+    _unrecorded_attributes = frozenset({"yesterday"})
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "heat_pump_cost_today")
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return _currency(self.runtime)
+
+    @property
+    def native_value(self) -> Optional[float]:
+        optimizer = self.runtime.optimizer
+        tally = optimizer.hp_cost
+        if not optimizer.measures_heat_pump or tally.get("day") != dt_util.now().date().isoformat():
+            return None
+        return round(float(tally.get("cost") or 0.0), 2)
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        optimizer = self.runtime.optimizer
+        tally = optimizer.hp_cost
+        attrs: Dict[str, Any] = {"meter_scope": optimizer.meter_scope, "meter": optimizer.meter_entity}
+        if tally.get("day"):
+            attrs.update(cost_summary(tally))
+            attrs["yesterday"] = tally.get("yesterday")
         return attrs
 
 

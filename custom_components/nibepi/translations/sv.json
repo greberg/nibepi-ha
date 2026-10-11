@@ -449,6 +449,9 @@
           "high": "Hög säkerhet"
         }
       },
+      "heat_pump_cost_today": {
+        "name": "Värmepumpens kostnad idag"
+      },
       "optimiser_savings_today": {
         "name": "Förväntad besparing idag"
       },
