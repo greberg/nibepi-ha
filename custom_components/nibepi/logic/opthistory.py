@@ -340,8 +340,9 @@ def gateway_ids(unique_ids: Iterable[Any]) -> Set[str]:
     return found
 
 
-def register_unique_id(device_id: str, register: int) -> str:
-    return "%s_%d" % (device_id, register)
+def register_unique_id(device_id: str, register: Any) -> str:
+    """``<device>_<register>``; also ``<device>_bus_health`` for the bus sensor."""
+    return "%s_%s" % (device_id, register)
 
 
 # --------------------------------------------------------------------------

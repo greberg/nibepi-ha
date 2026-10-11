@@ -45,8 +45,8 @@ REGISTER_TITLES = {
     43136: "Compressor Frequency, Actual",
     43141: "compr. in power",
 }
-# The MQTT sensor in the README's Dashboard section.
-BUS_HEALTH = "sensor.nibe_bus_health"
+# The gateway's discovered "Bus errors" sensor on the pump device.
+BUS_HEALTH = "sensor.nibe_f1255_bus_errors"
 
 FILES = {
     "dashboards/nibepi.yaml": (

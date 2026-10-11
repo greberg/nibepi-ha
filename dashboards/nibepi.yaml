@@ -726,7 +726,7 @@ views:
             title: Bus errors per minute
             hours_to_show: 48
             entities:
-              - entity: sensor.nibe_bus_health
+              - entity: sensor.nibe_f1255_bus_errors
                 name: Errors
             grid_options:
               columns: full

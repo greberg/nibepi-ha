@@ -82,6 +82,10 @@ def resolve_entities(
             indoor = found.get("bt50_" + system)
         if indoor:
             found["indoor_" + system] = indoor
+    # The gateway announces its bus health sensor through discovery; an
+    # explicit entity (an older gateway, a hand-made MQTT sensor) wins.
+    if not bus_health:
+        bus_health = runtime.optimizer.gateway_entity("bus_health")
     if bus_health and usable(bus_health):
         found["bus_health"] = bus_health
     return found

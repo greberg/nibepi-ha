@@ -336,7 +336,7 @@ class OptimizerRuntime:
             _LOGGER.debug("NibePi gateway discovery id %s", device_id)
             self.discovery_id = device_id
 
-    def gateway_entity(self, register: int) -> Optional[str]:
+    def gateway_entity(self, register: Any) -> Optional[str]:
         """The entity id of the gateway's discovered sensor for ``register``.
 
         From the gateway's own discovery config when it was seen on MQTT,
