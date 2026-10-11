@@ -20,16 +20,19 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    ATTR_BUS_HEALTH_ENTITY,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_PATH,
     DOMAIN,
     OPT_STORE_VERSION,
     PLATFORMS,
+    SERVICE_GET_DASHBOARD,
     SERVICE_IMPORT_VV_PROFILE,
     VV_STORE_VERSION,
     opt_store_key,
     vv_store_key,
 )
+from .dashboard_service import dashboard_response
 from .logic.vvimport import ProfileImportError
 from .runtime import NibePiRuntime
 
@@ -46,21 +49,29 @@ IMPORT_SCHEMA = vol.Schema(
 )
 
 
+DASHBOARD_SCHEMA = vol.Schema(
+    {vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string, vol.Optional(ATTR_BUS_HEALTH_ENTITY): cv.entity_id}
+)
+
+
+def _loaded_runtime(hass: HomeAssistant, call: ServiceCall) -> NibePiRuntime:
+    """The runtime of the entry the action names, or the only loaded one."""
+    entries = [e for e in hass.config_entries.async_entries(DOMAIN) if e.state is ConfigEntryState.LOADED]
+    wanted = call.data.get(ATTR_CONFIG_ENTRY_ID)
+    if wanted:
+        entries = [e for e in entries if e.entry_id == wanted]
+    if len(entries) != 1:
+        raise ServiceValidationError(
+            "No loaded NibePi entry %s" % wanted
+            if wanted
+            else "Choose the NibePi entry (config_entry_id): %d are loaded" % len(entries)
+        )
+    return entries[0].runtime_data
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def _import_vv_profile(call: ServiceCall) -> Dict[str, Any]:
-        entries = [
-            e for e in hass.config_entries.async_entries(DOMAIN) if e.state is ConfigEntryState.LOADED
-        ]
-        wanted = call.data.get(ATTR_CONFIG_ENTRY_ID)
-        if wanted:
-            entries = [e for e in entries if e.entry_id == wanted]
-        if len(entries) != 1:
-            raise ServiceValidationError(
-                "No loaded NibePi entry %s" % wanted
-                if wanted
-                else "Choose the NibePi entry (config_entry_id): %d are loaded" % len(entries)
-            )
-        runtime: NibePiRuntime = entries[0].runtime_data
+        runtime = _loaded_runtime(hass, call)
         try:
             return await runtime.async_import_vv_profile(call.data[ATTR_PATH])
         except (ProfileImportError, OSError) as err:
@@ -72,6 +83,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         _import_vv_profile,
         schema=IMPORT_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _get_dashboard(call: ServiceCall) -> Dict[str, Any]:
+        runtime = _loaded_runtime(hass, call)
+        return dashboard_response(hass, runtime, call.data.get(ATTR_BUS_HEALTH_ENTITY))
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_DASHBOARD,
+        _get_dashboard,
+        schema=DASHBOARD_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     return True
 

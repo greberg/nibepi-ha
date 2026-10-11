@@ -548,6 +548,20 @@
           "description": "Behövs bara med mer än en NibePi-integration."
         }
       }
+    },
+    "get_dashboard": {
+      "name": "Hämta dashboard",
+      "description": "Returnerar en Home Assistant-dashboard för NibePi med den här installationens entitets-id:n, som YAML att klistra in i en ny dashboards redigerare för rå konfiguration. Kort för entiteter som inte finns (klimatsystem 2, gatewayens registersensorer utan MQTT discovery) utelämnas.",
+      "fields": {
+        "config_entry_id": {
+          "name": "NibePi-post",
+          "description": "Behövs bara med mer än en NibePi-integration."
+        },
+        "bus_health_entity": {
+          "name": "Sensor för busshälsa",
+          "description": "Valfri sensor för gatewayens bus_health-topic (fel per minut), för historikkortet för RS485-bussen. Se README."
+        }
+      }
     }
   }
 }
