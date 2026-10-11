@@ -506,7 +506,9 @@ class OptimiserPlanSensor(_SystemSensor):
                 "predicted_min": round(plan.plan.min_t_in, 2),
                 "predicted_max": round(plan.plan.max_t_in, 2),
                 "below_band_kh": round(plan.plan.below_band_kh, 2),
-                "slab_temp": result.slab,
+                "slab_temp": result.slab_temp,
+                "slab_state": result.slab,
+                "slab_source": result.slab_source,
                 "changes": plan.plan.changes,
                 "elapsed_s": round(plan.elapsed_s, 3),
                 "summary": result.summary,
@@ -598,7 +600,9 @@ class HouseModelSensor(_SystemSensor):
     _attr_options = ["prior", "low", "medium", "high"]
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:home-analytics"
-    _unrecorded_attributes = frozenset({"curve", "prior", "emitter_fit", "eta_fit", "meter_share", "history"})
+    _unrecorded_attributes = frozenset(
+        {"curve", "prior", "emitter_fit", "eta_fit", "meter_share", "history", "bt3_fit", "loop_fit"}
+    )
 
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
         super().__init__(runtime, "house_model", system)
@@ -621,8 +625,16 @@ class HouseModelSensor(_SystemSensor):
         system_fits = (fits.get("systems") or {}).get(self.system) or {}
         log = optimizer.log
         span = log.span()
+        result = optimizer.heating.get(self.system)
+        house_fit = system_fits.get("house") or {}
         attrs.update(
             {
+                # The slab now, as the last plan started from it (floor heating).
+                "slab_temperature": result.slab_temp if result is not None else None,
+                "slab_source": result.slab_source if result is not None else None,
+                "slab_fit_source": house_fit.get("slab_source"),
+                "bt3_fit": house_fit.get("bt3"),
+                "loop_fit": system_fits.get("loop"),
                 "last_fit": fits.get("fitted_at"),
                 "fit_error": optimizer.fit_error,
                 "prior": system_fits.get("prior"),

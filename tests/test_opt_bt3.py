@@ -6,10 +6,11 @@ import math
 import random
 import unittest
 from dataclasses import replace
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 import context  # noqa: F401
 from context import utc
+from logic.inputs import PriceSlot
 from logic.optimizer.heatcurve import HeatCurve
 from logic.optimizer.house import (
     HouseModel,
@@ -22,12 +23,25 @@ from logic.optimizer.house import (
     slab_track,
     synthetic_history,
 )
+from logic.optimizer.planner import ComfortSettings
 from logic.optimizer.profile import HouseProfile, house_prior
+from logic.optrun import (
+    HeatingInputs,
+    SystemSetup,
+    fit_all,
+    house_fit_dict,
+    house_fit_from,
+    models_for,
+    models_summary,
+    plan_system,
+    slab_estimate,
+)
 
 START = utc(2026, 1, 1)
 CURVE = HeatCurve(curve=5)
 PROFILE = HouseProfile(floor_area_m2=150, floors=1, latitude=None, longitude=None, emitter="floor")
 FLOOR = house_prior(PROFILE, CURVE)
+CAPACITY = 11.25  # kWh/K
 
 
 def t_out(when) -> float:
@@ -67,6 +81,24 @@ def history(true: HouseModel, kappa: float, seed: int, days: int = 21, pump_stop
 
 def without_bt3(samples):
     return [replace(s, t_return=None) for s in samples]
+
+
+def rows_from(samples, true: HouseModel, kappa: float, offsets):
+    """10-minute bins as the integration logs them; the heat meter counts the
+    floor's heat, flow x c_p x (BT2 - BT3)."""
+    k_w = true.drain_h / true.tau_f * true.b * CAPACITY * (1.0 + kappa)
+    heat = 1000.0
+    rows = {}
+    for s in samples:
+        if not s.hw:
+            heat += k_w * max(0.0, s.t_supply - s.t_return) / 6.0
+        rows[int(s.ts.timestamp())] = {
+            "t_out": s.t_out, "s1_t_in": s.t_in, "s1_supply": s.t_supply, "bt3": s.t_return,
+            "s1_offset": float(offsets[int(s.ts.timestamp() // (3 * 3600))]),
+            "pump_on": s.pump, "freq_hz": s.compressor, "prio_hw": s.hw, "prio_heat": 1.0 - s.hw,
+            "heat_kwh": heat,
+        }
+    return rows
 
 
 class ObservableTest(unittest.TestCase):
@@ -188,6 +220,69 @@ class StillWaterTest(unittest.TestCase):
             self.assertAlmostEqual(fit.model.tau_f, 3.0, delta=0.3, msg=name)
             self.assertLess(fit.details["bt3"]["slab_rmse"], 0.2, name)
             self.assertLessEqual(fit.sim_rmse, bt2.sim_rmse, name)
+
+
+class RunTest(unittest.TestCase):
+    """The same through the integration's history rows: fit, models, plan."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.true = floor_house(3.0, 2.0)
+        samples, cls.truth, offsets = history(cls.true, 0.25, 1)
+        cls.samples = samples
+        cls.rows = rows_from(samples, cls.true, 0.25, offsets)
+        cls.setup = SystemSetup("s1", PROFILE, 5)
+        cls.fits = fit_all(cls.rows, [cls.setup], START)
+
+    def test_fit_and_summary(self) -> None:
+        house = self.fits["systems"]["s1"]["house"]
+        self.assertTrue(house["ok"], house["reason"])
+        self.assertEqual(house["slab_source"], "bt3")
+        self.assertAlmostEqual(house["kappa"], 0.25, delta=0.03)
+        models = models_for(self.setup, self.fits)
+        summary = models_summary(models)
+        self.assertTrue(summary["bt3_used"])
+        self.assertTrue(summary["slab_coast_fitted"])
+        self.assertAlmostEqual(summary["slab_coast_h"], 6.0, delta=0.6)
+        self.assertAlmostEqual(summary["slab_coupling_per_h"], self.true.slab_coupling,
+                               delta=0.08 * self.true.slab_coupling)
+        self.assertAlmostEqual(summary["return_kappa"], 0.25, delta=0.03)
+
+    def test_loop_flow_checks_the_coasting_time(self) -> None:
+        loop = self.fits["systems"]["s1"]["loop"]
+        self.assertTrue(loop["ok"], loop["reason"])
+        k_w = 2.0 * self.true.b * CAPACITY * 1.25
+        self.assertAlmostEqual(loop["kw_per_k"], k_w, delta=0.1 * k_w)
+        self.assertAlmostEqual(loop["drain_ratio"], 2.0, delta=0.3)
+
+    def test_plan_starts_from_bt3(self) -> None:
+        models = models_for(self.setup, self.fits)
+        i = len(self.samples) - 1
+        now = self.samples[i].ts + timedelta(minutes=10)
+        last_day = {k: v for k, v in self.rows.items() if k >= now.timestamp() - 86400}
+        est = slab_estimate(last_day, "s1", models.house, now)
+        self.assertEqual(est.source, "bt3")
+        self.assertAlmostEqual(est.temp, self.truth[i], delta=0.3)
+        prices = [PriceSlot(now + timedelta(minutes=15 * k), now + timedelta(minutes=15 * (k + 1)), 1.0)
+                  for k in range(96)]
+        result = plan_system(HeatingInputs("s1", models, ComfortSettings(target=21.0), prices, now, timezone.utc,
+                                           21.0, -3.0, current_offset=0, history=last_day))
+        self.assertIsNone(result.problem)
+        self.assertEqual((result.slab, result.slab_temp, result.slab_source), (est.state, est.temp, "bt3"))
+        # Without BT3 in the history the fit's slab is filtered from BT2.
+        plain = {k: {c: x for c, x in v.items() if c != "bt3"} for k, v in last_day.items()}
+        self.assertEqual(slab_estimate(plain, "s1", models.house, now).source, "bt2")
+
+    def test_stored_fits_roundtrip_and_old_fits_load(self) -> None:
+        models = models_for(self.setup, self.fits)
+        again = house_fit_from(house_fit_dict(models.fit), FLOOR.model)
+        self.assertEqual(again.model, models.house)
+        self.assertEqual(again.details["slab_source"], "bt3")
+        # A 0.2.1 fit: no kappa, the slab from BT2.
+        old = {k: v for k, v in house_fit_dict(models.fit).items() if k not in ("kappa", "slab_source", "bt3")}
+        fit = house_fit_from(old, FLOOR.model)
+        self.assertIsNone(fit.model.kappa)
+        self.assertFalse(models_summary(replace(models, fit=fit))["bt3_used"])
 
 
 if __name__ == "__main__":

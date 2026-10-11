@@ -116,6 +116,7 @@ def _optimizer(runtime: NibePiRuntime) -> Dict[str, Any]:
             "problem": result.problem,
             "summary": result.summary,
             "explanation": [b.text for b in result.blocks],
+            "slab": {"state": result.slab, "temperature": result.slab_temp, "source": result.slab_source},
         }
         if result.plan is not None:
             plan = result.plan

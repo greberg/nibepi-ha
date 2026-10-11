@@ -24,8 +24,10 @@ Planning (every 15 minutes, on new prices and on a mode change):
 forecast and BT1, runs ``plan_heating`` from the measured indoor
 temperature and explains it. A house with an emitter lag (floor heating)
 is planned on 30-minute slots with offsets held for an hour, from the
-slab temperature filtered out of the last day's BT2 and indoor history
-(``slab_now``); ``plan_tank`` plans the hot water charges
+slab temperature filtered out of the last day's BT2 and indoor history,
+pulled towards BT3 when the fit uses it (``slab_estimate``); the floor
+loop's flow is calibrated from the heat meter and BT2 - BT3
+(``fit_loop``); ``plan_tank`` plans the hot water charges
 against the VV learning profile's expected draws.
 """
 
@@ -41,7 +43,16 @@ from .optimizer.energy import EnergyModel, fit_carnot_eta, fit_emitter
 from .optimizer.explain import Block, explain_plan, summary
 from .optimizer.heatcurve import DEFAULT_CURVE, HeatCurve, fit_heat_curve
 from .optimizer.horizon import build_horizon
-from .optimizer.house import HouseFit, HouseModel, fit_house_model, slab_filter
+from .optimizer.house import (
+    PUMP_ON_SHARE,
+    HouseFit,
+    HouseModel,
+    fit_house_model,
+    slab_filter,
+    slab_observable,
+    slab_temp,
+    slab_track,
+)
 from .optimizer.meter import fit_hp_share
 from .optimizer.planner import (
     LAG_PLANNER_MIN_H,
@@ -99,6 +110,10 @@ def house_fit_dict(fit: HouseFit) -> Dict[str, Any]:
         "rel_se_b": round(fit.rel_se_b, 3) if fit.rel_se_b != float("inf") else None,
         "rejected": {k: v for k, v in fit.details.items() if v is not None} if not fit.ok else None,
         "lag_grid": {str(k): v for k, v in fit.details.get("lag_grid", {}).items()} or None,
+        "kappa": round(m.kappa, 4) if m.kappa is not None else None,
+        "slab_source": fit.details.get("slab_source"),
+        "bt2_sim_rmse": fit.details.get("bt2_sim_rmse"),
+        "bt3": fit.details.get("bt3"),
     }
 
 
@@ -107,20 +122,24 @@ def house_fit_from(data: Any, prior: HouseModel) -> HouseFit:
 
     A fit stored before the emitter lag existed (0.2.0) keeps its a..d and
     takes the prior's lag until the next fit; so does one stored for
-    another emitter type (lagged vs one node).
+    another emitter type (lagged vs one node). One from before BT3 was
+    used (0.2.1) has no ``kappa``: the slab is then filtered from BT2.
     """
     if not isinstance(data, Mapping):
         return HouseFit(prior, False, "not fitted yet")
     try:
         ok = bool(data.get("ok"))
         tau_f, tau_d = prior.tau_f, prior.tau_d
+        kappa = None
         if data.get("tau_f") is not None and (float(data["tau_f"]) > 0) == prior.lagged:
             tau_f, tau_d = float(data["tau_f"]), float(data.get("tau_d") or 0.0)
+            kappa = float(data["kappa"]) if prior.lagged and data.get("kappa") is not None else None
         model = (
-            HouseModel(float(data["a"]), float(data["b"]), float(data["c"]), float(data["d"]), tau_f, tau_d)
+            HouseModel(float(data["a"]), float(data["b"]), float(data["c"]), float(data["d"]), tau_f, tau_d, kappa)
             if ok
             else prior
         )
+        details = {k: data[k] for k in ("slab_source", "bt3", "bt2_sim_rmse") if data.get(k) is not None}
         rel = data.get("rel_se_b")
         return HouseFit(
             model,
@@ -133,6 +152,7 @@ def house_fit_from(data: Any, prior: HouseModel) -> HouseFit:
             float(rel) if rel is not None else float("inf"),
             float(data.get("confidence") or 0.0),
             str(data.get("level") or "low"),
+            details,
         )
     except (KeyError, TypeError, ValueError):
         return HouseFit(prior, False, "stored fit unreadable")
@@ -198,9 +218,14 @@ def fit_system(
             "reason": "the heat meter is shared by the climate systems",
             "hours": 0,
         }
+    if single_system:
+        loop = fit_loop(rows, supply, hw, fit.model, float(emitter["value"]) if emitter.get("ok") else None)
+    else:
+        loop = {"ok": False, "reason": "the heat meter is shared by the climate systems", "hours": 0}
     c = curve_fit.curve
     return {
         "house": house_fit_dict(fit),
+        "loop": loop,
         "curve": {
             "curve": c.curve,
             "bias": round(c.bias, 3),
@@ -227,6 +252,57 @@ def fit_system(
     }
 
 
+MIN_LOOP_HOURS = 24
+MIN_LOOP_DT = 1.0  # K of BT2 - BT3 in the hour
+WATER_KJ_PER_KG_K = 4.18
+
+
+def fit_loop(
+    rows: Mapping[int, Mapping[str, float]],
+    supply: str,
+    hw: Mapping[int, float],
+    model: HouseModel,
+    emitter_kw_per_k: Optional[float],
+) -> Dict[str, Any]:
+    """The floor loop's water flow from the heat meter (44300) and BT2 - BT3.
+
+    Heat into the floor is flow x c_p x (BT2 - BT3), the flow roughly
+    constant, so the ratio of the meter's increments to BT2 - BT3 over
+    heating hours (no hot water, circulation pump on) is the flow's
+    conductance in kW/K. With the slab's BT3 offset (``kappa``) and the
+    fitted emitter conductance it also gives the coasting ratio
+    tau_d / tau_f independently of the indoor fit: the water's
+    conductance to the slab over the slab's to the room
+    (``drain_ratio``), a check of tau_d.
+    """
+    pump = _hour_map(rows, "pump_on")
+    heat = gap = 0.0
+    hours = 0
+    for hour, v in hourly(rows, ["heat_kwh", supply, "bt3"]):
+        if hw.get(hour, 0.0) >= HW_SHARE or pump.get(hour, 1.0) < PUMP_ON_SHARE:
+            continue
+        dt = v[supply] - v["bt3"]
+        if dt < MIN_LOOP_DT:
+            continue
+        heat += v["heat_kwh"]
+        gap += dt
+        hours += 1
+    if hours < MIN_LOOP_HOURS:
+        return {"ok": False, "reason": "too few heating hours with BT3 (%d)" % hours, "hours": hours}
+    kw = heat / gap
+    out: Dict[str, Any] = {
+        "ok": True,
+        "reason": "ok",
+        "hours": hours,
+        "kw_per_k": round(kw, 3),
+        "flow_l_min": round(kw / WATER_KJ_PER_KG_K * 60.0, 1),
+        "drain_ratio": None,
+    }
+    if model.kappa is not None and emitter_kw_per_k:
+        out["drain_ratio"] = round(kw / ((1.0 + model.kappa) * emitter_kw_per_k), 2)
+    return out
+
+
 def _slab_by_bin(samples, model: HouseModel) -> Dict[int, float]:
     """Filtered slab temperature per 10-minute bin start."""
     ordered = sorted(samples, key=lambda x: x.ts.timestamp())
@@ -234,22 +310,56 @@ def _slab_by_bin(samples, model: HouseModel) -> Dict[int, float]:
     return {int(x.ts.timestamp()): v for x, v in zip(ordered, values) if v is not None}
 
 
-def slab_now(
+SLAB_RECENT = 12  # samples (2 h): the slab counts as seen in BT3 with an observation this recent
+
+
+@dataclass(frozen=True)
+class SlabEstimate:
+    state: float  # T_f, the planner's slab state (settles at the supply)
+    temp: float  # the slab's own temperature, what BT3 sees
+    source: str  # "bt3": tracked with BT3; "bt2": filtered from BT2 only
+
+
+def slab_estimate(
     rows: Mapping[int, Mapping[str, float]], system: str, model: HouseModel, now: datetime,
     max_age_s: float = 1800.0,
-) -> Optional[float]:
-    """The slab temperature now, filtered from the logged BT2 and indoor.
+) -> Optional[SlabEstimate]:
+    """The slab now, from the logged BT2, indoor and (when the fit uses it) BT3.
 
-    None without a lag, without enough recent history (a warm-up of
-    1.5 tau_f), or when the last bin is older than ``max_age_s``.
+    With a BT3 fit (``model.kappa``) the slab is filtered from BT2 and
+    pulled towards BT3 wherever the floor water circulates
+    (``slab_track``); otherwise filtered from BT2 alone. None without a
+    lag, without enough recent history (BT2 alone needs a warm-up of
+    1.5 tau_f, BT3 one observation), or when the last bin is older than
+    ``max_age_s``.
     """
     if not model.lagged:
         return None
     samples = sorted(house_samples(rows, system), key=lambda x: x.ts.timestamp())
     if not samples or now.timestamp() - samples[-1].ts.timestamp() > max_age_s:
         return None
-    value = slab_filter(samples, model.tau_f, model.drain_h)[-1]
-    return round(value, 2) if value is not None else None
+    tau_f, tau_d = model.tau_f, model.drain_h
+    source = "bt2"
+    if model.kappa is not None:
+        values = slab_track(samples, tau_f, tau_d, model.kappa)
+        if any(slab_observable(samples)[-SLAB_RECENT:]):
+            source = "bt3"
+    else:
+        values = slab_filter(samples, tau_f, tau_d)
+    value = values[-1]
+    if value is None:
+        return None
+    temp = slab_temp(value, samples[-1].t_in, tau_f, tau_d)
+    return SlabEstimate(round(value, 2), round(temp, 2), source)
+
+
+def slab_now(
+    rows: Mapping[int, Mapping[str, float]], system: str, model: HouseModel, now: datetime,
+    max_age_s: float = 1800.0,
+) -> Optional[float]:
+    """The planner's slab state now (``slab_estimate``), or None."""
+    est = slab_estimate(rows, system, model, now, max_age_s)
+    return est.state if est is not None else None
 
 
 METER_HEAT_PUMP = "heat_pump"
@@ -427,6 +537,11 @@ def models_summary(models: Models) -> Dict[str, Any]:
         "emitter": models.emitter,
         "emitter_lag_h": round(house.tau_f, 2),
         "slab_coast_h": round(house.drain_h, 1) if house.lagged else None,
+        "slab_coast_fitted": bool((fit.details.get("bt3") or {}).get("tau_d_fitted"))
+        if house.kappa is not None else False,
+        "slab_coupling_per_h": round(house.slab_coupling, 5) if house.lagged else None,
+        "bt3_used": house.kappa is not None,
+        "return_kappa": round(house.kappa, 3) if house.kappa is not None else None,
         "slab_capacity_kwh_per_k": round(models.slab_capacity_kwh_per_k, 2) if house.lagged else None,
         "planner": "lagged" if models.lag_planner else "one_node",
         "heat_loss_w_per_k": round(models.heat_loss_w_per_k, 1),
@@ -486,7 +601,9 @@ class HeatingResult:
     planned_at: datetime
     base_offset: int
     plan: Optional[Plan] = None
-    slab: Optional[float] = None  # lagged house: slab temperature the plan started from
+    slab: Optional[float] = None  # lagged house: slab state (T_f) the plan started from
+    slab_temp: Optional[float] = None  # ... as the slab's own temperature (comparable with BT3)
+    slab_source: Optional[str] = None  # bt3, bt2, or settled (no history: steady at the current offset)
     blocks: List[Block] = field(default_factory=list)
     summary: str = ""
     problem: Optional[str] = None
@@ -537,7 +654,9 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
             base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP,
             change_cost=LAG_CHANGE_COST, step_cost=LAG_STEP_COST, hold_slots=LAG_HOLD_SLOTS,
         )
-        result.slab = slab_now(inputs.history or {}, inputs.system, models.house, inputs.now)
+        est = slab_estimate(inputs.history or {}, inputs.system, models.house, inputs.now)
+        if est is not None:
+            result.slab, result.slab_temp, result.slab_source = est.state, est.temp, est.source
     else:
         settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP)
     plan = plan_heating(
@@ -546,6 +665,10 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
     )
     if lagged and result.slab is None and plan.plan.steps:
         result.slab = plan.plan.steps[0].slab_start
+        if result.slab is not None:
+            house = models.house
+            result.slab_temp = round(slab_temp(result.slab, inputs.t_in, house.tau_f, house.drain_h), 2)
+            result.slab_source = "settled"
     result.plan = plan
     result.blocks = explain_plan(plan, inputs.comfort, inputs.tz, "%s/kWh" % inputs.currency)
     result.summary = summary(plan, inputs.currency)
