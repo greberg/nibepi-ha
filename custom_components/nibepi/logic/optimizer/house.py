@@ -81,6 +81,9 @@ DRAIN_RATIO = 3.0
 LAG_GRID_H = (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
 # Pull towards the prior lag: score = sim_rmse x (1 + w ln(tau / prior)^2).
 LAG_PRIOR_WEIGHT = 0.03
+# A sample with hot water charging this share of it: BT2/BT3 show the tank
+# circuit (the valve QN10 sends the water to the coil), not the floor.
+HW_SHARE = 0.1
 
 
 @dataclass(frozen=True)
@@ -204,11 +207,15 @@ def slab_filter(
 ) -> List[Optional[float]]:
     """The slab temperature T_f per sample, filtered from supply and indoor.
 
-    The supply here is the measured BT2, not the curve's target: above the
-    slab the water charges it; at or below it the compressor idles (BT2
-    then follows the slab, the circulation pump still runs) and the slab
-    coasts towards the room. ``samples`` in time order. T_f starts at the measured supply after a
-    gap and is None for ``warmup_h`` (default 1.5 tau_f) after that.
+    The supply here is the measured BT2, not the curve's target. Above the
+    slab's own temperature (``slab_temp``: what it gives off, below T_f)
+    the water charges it; at or below, the compressor idles (BT2 then
+    follows the slab, the circulation pump still runs) and the slab coasts
+    towards the room. This is the max() of ``LagStep``, so the two regimes
+    meet smoothly. Samples charging hot water, or with the heating medium
+    pump stopped, carry no heat to the floor: the slab coasts. ``samples``
+    in time order. T_f starts at the measured supply after a gap and is
+    None for ``warmup_h`` (default 1.5 tau_f) after that.
     """
     warm = 1.5 * tau_f if warmup_h is None else warmup_h
     out: List[Optional[float]] = []
@@ -221,14 +228,35 @@ def slab_filter(
             t_f = s.t_supply
             since = ts
         else:
-            h = (ts - prev.ts.timestamp()) / 3600.0
-            if prev.t_supply > t_f:
-                t_f = prev.t_supply + (t_f - prev.t_supply) * math.exp(-h / tau_f)
-            else:
-                t_f = prev.t_in + (t_f - prev.t_in) * math.exp(-h / tau_d)
+            t_f = _filter_step(prev, t_f, tau_f, tau_d, (ts - prev.ts.timestamp()) / 3600.0)
         prev = s
         out.append(t_f if (ts - since) / 3600.0 >= warm else None)
     return out
+
+
+def slab_temp(t_f: float, t_in: float, tau_f: float, tau_d: float) -> float:
+    """The slab's own temperature (what BT3 sees) from the model state T_f.
+
+    T_f is the slab's excess over the room scaled so that it settles at
+    the supply: T_f - T_in = (tau_d / (tau_d - tau_f)) (T_slab - T_in).
+    """
+    return t_f - tau_f / tau_d * (t_f - t_in)
+
+
+def state_from_slab(t_slab: float, t_in: float, tau_f: float, tau_d: float) -> float:
+    """The inverse of ``slab_temp``."""
+    return t_in + tau_d / (tau_d - tau_f) * (t_slab - t_in)
+
+
+def heats_floor(s: "HouseSample") -> bool:
+    """Water from the heat pump can reach the floor during this sample."""
+    return s.hw < HW_SHARE and (s.pump is None or s.pump >= 0.5)
+
+
+def _filter_step(prev: "HouseSample", t_f: float, tau_f: float, tau_d: float, h: float) -> float:
+    if heats_floor(prev) and prev.t_supply > slab_temp(t_f, prev.t_in, tau_f, tau_d):
+        return prev.t_supply + (t_f - prev.t_supply) * math.exp(-h / tau_f)
+    return prev.t_in + (t_f - prev.t_in) * math.exp(-h / tau_d)
 
 
 @dataclass(frozen=True)
@@ -240,6 +268,10 @@ class HouseSample:
     t_out: float
     t_supply: float
     solar: float = 0.0
+    t_return: Optional[float] = None  # BT3 40012; None when not logged
+    hw: float = 0.0  # share of the sample charging hot water (43086 = 20)
+    pump: Optional[float] = None  # share with the heating medium pump (GP1, 43437) running
+    compressor: Optional[float] = None  # compressor frequency, Hz (43136)
 
 
 @dataclass(frozen=True)
@@ -250,6 +282,7 @@ class Bin:
     t_supply: float
     solar: float
     t_f: Optional[float] = None  # filtered slab temperature (lagged fits)
+    hw: float = 0.0  # share of the samples charging hot water
 
 
 def resample(
@@ -260,7 +293,9 @@ def resample(
     """Average samples into consecutive UTC-aligned bins; None for empty bins.
 
     ``slab``: T_f per sample (same order as ``samples``); a bin's T_f is
-    the mean of the samples that have one, None when it has none.
+    the mean of the samples that have one, None when it has none. The
+    supply is the mean of the samples not charging hot water (all of them
+    when every one does); ``hw`` the bin's hot water share.
     """
     if not samples:
         return []
@@ -274,7 +309,7 @@ def resample(
     sums: dict = {}
     for s, t_f in pairs:
         key = int(s.ts.timestamp()) // step * step
-        acc = sums.setdefault(key, [0, 0.0, 0.0, 0.0, 0.0, 0, 0.0])
+        acc = sums.setdefault(key, [0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0, 0.0])
         acc[0] += 1
         acc[1] += s.t_in
         acc[2] += s.t_out
@@ -283,6 +318,10 @@ def resample(
         if t_f is not None:
             acc[5] += 1
             acc[6] += t_f
+        acc[7] += s.hw
+        if s.hw < HW_SHARE:
+            acc[8] += 1
+            acc[9] += s.t_supply
     bins: List[Optional[Bin]] = []
     for key in range(first, last + step, step):
         acc = sums.get(key)
@@ -290,9 +329,10 @@ def resample(
             bins.append(None)
             continue
         n = float(acc[0])
+        supply = acc[9] / acc[8] if acc[8] else acc[3] / n
         bins.append(
-            Bin(datetime.fromtimestamp(key, timezone.utc), acc[1] / n, acc[2] / n, acc[3] / n, acc[4] / n,
-                acc[6] / acc[5] if acc[5] else None)
+            Bin(datetime.fromtimestamp(key, timezone.utc), acc[1] / n, acc[2] / n, supply, acc[4] / n,
+                acc[6] / acc[5] if acc[5] else None, acc[7] / n)
         )
     return bins
 
@@ -373,10 +413,11 @@ def simulate_bins(
             t_f = prev.t_f if prev.t_f is not None else 0.0
             since = 0
         if lag is not None:
-            # Measured supply, as in slab_filter: at or below the slab the
-            # pump idles and the slab coasts.
+            # Measured supply, as in slab_filter: below the slab the pump
+            # idles and the slab coasts (``LagStep`` picks the regime);
+            # while it mostly charges hot water the floor gets nothing.
             free = model.a * prev.t_out + model.c * prev.solar + model.d
-            if prev.t_supply > t_f:
+            if prev.hw < 0.5:
                 t, t_f, _ = lag.step(t, t_f, free, prev.t_supply)
             else:
                 t, t_f = lag.coast(t, t_f, free)
@@ -531,6 +572,11 @@ def synthetic_history(
     minutes: int = 10,
     noise=None,
     t_f0: Optional[float] = None,
+    kappa: Optional[float] = None,
+    hot_water=None,
+    water_noise=None,
+    pump_stops: bool = False,
+    truth: Optional[list] = None,
 ) -> List[HouseSample]:
     """Simulate a house for tests and the backtest tool.
 
@@ -539,14 +585,26 @@ def synthetic_history(
     sensor noise to the indoor reading only. A lagged model integrates its
     slab too (from ``t_f0``, default the first supply) in 1-minute steps;
     the logged supply is what the curve asks for while the pump heats and
-    the slab temperature while it coasts, like BT2 with the circulation
-    pump running.
+    the slab's own temperature while it coasts, like BT2 with the
+    circulation pump running.
+
+    Lagged only: ``kappa`` also logs BT3 (``t_return``), the water leaving
+    the floor loop, ``kappa / (1 + kappa)`` of the way from the slab to
+    the supply while it heats (the slab is ``kappa`` (BT2 - BT3) below
+    BT3), the slab itself while it coasts. ``hot_water(when)`` True: the
+    pump charges the tank for that sample (hw 1, BT2/BT3 50/45 °C) and the
+    slab coasts. ``water_noise(i)`` is added to BT2 and BT3.
+    ``pump_stops``: the circulation pump stops while the compressor idles
+    (intermittent mode); the still water drifts towards 18 °C. ``truth``
+    collects the slab's own temperature at each sample.
     """
     out: List[HouseSample] = []
     t = t_in0
     t_f = t_f0
     h = minutes / 60.0
     lag = LagStep(model, 1.0 / 60.0) if model.lagged else None
+    still = None
+    still_k = math.exp(-1.0 / 60.0)
     for i in range(int(hours * 60 / minutes)):
         when = start + timedelta(minutes=i * minutes)
         t_out = t_out_fn(when)
@@ -559,11 +617,42 @@ def synthetic_history(
             continue
         if t_f is None:
             t_f = supply
+        if truth is not None:
+            truth.append(slab_temp(t_f, t, model.tau_f, model.drain_h))
         free = model.a * t_out + model.c * solar + model.d
-        logged = 0.0
+        if hot_water is not None and hot_water(when):
+            for _ in range(minutes):
+                t, t_f = lag.coast(t, t_f, free)
+            still = None
+            if kappa is None:
+                out.append(HouseSample(when, reading, t_out, 50.0, solar, hw=1.0))
+                continue
+            wn = water_noise(i) if water_noise else 0.0
+            out.append(HouseSample(when, reading, t_out, 50.0 + wn, solar, 45.0 + wn, 1.0, 1.0, 60.0))
+            continue
+        bt2 = bt3 = pump = hz = 0.0
         for _ in range(minutes):
+            slab = slab_temp(t_f, t, model.tau_f, model.drain_h)
             t, t_f2, heat = lag.step(t, t_f, free, supply)
-            logged += supply if heat > 0.0 or supply >= t_f else t_f
+            if heat > 0.0:
+                still = None
+                bt2 += supply
+                bt3 += slab + (supply - slab) * (kappa or 0.0) / (1.0 + (kappa or 0.0))
+                pump += 1.0
+                hz += 50.0
+            elif pump_stops:
+                still = slab if still is None else 18.0 + (still - 18.0) * still_k
+                bt2 += still
+                bt3 += still
+            else:
+                bt2 += slab
+                bt3 += slab
+                pump += 1.0
             t_f = t_f2
-        out.append(HouseSample(when, reading, t_out, logged / minutes, solar))
+        if kappa is None:
+            out.append(HouseSample(when, reading, t_out, bt2 / minutes, solar))
+            continue
+        wn = (water_noise(i) if water_noise else 0.0, water_noise(i + 7919) if water_noise else 0.0)
+        out.append(HouseSample(when, reading, t_out, bt2 / minutes + wn[0], solar, bt3 / minutes + wn[1],
+                               0.0, pump / minutes, hz / minutes))
     return out

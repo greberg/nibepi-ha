@@ -14,7 +14,7 @@ from logic.optimizer.profile import HouseProfile
 from datetime import timedelta
 
 from logic.inputs import PriceSlot
-from logic.optimizer.house import LagStep
+from logic.optimizer.house import LagStep, slab_temp
 from logic.optimizer.planner import ComfortSettings
 from logic.optrun import (
     HeatingInputs,
@@ -179,8 +179,9 @@ def make_floor_rows(days: int = 21, seed: int = 3):
         free = FLOOR_TRUE.a * outdoor + FLOOR_TRUE.d
         logged = heat = 0.0
         for _ in range(10):
+            slab = slab_temp(t_f, t_in, FLOOR_TRUE.tau_f, FLOOR_TRUE.tau_d)
             t_in, f_end, q = lag.step(t_in, t_f, free, target)
-            logged += target if q > 0.0 or target >= t_f else t_f
+            logged += target if q > 0.0 else slab  # coasting: BT2 shows the slab
             heat += q * energy.emitter_kw_per_k
             t_f = f_end
         heat_total += heat

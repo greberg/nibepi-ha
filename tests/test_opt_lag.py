@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 import unittest
+from dataclasses import replace
 
 import context  # noqa: F401
 from context import utc
@@ -15,6 +16,7 @@ from logic.optimizer.house import (
     LagStep,
     fit_house_model,
     slab_filter,
+    slab_temp,
     synthetic_history,
 )
 from logic.optimizer.profile import HouseProfile, house_prior
@@ -112,6 +114,26 @@ class LagModelTest(unittest.TestCase):
         lo = min(s.t_supply for s in samples)
         hi = max(s.t_supply for s in samples)
         self.assertTrue(all(lo - 0.5 <= e <= hi + 0.5 for e, _ in known))
+
+    def test_filter_coasts_through_hot_water(self) -> None:
+        # Two 40-minute hot water charges a day: BT2 reads the tank circuit
+        # (50 °C) then, while the floor gets nothing and the slab coasts.
+        true = HouseModel(0.012, 0.03, 0.0, 0.05, 3.0, 9.0)
+        rnd = random.Random(7)
+        truth = []
+        samples = synthetic_history(
+            true, START, 72, t_out, lambda when, t_in: CURVE.supply(t_out(when), rnd.choice((-2, 0, 2))),
+            hot_water=lambda when: when.hour in (6, 18) and when.minute < 40, truth=truth)
+        self.assertEqual(sum(1 for s in samples if s.hw), 6 * 4)
+        aware = slab_filter(samples, 3.0, 9.0)
+        blind = slab_filter([replace(s, hw=0.0) for s in samples], 3.0, 9.0)
+
+        def error(est):
+            pairs = [(slab_temp(e, s.t_in, 3.0, 9.0), x) for e, s, x in zip(est, samples, truth) if e is not None]
+            return max(abs(e - x) for e, x in pairs)
+
+        self.assertLess(error(aware), 0.3)
+        self.assertGreater(error(blind), 1.0)
 
 
 class LagFitTest(unittest.TestCase):
