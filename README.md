@@ -93,8 +93,8 @@ Setup asks, in this order:
    the indoor sensor) and the indoor setpoint.
 4. The house, for the cost optimiser: heated floor area, floors, building
    era, construction, heat emitters, how many indoor sensors are
-   averaged, an optional electricity meter and the model confidence the
-   optimiser needs before it may steer (see [House
+   averaged, an optional electricity meter and what it measures, and the
+   model confidence the optimiser needs before it may steer (see [House
    profile](#house-profile)).
 
 Everything, including the above, can be changed later in the
@@ -117,8 +117,9 @@ Shared:
 | Forecast adjust, allow raising/lowering | off, on, on | `forecast_adjust`, `enable_up`, `enable_down` |
 | Wind control and factors N/S/W/E | off, 0 | `wind_enable`, `wind_factor_*` |
 | Sun factor and values | off, 0 | `sun_enable`, `clear`, `half_clear` |
-| House: floor area, floors, era, construction, emitters, sensors | 150 m², 1.5, unknown, unknown, radiators, 1 | see [House profile](#house-profile) |
-| Electricity meter | - | optional power or energy sensor, for calibration only |
+| House: floor area, floors, era, construction, emitters, sensors | 150 m², 1.5, unknown, unknown, floor heating, 1 | see [House profile](#house-profile); entries from 0.2.0 keep their emitter choice |
+| Electricity meter | - | optional power or energy sensor; calibration and the heat pump's cost, never steering |
+| The meter measures | the heat pump only | or the whole house |
 | Minimum model confidence to steer | high | low / medium / high |
 | Optimiser hot water floor (hot water step) | 45 °C | BT6, for the optimiser's tank plan |
 
@@ -354,9 +355,10 @@ values ("priors"); the optimiser learns the real ones from the history.
 | Floors (1, 1.5, 2, 3 or more) | 1.5 | heat loss per m²; one sensor on one floor of a taller house gets a safety margin (0.1-0.3 °C) |
 | Built (before 1960 ... 2011 or later, unknown) | unknown | heat loss per m²; unknown gives a wider range |
 | Construction (light, medium, heavy, unknown) | unknown | stored heat |
-| Heat emitters (radiators, floor heating, both) | radiators | shown with the house model; not used in the model yet |
+| Heat emitters (radiators, floor heating, both) | floor heating | how slowly the emitters react: the slab's lag (see below) |
 | Indoor sensors averaged | 1 | two or more halve the margin |
 | Electricity meter | none | calibrates the pump's efficiency; see below |
+| The meter measures (the heat pump only, the whole house) | the heat pump only | see below |
 | Minimum model confidence to steer | high | the gate, see below |
 
 The location (sun position, design outdoor temperature) and the time zone
@@ -367,10 +369,29 @@ disagree about it. Around it, per system, the **comfort band** (default
 0.5 °C below to 1.0 °C above: no comfort penalty inside it) and the **hard
 floor** (default 1.5 °C below the setpoint).
 
+**Floor heating.** The water heats a concrete slab, and the slab heats
+the room: an offset change shows up indoors one to six hours later, and
+the slab keeps heating after the offset drops. The model therefore has a
+second state for floor heating (and both), the slab temperature, which
+follows the supply with a lag (prior 3 h for floor heating, 1.5 h for
+both, 0.3 h for radiators; the fit learns it) and coasts down slowly when
+the compressor idles. The planner then buys heat hours before an
+expensive period instead of just before it, and counts what is stored in
+the slab.
+
 The meter may be a power sensor (W, kW) or an energy meter counting up
-(Wh, kWh, MWh); the kind is taken from its unit and device class. It
-almost certainly measures the whole house, so it is only used to check
-and calibrate the heat pump's share and efficiency, never to steer.
+(Wh, kWh, MWh); the kind is taken from its unit and device class. **The
+meter measures** says what it covers:
+
+- *The heat pump only* (default): its readings are the heat pump's
+  electricity. The compressor's efficiency is calibrated directly against
+  them, and the *Heat pump cost today* sensor shows what the heat pump
+  really cost against what the plans predicted.
+- *The whole house*: the heat pump's share is estimated by regressing the
+  meter on the pump's own power estimate, which needs weeks of data; it
+  is only used as a check.
+
+Either way the meter is never used to steer.
 
 ### History
 
@@ -395,12 +416,15 @@ once, listed in the diagnostics) and the history builds up live.
 ### Fitting
 
 Ten minutes after start and every night at 03:15 the models are fitted on
-the last 28 days, in the background: the house model (one thermal mass:
-heat loss, emitter gain, solar and internal gains), the heat curve (bias,
-slope, offset gain from BT1, offset and BT2), the emitter conductance
-from the heat meter (one climate system only; the meter is shared), the
-compressor's efficiency (Carnot fraction, from the heat meter and the
-compressor power) and the heat pump's share of the meter. A fit that is
+the last 28 days, in the background: the house model (heat loss, emitter
+gain, solar and internal gains and, with floor heating, the slab's lag,
+chosen from 0.25-10 h by how well each predicts the indoor temperature),
+the heat curve (bias, slope, offset gain from BT1, offset and BT2), the
+emitter conductance from the heat meter (one climate system only; the
+meter is shared), the compressor's efficiency (Carnot fraction, from the
+heat meter and the heat pump meter, or the compressor power with a
+whole-house meter) and, with a whole-house meter, the heat pump's share
+of it. A fit that is
 implausible is rejected and the priors are used. The *House model* sensor
 shows the result; its state is the confidence (`prior`, `low`, `medium`,
 `high`), from the amount of data, how well the model predicts the indoor
@@ -418,15 +442,19 @@ Every 15 minutes, and on new prices or a mode or strategy change, it
 plans in the background:
 
 - **Horizon**: the known prices from the configured price source (15
-  minutes or hourly, up to 36 h), the outdoor forecast from the weather
-  entity (shifted to match BT1 now), and the sun.
+  minutes or hourly, up to 36 h; averaged to 30 minutes with floor
+  heating), the outdoor forecast from the weather entity (shifted to match
+  BT1 now), and the sun.
 - **Heating**: for each slot the curve offset, within ±3 of the offset
   that would hold the setpoint at the horizon's mean outdoor temperature
   (the *base offset*), that minimises electricity cost (price ×
   heat / COP) plus a comfort penalty for leaving the band, and a small
   cost for each change. It stores heat in cheap slots and coasts through
   expensive ones as far as the band allows, and counts the heat left in
-  the house at the end. Each block of the plan is explained in a
+  the house at the end. With floor heating it also tracks the slab
+  temperature (estimated from the last day's BT2 and indoor history),
+  changes the offset at most once an hour, at a higher cost per change,
+  and counts the heat left in the slab. Each block of the plan is explained in a
   sentence, e.g. *"16:00-21:00 offset -3: expensive (2.30 SEK/kWh vs 1.58
   average), coasting on stored heat, indoor 20.6 °C at 21:00"*.
 - **Savings** are the plan's cost against holding the base offset on the
@@ -463,7 +491,11 @@ the rules in shadow mode: *Optimiser plan* (the planned offset now) next
 to *Planned curve offset* (what would be written) and the price/indoor
 offsets, *Expected savings today*, and in the *Optimiser plan*
 attributes the predicted indoor temperature for the next 24 h, to set
-against the measured one.
+against the measured one. With a heat pump meter, *Heat pump cost today*
+sets the measured cost against what the plans predicted for the same
+hours; in shadow mode the pump follows the rules, so the gap includes the
+difference between the strategies, in active mode it is the model's
+error.
 
 ### When to switch to the optimiser
 
@@ -477,7 +509,10 @@ against the measured one.
    *Expected savings today* above 0 on most days.
 4. Set the strategy to `optimiser` (with the mode `active`). Watch the
    indoor temperature for a week; if it often goes under the band, widen
-   the band or raise the setpoint, or go back to `rules`.
+   the band or raise the setpoint, or go back to `rules`. With a heat
+   pump meter, *Heat pump cost today*'s `cost_vs_predicted_pct` now
+   measures the energy model: a day-after-day gap of more than about
+   15 % means the efficiency or the emitter fit is off.
 
 ### Hot water charges
 
@@ -501,12 +536,17 @@ Per system:
   (`[time, offset, predicted indoor]` at each change and every hour),
   `explanation`, `summary`, `expected_cost`, `baseline_cost`, `savings`,
   `savings_pct`, `gate` (use, offset, reason), `applied`, `strategy`,
-  `model_confidence`, `base_offset`, `planned_at`, `problem`
+  `model_confidence`, `base_offset`, `planned_at`, `problem`,
+  `slab_temp` (floor heating: the slab temperature the plan starts from)
 - `sensor` House model (`prior` / `low` / `medium` / `high`): `a`, `b`,
-  `c`, `d`, `time_constant_h`, `heat_loss_w_per_k`,
-  `capacity_kwh_per_k`, `emitter_kw_per_k`, `carnot_eta`, `confidence`,
-  `sim_rmse`, `rel_se_b`, `data_hours`, `last_fit`, the fits of the
-  emitter, efficiency and meter share, and the history's size
+  `c`, `d`, `time_constant_h`, `emitter`, `emitter_lag_h`,
+  `slab_coast_h`, `slab_capacity_kwh_per_k`, `planner` (`lagged` /
+  `one_node`), `heat_loss_w_per_k`, `capacity_kwh_per_k`,
+  `emitter_kw_per_k`, `carnot_eta`, `confidence`, `sim_rmse`,
+  `rel_se_b`, `data_hours`, `last_fit`, the fits of the emitter,
+  efficiency and meter (`meter_share`: the regressed share, or with a heat
+  pump meter its ratio to the pump's own power estimate), and the
+  history's size
 
 Shared:
 
@@ -514,6 +554,12 @@ Shared:
   expect to save today against the base offset, heating per system and
   hot water as attributes. It is an expectation from the model, made in
   shadow mode too, not a measurement.
+- `sensor` Heat pump cost today (the price currency), with a heat pump
+  meter only: the meter's kWh priced per slot; attributes `kwh`,
+  `predicted_cost`, `predicted_kwh`, `predicted_heating_cost`,
+  `predicted_hot_water_cost`, `baseline_heating_cost`,
+  `cost_vs_predicted_pct`, `hours_measured`, `unpriced_kwh` and
+  `yesterday`.
 - `sensor` Hot water optimiser plan: when the next planned charge starts;
   attributes `blocks` (next 24 h), `next_target`, `savings`, `min_temp`,
   `enabled`, `in_use`, `problem`
@@ -559,7 +605,7 @@ Per system (`S1`, `S2`):
 Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
 price_source, price_status, and for Tibber tibber_home and
 prices_fetched), `binary_sensor` Gateway (online/offline, see below),
-`sensor` Expected savings today and Hot water optimiser plan (see
+`sensor` Expected savings today, Heat pump cost today and Hot water optimiser plan (see
 [Optimiser entities](#optimiser-entities)).
 
 Hot water:
