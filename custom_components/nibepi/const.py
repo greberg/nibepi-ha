@@ -29,7 +29,10 @@ REGISTERS = {
 
 # Cost optimiser inputs (besides BT1, BT2, the offsets and the hot water
 # registers): brine in/out, compressor input power, electric addition,
-# compressor frequency and the heat meters for heating and hot water.
+# compressor frequency, the heat meters for heating and hot water, and for
+# the floor heating slab BT3 and the heating medium pump's speed.
+REG_RETURN = 40012  # EB100-EP14-BT3 return temp
+REG_PUMP_SPEED = 43437  # supply (heating medium) pump GP1 speed, %
 REG_BRINE_IN = 40015  # BT10
 REG_BRINE_OUT = 40016  # BT11
 REG_COMPRESSOR_POWER = 43141  # W
@@ -45,6 +48,8 @@ OPTIMIZER_REGISTERS = (
     REG_COMPRESSOR_FREQ,
     REG_HEAT_METER,
     REG_HW_METER,
+    REG_RETURN,
+    REG_PUMP_SPEED,
 )
 
 COMPONENTS = ("indoor", "price", "weather")

@@ -112,6 +112,8 @@ class ImportSeriesTest(unittest.TestCase):
         self.assertEqual(import_series(rows, "mean", T0, T0 + 600), {T0: 25.0})
         self.assertEqual(import_series(rows, "last", T0, T0 + 1200), {T0: 30.0, T0 + 600: 30.0})
         self.assertEqual(import_series(rows, "indicator", T0, T0 + 600, wanted=20), {T0: 0.5})
+        pump = [{"s": "0", "lu": T0}, {"s": "45", "lu": T0 + 150.0}, {"s": "60", "lu": T0 + 300.0}]
+        self.assertEqual(import_series(pump, "running", T0, T0 + 600), {T0: 0.75})
         meter = [{"s": "1000", "lu": T0}, {"s": "1000", "lu": T0 + 600.0}]
         out = import_series(meter, "meter", T0, T0 + 600, meter=MeterConfig("power", "W"))
         self.assertAlmostEqual(out[T0], 1000 * 600 / 3600 / 1000)
@@ -204,6 +206,28 @@ class ModelInputsTest(unittest.TestCase):
         self.assertEqual(len(samples), 12)
         self.assertEqual(samples[0].ts, datetime.fromtimestamp(T0 - 600, timezone.utc))
         self.assertEqual(samples[0].solar, 0.0)  # January midnight
+        # History from before 0.2.2 has no BT3 or pump: unknown, not zero.
+        self.assertEqual((samples[0].t_return, samples[0].pump, samples[0].hw), (None, None, 0.0))
+
+    def test_house_samples_with_return(self) -> None:
+        rows = self._rows()
+        rows[T0].update({"bt3": 31.5, "pump_on": 1.0, "prio_hw": 0.5, "freq_hz": 42.0})
+        sample = [s for s in house_samples(rows, "s1") if s.ts.timestamp() == T0][0]
+        self.assertEqual((sample.t_return, sample.pump, sample.hw, sample.compressor), (31.5, 1.0, 0.5, 42.0))
+        # BT3 and GP1 are the heat pump's: a second (shunted) system does not get them.
+        rows[T0]["s2_t_in"], rows[T0]["s2_supply"] = 21.0, 30.0
+        self.assertIsNone(house_samples(rows, "s2")[0].t_return)
+
+    def test_old_store_without_return_loads(self) -> None:
+        # A 0.2.1 store: same format, no bt3/pump_on columns; a new bin adds them.
+        old = {"version": 1, "step": 600, "start": T0,
+               "columns": {"t_out": [-5.0, -5.0], "s1_t_in": [21.0, 21.1], "s1_supply": [35.0, 34.0]}}
+        log = SampleLog.from_dict(json.loads(json.dumps(old)))
+        self.assertEqual(len(house_samples(log.rows, "s1")), 2)
+        log.put(T0 + 1200, {"t_out": -5.0, "s1_t_in": 21.1, "s1_supply": 34.0, "bt3": 30.0, "pump_on": 1.0})
+        again = SampleLog.from_dict(json.loads(json.dumps(log.to_dict())))
+        self.assertEqual(again.to_dict()["columns"]["bt3"], [None, None, 30.0])
+        self.assertEqual([s.t_return for s in house_samples(again.rows, "s1")], [None, None, 30.0])
 
     def test_hourly(self) -> None:
         rows = self._rows()

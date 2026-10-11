@@ -292,7 +292,7 @@ class NibePiRuntime:
         # the start/stop temperatures.
         regs.update(INPUT_REGISTERS)
         # Cost optimiser: brine, compressor power and frequency, addition,
-        # heat meters.
+        # heat meters, BT3 and the heating medium pump.
         regs.update(OPTIMIZER_REGISTERS)
         return sorted(regs)
 

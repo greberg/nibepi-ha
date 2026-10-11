@@ -61,6 +61,8 @@ SHARED_COLUMNS = (
     "power_w",  # compressor input power 43141
     "add_kw",  # internal electric addition 43084
     "freq_hz",  # compressor frequency 43136
+    "bt3",  # return 40012 (the water back from the floor loops)
+    "pump_on",  # share of the bin with the heating medium pump GP1 running (43437 > 0)
     "heat_kwh",  # heat meter, heating 44300 (counter)
     "hw_kwh",  # heat meter, hot water 44298 (counter)
     "meter_kwh",  # the user's meter, kWh in the bin
@@ -261,6 +263,11 @@ def indicator(points: Sequence[Tuple[float, Optional[float]]], wanted: float) ->
     return [(ts, None if v is None else (1.0 if int(v) == int(wanted) else 0.0)) for ts, v in points]
 
 
+def running(points: Sequence[Tuple[float, Optional[float]]]) -> List[Tuple[float, Optional[float]]]:
+    """1.0 where the value is above 0 (e.g. a pump's speed), else 0.0."""
+    return [(ts, None if v is None else (1.0 if v > 0 else 0.0)) for ts, v in points]
+
+
 def import_series(
     rows: Iterable[Any],
     kind: str,
@@ -273,8 +280,9 @@ def import_series(
     """Recorder rows of one entity -> one value per 10-minute bin.
 
     ``kind``: ``mean`` (temperatures, power), ``last`` (counters),
-    ``indicator`` (share of the bin at ``wanted``, e.g. prio 20) or
-    ``meter`` (kWh per bin from the user's meter, ``meter`` config).
+    ``indicator`` (share of the bin at ``wanted``, e.g. prio 20),
+    ``running`` (share of the bin above 0, e.g. a pump) or ``meter``
+    (kWh per bin from the user's meter, ``meter`` config).
     """
     points = parse_states(rows, convert)
     if kind == "meter":
@@ -284,6 +292,8 @@ def import_series(
         return bin_meter_energy(meter_readings(points), starts, meter)
     if kind == "indicator":
         return resample_states(indicator(points, wanted if wanted is not None else 0), start, end)
+    if kind == "running":
+        return resample_states(running(points), start, end)
     return resample_states(points, start, end, mode="last" if kind == "last" else "mean")
 
 
@@ -490,9 +500,14 @@ def house_samples(
     """``HouseSample``s from the bins that have indoor, outdoor and supply.
 
     The solar proxy uses the sun position with an average cloud cover:
-    the weather of past days is not kept.
+    the weather of past days is not kept. BT3, the circulation pump and
+    the compressor frequency are passed on where logged (None otherwise,
+    e.g. in history from before 0.2.2), the hot water share as 0 when
+    unknown. BT3 and the pump are the heat pump's, so only system 1 gets
+    them.
     """
     t_in_key, supply_key = column("t_in", system), column("supply", system)
+    primary = system in (None, "", "s1")
     out: List[HouseSample] = []
     for start in sorted(rows):
         row = rows[start]
@@ -504,7 +519,11 @@ def house_samples(
             solar = solar_proxy(mid, latitude, longitude, DEFAULT_CLOUD)
         out.append(
             HouseSample(
-                datetime.fromtimestamp(start, timezone.utc), row[t_in_key], row["t_out"], row[supply_key], solar
+                datetime.fromtimestamp(start, timezone.utc), row[t_in_key], row["t_out"], row[supply_key], solar,
+                row.get("bt3") if primary else None,
+                float(row.get("prio_hw", 0.0)),
+                row.get("pump_on") if primary else None,
+                row.get("freq_hz"),
             )
         )
     return out

@@ -56,6 +56,8 @@ from .const import (
     REG_HEAT_METER,
     REG_HW_METER,
     REG_OUTDOOR,
+    REG_PUMP_SPEED,
+    REG_RETURN,
     UNKNOWN,
     opt_store_key,
     signal_update,
@@ -146,6 +148,8 @@ SHARED_SOURCES = (
     ("power_w", REG_COMPRESSOR_POWER, "mean", None),
     ("add_kw", REG_ADDITION_POWER, "mean", None),
     ("freq_hz", REG_COMPRESSOR_FREQ, "mean", None),
+    ("bt3", REG_RETURN, "mean", None),
+    ("pump_on", REG_PUMP_SPEED, "running", None),
     ("heat_kwh", REG_HEAT_METER, "last", None),
     ("hw_kwh", REG_HW_METER, "last", None),
 )
@@ -426,6 +430,8 @@ class OptimizerRuntime:
             value = self._fresh(readings.get(reg), now)
             if kind == "indicator":
                 values[name] = None if value is None else (1.0 if int(value) == wanted else 0.0)
+            elif kind == "running":
+                values[name] = None if value is None else (1.0 if value > 0 else 0.0)
             else:
                 values[name] = value
         timeout = rt.opt(OPT_SENSOR_TIMEOUT)
