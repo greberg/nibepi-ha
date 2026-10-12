@@ -20,19 +20,16 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    ATTR_BUS_HEALTH_ENTITY,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_PATH,
     DOMAIN,
     OPT_STORE_VERSION,
     PLATFORMS,
-    SERVICE_GET_DASHBOARD,
     SERVICE_IMPORT_VV_PROFILE,
     VV_STORE_VERSION,
     opt_store_key,
     vv_store_key,
 )
-from .dashboard_service import dashboard_response
 from .logic.vvimport import ProfileImportError
 from .runtime import NibePiRuntime
 
@@ -46,11 +43,6 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 IMPORT_SCHEMA = vol.Schema(
     {vol.Required(ATTR_PATH): cv.string, vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string}
-)
-
-
-DASHBOARD_SCHEMA = vol.Schema(
-    {vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string, vol.Optional(ATTR_BUS_HEALTH_ENTITY): cv.entity_id}
 )
 
 
@@ -83,18 +75,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         _import_vv_profile,
         schema=IMPORT_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def _get_dashboard(call: ServiceCall) -> Dict[str, Any]:
-        runtime = _loaded_runtime(hass, call)
-        return dashboard_response(hass, runtime, call.data.get(ATTR_BUS_HEALTH_ENTITY))
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_DASHBOARD,
-        _get_dashboard,
-        schema=DASHBOARD_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
     )
     return True
 

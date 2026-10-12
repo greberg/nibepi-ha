@@ -10,15 +10,3 @@ import_vv_profile:
       selector:
         config_entry:
           integration: nibepi
-get_dashboard:
-  fields:
-    config_entry_id:
-      required: false
-      selector:
-        config_entry:
-          integration: nibepi
-    bus_health_entity:
-      required: false
-      selector:
-        entity:
-          domain: sensor

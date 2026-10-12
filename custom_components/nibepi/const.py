@@ -159,10 +159,6 @@ ATTR_PATH = "path"
 ATTR_CONFIG_ENTRY_ID = "config_entry_id"
 VV_IMPORT_MAX_BYTES = 1_000_000
 
-# The dashboard with this entry's entity ids (logic/dashboard.py).
-SERVICE_GET_DASHBOARD = "get_dashboard"
-ATTR_BUS_HEALTH_ENTITY = "bus_health_entity"
-
 
 def vv_store_key(entry_id: str) -> str:
     return "%s_vv_profile_%s" % (DOMAIN, entry_id)

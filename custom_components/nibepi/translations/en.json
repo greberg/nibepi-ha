@@ -548,20 +548,6 @@
           "description": "Only needed with more than one NibePi integration."
         }
       }
-    },
-    "get_dashboard": {
-      "name": "Get dashboard",
-      "description": "Returns a Home Assistant dashboard for NibePi with this installation's entity ids, as YAML to paste into a new dashboard's raw configuration editor. Cards for entities that do not exist (climate system 2, the gateway's register sensors without MQTT discovery) are left out.",
-      "fields": {
-        "config_entry_id": {
-          "name": "NibePi entry",
-          "description": "Only needed with more than one NibePi integration."
-        },
-        "bus_health_entity": {
-          "name": "Bus health sensor",
-          "description": "Optional sensor of the gateway's bus_health topic (errors per minute), for the RS485 bus history card. See the README."
-        }
-      }
     }
   }
 }
