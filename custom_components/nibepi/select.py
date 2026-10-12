@@ -54,7 +54,6 @@ class HotWaterModeSelect(NibePiEntity, SelectEntity, RestoreEntity):
 
     _attr_options = list(MODES)
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:water-boiler"
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime, "hw_mode")
@@ -85,7 +84,6 @@ class StrategySelect(NibePiEntity, SelectEntity, RestoreEntity):
 
     _attr_options = list(STRATEGIES)
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:strategy"
 
     def __init__(self, runtime, system: str) -> None:
         super().__init__(runtime, "strategy", system)

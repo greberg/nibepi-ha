@@ -73,7 +73,6 @@ class PlannedOffsetSensor(_SystemSensor):
     """What the curve offset should be (shadow) or is leased to (active)."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:chart-bell-curve-cumulative"
 
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
         super().__init__(runtime, "planned_offset", system)
@@ -136,7 +135,6 @@ class PumpOffsetSensor(_SystemSensor):
     """Register 47011 / 47010 as the gateway last read it."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:tune-vertical"
 
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
         super().__init__(runtime, "pump_offset", system)
@@ -217,8 +215,6 @@ class LeaseStateSensor(_LeaseStateMixin, _SystemSensor):
 class RmuLeaseStateSensor(LeaseStateSensor):
     """The gateway's ``lease/10060/state`` (S1) or ``lease/10160/state`` (S2)."""
 
-    _attr_icon = "mdi:home-thermometer-outline"
-
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
         super().__init__(runtime, system, "rmu_lease_state")
 
@@ -246,7 +242,6 @@ class RmuLeaseStateSensor(LeaseStateSensor):
 class PriceLevelSensor(NibePiEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [level.lower() for level in LEVELS]
-    _attr_icon = "mdi:cash-clock"
     _unrecorded_attributes = frozenset({"levels"})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
@@ -288,8 +283,6 @@ class PriceLevelSensor(NibePiEntity, SensorEntity):
 class HotWaterLeaseSensor(_LeaseStateMixin, NibePiEntity, SensorEntity):
     """Lease state of 47041 comfort mode, 47134 period or 48132 temporary lux."""
 
-    _attr_icon = "mdi:water-boiler"
-
     def __init__(self, runtime: NibePiRuntime, register: int, key: str) -> None:
         super().__init__(runtime, key)
         self.register = register
@@ -310,7 +303,6 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = list(STATES)
-    _attr_icon = "mdi:water-boiler"
     _unrecorded_attributes = frozenset({"plan_24h", "reasons", "inputs"})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
@@ -362,7 +354,6 @@ class DrawProfileSensor(NibePiEntity, SensorEntity):
     """The learned hot water draw profile: when the next draw is expected."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:chart-timeline-variant"
     _unrecorded_attributes = frozenset({"profile", "day_sums", "top_slots"})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
@@ -459,7 +450,6 @@ class OptimiserPlanSensor(_SystemSensor):
     """
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:chart-timeline-variant-shimmer"
     _unrecorded_attributes = frozenset({"plan_24h", "explanation", "summary"})
 
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
@@ -551,7 +541,6 @@ class SavingsTodaySensor(NibePiEntity, SensorEntity):
     # give the savings per day.
     _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
-    _attr_icon = "mdi:piggy-bank-outline"
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "optimiser_savings_today")
@@ -593,7 +582,6 @@ class HeatPumpCostTodaySensor(NibePiEntity, SensorEntity):
     # the long-term statistics.
     _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
-    _attr_icon = "mdi:heat-pump"
     _unrecorded_attributes = frozenset({"yesterday"})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
@@ -632,7 +620,6 @@ class HouseModelSensor(_SystemSensor):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["prior", "low", "medium", "high"]
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:home-analytics"
     _unrecorded_attributes = frozenset(
         {"curve", "prior", "emitter_fit", "eta_fit", "meter_share", "history", "bt3_fit", "loop_fit"}
     )
@@ -690,7 +677,6 @@ class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
     """The optimiser's hot water plan: when the next charge starts."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:water-boiler-auto"
     _unrecorded_attributes = frozenset({"blocks"})
 
     def __init__(self, runtime: NibePiRuntime) -> None:

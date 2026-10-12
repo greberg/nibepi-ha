@@ -16,16 +16,6 @@ from .const import COMPONENTS
 from .entity import NibePiEntity
 from .logic.hwcontrol import FEATURE_DEFAULTS, FEATURES
 
-HW_ICONS = {
-    "learning": "mdi:school-outline",
-    "vv_control": "mdi:water-boiler-auto",
-    "autoluxury": "mdi:water-plus",
-    "priority": "mdi:water-alert",
-    "price_comfort": "mdi:cash-clock",
-    "optimiser": "mdi:cash-check",
-}
-
-
 async def async_setup_entry(
     hass: HomeAssistant, entry: NibePiConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -69,8 +59,6 @@ class ComponentSwitch(NibePiEntity, SwitchEntity, RestoreEntity):
 class RmuFeedSwitch(NibePiEntity, SwitchEntity, RestoreEntity):
     """Send the room temperature to the pump's virtual RMU40 (default off)."""
 
-    _attr_icon = "mdi:home-thermometer"
-
     def __init__(self, runtime, system: str) -> None:
         super().__init__(runtime, "rmu_feed", system)
 
@@ -100,7 +88,6 @@ class HotWaterFeatureSwitch(NibePiEntity, SwitchEntity, RestoreEntity):
     def __init__(self, runtime, feature: str) -> None:
         super().__init__(runtime, "hw_%s" % feature)
         self.feature = feature
-        self._attr_icon = HW_ICONS.get(feature)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
