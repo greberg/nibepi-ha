@@ -100,6 +100,7 @@ from .const import (
 )
 from .logic import curve
 from .logic.gateway import STATUS_TIMEOUT, gateway_online, status_hint
+from .logic.registers import came_online, registers_to_request
 from .logic.hwcontrol import (
     FEATURE_DEFAULTS,
     INPUT_REGISTERS,
@@ -245,6 +246,8 @@ class NibePiRuntime:
         self.entity_ids: Dict[str, str] = {}
         self._unsubs: List[Callable[[], None]] = []
         self._subscribed: set = set()
+        # Register -> when /add + /get was last sent (logic/registers.py).
+        self._requested: Dict[int, datetime] = {}
 
     # -- helpers ----------------------------------------------------------
 
@@ -325,6 +328,9 @@ class NibePiRuntime:
         self._unsubs.append(
             async_call_later(self.hass, STATUS_TIMEOUT.total_seconds() + 1, self._check_status)
         )
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._async_rerequest_cb, timedelta(minutes=5))
+        )
         self.entry.async_create_background_task(
             self.hass, self._async_refresh_forecast(), "nibepi forecast"
         )
@@ -333,6 +339,7 @@ class NibePiRuntime:
         while self._unsubs:
             self._unsubs.pop()()
         self._subscribed.clear()
+        self._requested.clear()
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TIBBER_MISSING)
         for sys in self.systems.values():
             action = sys.lease.release_action()
@@ -368,8 +375,30 @@ class NibePiRuntime:
                 await mqtt.async_subscribe(self.hass, self.prefix + str(reg), self._make_register_cb(reg))
             )
             self._subscribed.add(reg)
-            await self._publish("%d/add" % reg, "ha")
-            await self._publish("%d/get" % reg, "ha")
+            await self._async_request_register(reg)
+
+    async def _async_request_register(self, reg: int) -> None:
+        """Ask the gateway to poll ``reg`` and send its value now."""
+        self._requested[reg] = dt_util.utcnow()
+        await self._publish("%d/add" % reg, "ha")
+        await self._publish("%d/get" % reg, "ha")
+
+    async def _async_rerequest(self, registers: Optional[List[int]] = None) -> None:
+        """Repeat /add + /get: values are not retained, so a request sent while
+        the gateway was down is lost (logic/registers.py)."""
+        if registers is None:
+            now = dt_util.utcnow()
+            seen = {reg: reading.ts for reg, reading in self.readings.items()}
+            registers = registers_to_request(self._subscribed, seen, self._requested, now)
+        if not registers:
+            return
+        _LOGGER.debug("NibePi: asking the gateway again for %s", registers)
+        for reg in registers:
+            await self._async_request_register(reg)
+        await self._async_request_adjust()
+
+    async def _async_rerequest_cb(self, _now: datetime) -> None:
+        await self._async_rerequest()
 
     async def _async_subscribe(self) -> None:
         self._unsubs.append(await mqtt.async_subscribe(self.hass, self.status_topic, self._on_status))
@@ -434,7 +463,13 @@ class NibePiRuntime:
 
     @callback
     def _on_status(self, msg: Any) -> None:
+        previous = self.status_payload
         self.status_payload = str(msg.payload).strip()
+        if came_online(previous, self.status_payload):
+            # A (re)started gateway may not poll what we asked for before.
+            self.entry.async_create_background_task(
+                self.hass, self._async_rerequest(sorted(self._subscribed)), "nibepi register requests"
+            )
         self.status_at = dt_util.utcnow()
         self._notify()
 
