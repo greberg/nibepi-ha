@@ -599,6 +599,102 @@ Shared:
 Long attributes (plans, explanations, fits) are not recorded in the
 history database.
 
+## Cards
+
+The integration ships five custom cards for your own dashboards; nothing
+to install besides the integration. Edit a dashboard -> **Add card** ->
+search for **NibePi**: each card shows a preview, and its editor has the
+options below (or switch it to YAML). The cards follow your theme, light
+or dark.
+
+Options common to all cards:
+
+- `system`: `s1` (default) or `s2`, for the per-system cards
+- `entry_id`: only with more than one NibePi integration
+- `title`: replaces the card's title; `title: ""` hides the header
+
+**Climate** (per system): indoor (big) and the target, outdoor (BT1),
+the pump's curve offset against the planned one and its source (rules or
+optimiser) with the strategy's reason, the indoor, price and forecast
+parts as bars (or, with the optimiser, its offset against what the rules
+would do), and the strategy and mode as buttons. Alerts show only when
+something is wrong: gateway offline, the curve lease in error, the house
+model at prior/low confidence while the optimiser is selected, the RMU40
+feed on without an active lease. Tap a value for its history; switching a
+mode to `active` asks first.
+
+```yaml
+type: custom:nibepi-climate-card
+system: s1
+```
+
+**Optimiser plan** (per system): the next `hours` (default 24) of the
+optimiser's plan as a chart: the planned offset as steps (right axis), the
+predicted indoor temperature in its comfort band (left axis) and the
+price level as coloured columns (green cheap, red expensive). Hover (on a
+computer) for the values. Below it the plan's summary, the expected
+savings, the plan's cost against the baseline and the explanation.
+
+```yaml
+type: custom:nibepi-plan-card
+system: s1
+hours: 24
+```
+
+**Hot water**: BT7 and BT6, the planned action and each feature's reason,
+the next expected draw (with the profile's confidence), the next charge
+(the optimiser's when it is in use, else VV-AI's), a 24 h strip of the
+VV-AI windows and the optimiser's charges, the hot water mode, and the
+state of the 47041, 47134 and 48132 leases as dots.
+
+```yaml
+type: custom:nibepi-hotwater-card
+```
+
+**Gateway**: online and version, core state, last data from the pump,
+raw writes (`raw_set`), bus errors per minute (the gateway's *Bus errors*
+sensor), the last message, every lease with its state, value and time
+left (curve offset and RMU40 per system, the hot water registers) and
+errors, and the RMU40 feed per system. `status_url` adds a link to the
+gateway's status page.
+
+```yaml
+type: custom:nibepi-gateway-card
+status_url: http://nibepi.local:8080
+```
+
+**Cost and savings**: the heat pump's cost today (with a heat pump meter)
+and the optimiser's expected savings today, the predicted cost so far and
+the gap, yesterday's cost and savings, and 7-day sparklines of both from
+the long-term statistics (left out until there are two days).
+
+```yaml
+type: custom:nibepi-savings-card
+```
+
+The cards find the entities through the Gateway entity's `entities`
+attribute (see [Entities](#entities)), so renamed entities keep working;
+keep the Gateway entity enabled. The gateway's register sensors (BT1, BT6,
+BT7, BT50, the bus errors) need the gateway's MQTT discovery.
+
+**After an update** the browser may keep the old cards: reload with
+Ctrl+F5 (Cmd+Shift+R), or in the app clear the frontend cache (Settings ->
+Companion app -> Debugging -> Reset frontend cache).
+
+### Tiles
+
+The entities work as built-in tile cards too, with state icons. Useful
+ones:
+
+- *Planned curve offset S1*, *Pump curve offset S1*, *Optimiser plan S1*
+- *Heating strategy S1* and *Mode S1* (add the *Select options* feature)
+- *Price level*
+- *Hot water planned action*, *Hot water next expected draw*, *Hot water
+  optimiser plan* (the next charge), *Hot water mode*
+- *Expected savings today*, *Heat pump cost today* (also as a statistics
+  graph: they are daily totals)
+- *Gateway*
+
 ## Diagnostics
 
 Settings -> Devices & services -> NibePi -> menu -> **Download
@@ -704,7 +800,12 @@ function it ports and where it deliberately differs.
 
 ```sh
 python3 -m unittest discover -s tests
+node --test tests/js/*.test.mjs   # the cards (frontend/nibepi-core.js)
 ```
+
+The cards are plain ES modules in `custom_components/nibepi/frontend/`
+with no build step: `nibepi-core.js` holds the entity resolution and data
+shaping (unit tested), `nibepi-cards.js` the elements.
 
 ## License
 
