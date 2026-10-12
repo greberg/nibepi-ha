@@ -550,7 +550,9 @@ Per system:
 
 - `select` Heating strategy (`rules` / `optimiser`)
 - `sensor` Optimiser plan: the planned offset now; attributes `plan_24h`
-  (`[time, offset, predicted indoor]` at each change and every hour),
+  (`[time, offset, predicted indoor, start]` at each change and every
+  hour; `time` is local "HH:MM", `start` the ISO timestamp), `comfort`
+  (`target`, `lower`, `upper`, `floor`: the band the plan keeps indoor in),
   `explanation`, `summary`, `expected_cost`, `baseline_cost`, `savings`,
   `savings_pct`, `gate` (use, offset, reason), `applied`, `strategy`,
   `model_confidence`, `base_offset`, `planned_at`, `problem`,
@@ -589,7 +591,8 @@ Shared:
   Both are daily totals (state class `total`, reset at local midnight),
   so the long-term statistics give the savings and the cost per day.
 - `sensor` Hot water optimiser plan: when the next planned charge starts;
-  attributes `blocks` (next 24 h), `next_target`, `savings`, `min_temp`,
+  attributes `blocks` (next 24 h; `start`/`end` local "HH:MM",
+  `start_at`/`end_at` ISO timestamps), `next_target`, `savings`, `min_temp`,
   `enabled`, `in_use`, `problem`
 - `switch` Optimise hot water charges
 
@@ -658,7 +661,13 @@ says `offline`. When nothing has arrived 120 s after setup it turns off
 and a warning is logged once. Its attributes `status_topic`,
 `last_status`, `last_message_at` and, while no status was received,
 `hint` help find out why: usually the gateway is not running, or is
-connected to another broker or with another topic prefix.
+connected to another broker or with another topic prefix. Its `entities`
+attribute (not recorded) maps keys to entity ids for the
+[cards](#cards): the integration's entities by translation key
+(`planned_offset_s1`, `price_level`), the gateway's discovered sensors
+(`outdoor`, `bt7_hw_top`, `bt6_hw_load`, `bt50_s1`, `supply_s1`,
+`degree_minutes`, `bus_health`, ...) and `indoor_s1` / `indoor_s2`, the
+indoor sensor the integration uses.
 
 ## Going live
 

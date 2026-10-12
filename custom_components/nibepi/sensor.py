@@ -441,6 +441,16 @@ def _currency(runtime: NibePiRuntime) -> str:
     return str(getattr(runtime.hass.config, "currency", None) or "SEK")
 
 
+def _comfort(comfort: Any) -> Dict[str, float]:
+    """The comfort band the plans keep the indoor temperature in."""
+    return {
+        "target": round(comfort.target, 2),
+        "lower": round(comfort.lower, 2),
+        "upper": round(comfort.upper, 2),
+        "floor": round(comfort.floor, 2),
+    }
+
+
 class OptimiserPlanSensor(_SystemSensor):
     """The optimiser's planned curve offset now, with the plan.
 
@@ -485,6 +495,7 @@ class OptimiserPlanSensor(_SystemSensor):
             "model_level": (models.fit.level if models.fit.ok else "prior") if models is not None else None,
             "planned_at": _iso(result.planned_at) if result is not None else None,
             "problem": result.problem if result is not None else optimizer.plan_error,
+            "comfort": _comfort(optimizer.comfort(system)),
         }
         if result is None or result.plan is None:
             return attrs
@@ -499,7 +510,7 @@ class OptimiserPlanSensor(_SystemSensor):
                 continue
             on_hour = step.start.astimezone(tz).minute == 0
             if step.offset != last_offset or on_hour:
-                rows.append([_hm(step.start, tz), step.offset, round(step.t_in_end, 1)])
+                rows.append([_hm(step.start, tz), step.offset, round(step.t_in_end, 1), _iso(step.start)])
             last_offset = step.offset
         base = plan.baseline.energy_adjusted
         attrs.update(
@@ -728,6 +739,8 @@ class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
                     {
                         "start": _hm(b.start, tz),
                         "end": _hm(b.end, tz),
+                        "start_at": _iso(b.start),
+                        "end_at": _iso(b.end),
                         "action": b.action,
                         "target": b.target,
                         "boost": b.boost,

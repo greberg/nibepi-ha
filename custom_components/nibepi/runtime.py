@@ -240,6 +240,9 @@ class NibePiRuntime:
         self.hotwater = HotWaterRuntime(HotWaterController(), HotWaterLeases(owner=OWNER))
         self.vv_store: Store = Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id))
         self.optimizer = OptimizerRuntime(self)
+        # Card key (translation key, "_<system>" per system) -> entity id of
+        # each added entity, for the cards (logic/cards.py).
+        self.entity_ids: Dict[str, str] = {}
         self._unsubs: List[Callable[[], None]] = []
         self._subscribed: set = set()
 

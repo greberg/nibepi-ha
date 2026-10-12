@@ -25,9 +25,16 @@ class NibePiEntity(Entity):
         if system:
             self._attr_translation_placeholders = {"system": system.upper()}
         self._attr_device_info = runtime.device_info
+        self._card_key = "%s_%s" % (key, system) if system else key
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        # The cards find the entity through the Gateway entity's map; a
+        # renamed entity is removed and added again under its new id.
+        entity_ids = self.runtime.entity_ids
+        entity_ids[self._card_key] = self.entity_id
+        key, entity_id = self._card_key, self.entity_id
+        self.async_on_remove(lambda: entity_ids.pop(key, None) if entity_ids.get(key) == entity_id else None)
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass, signal_update(self.runtime.entry.entry_id), self._handle_update
