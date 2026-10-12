@@ -173,8 +173,9 @@ export function formatSigned(value, digits = 0) {
   return (n > 0 ? "+" : "−") + text;
 }
 
-/** Milliseconds as "45 s", "4 min 05 s", "1 h 02 min", "2 d 3 h". */
-export function formatDuration(ms) {
+/** Milliseconds as "45 s", "4 min 05 s", "1 h 02 min", "2 d 3 h";
+ * ``coarse`` drops the seconds from a minute on ("4 min"). */
+export function formatDuration(ms, coarse = false) {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return "";
   const total = Math.max(0, Math.floor(ms / 1000));
   const d = Math.floor(total / 86400);
@@ -183,7 +184,7 @@ export function formatDuration(ms) {
   const s = total % 60;
   if (d > 0) return `${d} d ${h} h`;
   if (h > 0) return `${h} h ${String(m).padStart(2, "0")} min`;
-  if (m > 0) return `${m} min ${String(s).padStart(2, "0")} s`;
+  if (m > 0) return coarse ? `${m} min` : `${m} min ${String(s).padStart(2, "0")} s`;
   return `${s} s`;
 }
 
@@ -204,11 +205,11 @@ export function countdown(until, now) {
 }
 
 /** "12 s ago", or "" without a time. */
-export function formatAge(since, now) {
+export function formatAge(since, now, coarse = false) {
   const t = parseTime(since);
   if (t === null) return "";
   const ms = now - t;
-  return ms < 0 ? "just now" : `${formatDuration(ms)} ago`;
+  return ms < 0 ? "just now" : `${formatDuration(ms, coarse)} ago`;
 }
 
 export function formatClock(t) {
@@ -391,7 +392,7 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
     offsetTicks.push({ y: yO(v), label: formatSigned(v) });
   }
   const timeTicks = [];
-  const every = hours > 24 ? 6 : 3;
+  const every = hours > 24 || width < 420 ? 6 : 3;
   const first = new Date(start);
   first.setMinutes(0, 0, 0);
   for (let t = first.getTime() + 3600000; t < end; t += 3600000) {

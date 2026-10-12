@@ -30,6 +30,7 @@ from .const import (
     opt_store_key,
     vv_store_key,
 )
+from .frontend_cards import async_register_cards
 from .logic.vvimport import ProfileImportError
 from .runtime import NibePiRuntime
 
@@ -76,6 +77,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=IMPORT_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    # The Lovelace cards, once per run (not per entry or reload).
+    await async_register_cards(hass)
     return True
 
 

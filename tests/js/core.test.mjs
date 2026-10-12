@@ -105,6 +105,8 @@ test("durations, countdowns and signs", () => {
   assert.equal(formatDuration(3720000), "1 h 02 min");
   assert.equal(formatDuration(2 * 86400000 + 3 * H), "2 d 3 h");
   assert.equal(formatDuration(null), "");
+  assert.equal(formatDuration(245000, true), "4 min");
+  assert.equal(formatDuration(45000, true), "45 s");
   assert.deepEqual(countdown(iso(NOW + 90000), NOW), { ms: 90000, expired: false, text: "1 min 30 s" });
   assert.equal(countdown(iso(NOW - 1000), NOW).text, "expired");
   assert.equal(countdown(null, NOW), null);
