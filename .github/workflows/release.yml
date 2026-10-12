@@ -1,0 +1,34 @@
+# Publishes a GitHub release for each new manifest version, so HACS shows and
+# installs "v0.4.0" instead of a commit hash. Runs only after CI succeeded on
+# main; a version that already has a release is left alone.
+name: release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Release the manifest version if it is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("custom_components/nibepi/manifest.json"))["version"])')
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released"
+            exit 0
+          fi
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes
