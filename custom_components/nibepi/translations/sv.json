@@ -279,6 +279,26 @@
           "hw_comfort_very_cheap": "Med komfortläge efter elpris: pumpens varmvattenläge (47041) för varje prisnivå. Oförändrat: pumpens egen inställning.",
           "hw_optimizer_floor": "Med 'Optimera varmvattenladdningar' på håller optimerarens tankplan BT6 över detta."
         }
+      },
+      "away": {
+        "title": "Borta (semester)",
+        "description": "Bortaläget sänker värmen när ingen är hemma: brytaren 'Borta' (t.ex. från din larmautomation) eller åtgärden nibepi.set_away med en förväntad hemkomst. Vad som skrivs till pumpen beror fortfarande på väljarna Läge och Varmvattenläge: i skuggläge beräknas Borta bara. Se README.",
+        "data": {
+          "away_setback": "Sänkning (°C)",
+          "away_min_indoor": "Lägsta inomhustemperatur när borta (°C)",
+          "away_curve_offset": "Kurvförskjutning när borta utan inomhusreglering",
+          "away_hot_water": "Varmvatten när borta",
+          "away_preheat": "Värm upp före hemkomsten (kostnadsoptimeraren)",
+          "away_return_lead_h": "Försprång före hemkomst (h)"
+        },
+        "data_description": {
+          "away_setback": "Inomhusbörvärdet (och kostnadsoptimerarens komfortmål) sänks så här mycket när borta. Åtgärden nibepi.set_away kan ange ett annat värde.",
+          "away_min_indoor": "Absolut golv: det sänkta målet och optimerarens hårda komfortgolv går aldrig under detta (skydd mot frost och fukt).",
+          "away_curve_offset": "Regelstrategin: när inomhuskomponenten är avslagen eller saknar användbar givare sänker denna fasta komponent kurvan i stället. Med aktiv inomhusreglering är den 0: det sänkta börvärdet drar redan ner kurvan.",
+          "away_hot_water": "Ekonomi: komfortläge ekonomi, inga planerade laddningar eller lyft, pumpen gör varmvatten själv; lägsta temperatur gäller fortfarande. Normal: oförändrat. Minimum: med VV-AI-styrning på håller bara lägsta temperatur tanken varm.",
+          "away_preheat": "Med kostnadsoptimeraren och känd hemkomst planeras så att huset är tillbaka på normalt mål när du kommer hem.",
+          "away_return_lead_h": "Reglerna och varmvattnet återgår till normalt så här många timmar före hemkomsten; optimeraren rampar sitt komfortband under tiden. 0: vid hemkomsten."
+        }
       }
     },
     "error": {
@@ -343,6 +363,9 @@
       },
       "hw_optimiser": {
         "name": "Optimera varmvattenladdningar"
+      },
+      "away": {
+        "name": "Borta"
       }
     },
     "sensor": {
@@ -457,6 +480,9 @@
       },
       "hw_optimiser_plan": {
         "name": "Varmvattenoptimerarens plan"
+      },
+      "away_until": {
+        "name": "Borta till"
       }
     },
     "binary_sensor": {
@@ -526,6 +552,13 @@
         "medium": "Medel",
         "high": "Hög"
       }
+    },
+    "away_hot_water": {
+      "options": {
+        "economy": "Ekonomi (pumpen värmer själv i ekonomiläge)",
+        "normal": "Normal (oförändrat)",
+        "minimum": "Minimum (bara lägsta temperatur)"
+      }
     }
   },
   "issues": {
@@ -542,6 +575,28 @@
         "path": {
           "name": "Fil",
           "description": "Sökväg till vv_ai_profile.json, relativt konfigurationskatalogen (t.ex. nibepi/vv_ai_profile.json). Filer utanför konfigurationskatalogen nekas."
+        },
+        "config_entry_id": {
+          "name": "NibePi-post",
+          "description": "Behövs bara med mer än en NibePi-integration."
+        }
+      }
+    },
+    "set_away": {
+      "name": "Ställ in borta",
+      "description": "Startar eller avslutar bortaläget (semester) för alla klimatsystem och varmvattnet. Med en hemkomsttid avslutas bortaläget av sig självt då.",
+      "fields": {
+        "enabled": {
+          "name": "Borta",
+          "description": "På startar bortaläget (eller ändrar ett pågående), av avslutar det."
+        },
+        "until": {
+          "name": "Till",
+          "description": "Förväntad hemkomst: bortaläget avslutas av sig självt vid denna tid. Tom eller passerad: inget slut. En tid utan tidszon är Home Assistants lokala tid."
+        },
+        "setback": {
+          "name": "Sänkning",
+          "description": "°C under börvärdet när borta; tom: inställningen (standard 3)."
         },
         "config_entry_id": {
           "name": "NibePi-post",

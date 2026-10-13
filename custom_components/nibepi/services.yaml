@@ -10,3 +10,28 @@ import_vv_profile:
       selector:
         config_entry:
           integration: nibepi
+set_away:
+  fields:
+    enabled:
+      required: true
+      selector:
+        boolean:
+    until:
+      required: false
+      example: "2026-12-27 18:00:00"
+      selector:
+        datetime:
+    setback:
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: nibepi

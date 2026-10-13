@@ -1,15 +1,16 @@
-"""Switches: per system the indoor, price and weather components and the
-RMU40 feed; for hot water its sub-features."""
+"""Switches: Away mode; per system the indoor, price and weather components
+and the RMU40 feed; for hot water its sub-features."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import STATE_OFF, STATE_ON, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
 from .const import COMPONENTS
@@ -27,7 +28,56 @@ async def async_setup_entry(
     ]
     entities.extend(RmuFeedSwitch(runtime, system) for system in runtime.systems)
     entities.extend(HotWaterFeatureSwitch(runtime, feature) for feature in FEATURES)
+    entities.append(AwaySwitch(runtime))
     async_add_entities(entities)
+
+
+class AwaySwitch(NibePiEntity, SwitchEntity):
+    """Away (vacation) mode for every climate system and hot water.
+
+    On starts Away without an end (what an alarm automation toggles);
+    ``nibepi.set_away`` can give a return time. The state lives in the
+    runtime's store, so it survives restarts and the end is kept.
+    """
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime, "away")
+
+    @property
+    def is_on(self) -> bool:
+        return self.runtime.away.enabled
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        runtime = self.runtime
+        away = runtime.away
+        settings = runtime.away_settings()
+        now = dt_util.utcnow()
+        return {
+            "until": away.until.isoformat() if away.until is not None else None,
+            "since": away.since.isoformat() if away.since is not None else None,
+            "setback": settings.setback_for(away),
+            "setback_override": away.setback,
+            "min_indoor": settings.min_indoor,
+            "hot_water": settings.hot_water,
+            "preheat": settings.preheat,
+            "return_lead_h": settings.return_lead_h,
+            # Whether the rules and hot water are in their away phase now
+            # (false during the return lead before ``until``).
+            "rules_away": runtime.away_rules(now),
+            "targets": {
+                system: runtime.away_setpoint(sys) if away.enabled else runtime._setpoint(sys)
+                for system, sys in runtime.systems.items()
+            },
+            "modes": {system: sys.mode for system, sys in runtime.systems.items()},
+            "hw_mode": runtime.hotwater.mode,
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.runtime.async_turn_away_on()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.runtime.async_set_away(False)
 
 
 class ComponentSwitch(NibePiEntity, SwitchEntity, RestoreEntity):

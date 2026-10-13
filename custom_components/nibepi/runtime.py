@@ -23,12 +23,17 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import sun as sun_helper
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_point_in_time,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import SpeedConverter, TemperatureConverter
 
 from .const import (
+    AWAY_STORE_VERSION,
     COMPONENTS,
     CONF_NAME,
     CONF_PREFIX,
@@ -39,6 +44,12 @@ from .const import (
     HW_COMFORT_OPTIONS,
     ISSUE_TIBBER_MISSING,
     MANUFACTURER,
+    OPT_AWAY_CURVE_OFFSET,
+    OPT_AWAY_HOT_WATER,
+    OPT_AWAY_MIN_INDOOR,
+    OPT_AWAY_PREHEAT,
+    OPT_AWAY_RETURN_LEAD,
+    OPT_AWAY_SETBACK,
     OPT_HW_AUTOLUX_DIFF,
     OPT_HW_AUTOLUX_TIME,
     OPT_HW_DAY_LARGE,
@@ -93,12 +104,22 @@ from .const import (
     VV_IMPORT_MAX_BYTES,
     VV_STORE_SAVE_DELAY,
     VV_STORE_VERSION,
+    away_store_key,
     price_source,
     signal_update,
     system_key,
     vv_store_key,
 )
 from .logic import curve
+from .logic.away import (
+    AwaySettings,
+    AwayState,
+    away_component,
+    away_setpoint,
+    indoor_active,
+    rules_away,
+)
+from .logic.away import start as away_start
 from .logic.gateway import STATUS_TIMEOUT, gateway_online, status_hint
 from .logic.registers import came_online, registers_to_request
 from .logic.hwcontrol import (
@@ -240,6 +261,10 @@ class NibePiRuntime:
             )
         self.hotwater = HotWaterRuntime(HotWaterController(), HotWaterLeases(owner=OWNER))
         self.vv_store: Store = Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id))
+        # Away (vacation) mode: one state for all systems and hot water.
+        self.away = AwayState()
+        self.away_store: Store = Store(hass, AWAY_STORE_VERSION, away_store_key(entry.entry_id))
+        self._away_end: Optional[Callable[[], None]] = None
         self.optimizer = OptimizerRuntime(self)
         # Card key (translation key, "_<system>" per system) -> entity id of
         # each added entity, for the cards (logic/cards.py).
@@ -338,6 +363,7 @@ class NibePiRuntime:
     async def async_stop(self) -> None:
         while self._unsubs:
             self._unsubs.pop()()
+        self._cancel_away_end()
         self._subscribed.clear()
         self._requested.clear()
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TIBBER_MISSING)
@@ -518,6 +544,101 @@ class NibePiRuntime:
                 self.hass, self._async_rmu_step(sys, dt_util.utcnow()), "nibepi rmu"
             )
 
+    # -- away ---------------------------------------------------------------
+
+    def away_settings(self) -> AwaySettings:
+        return AwaySettings.from_values(
+            setback=self.opt(OPT_AWAY_SETBACK),
+            min_indoor=self.opt(OPT_AWAY_MIN_INDOOR),
+            curve_offset=self.opt(OPT_AWAY_CURVE_OFFSET),
+            hot_water=self.opt(OPT_AWAY_HOT_WATER),
+            preheat=self.opt(OPT_AWAY_PREHEAT),
+            return_lead_h=self.opt(OPT_AWAY_RETURN_LEAD),
+        )
+
+    def away_rules(self, now: datetime) -> bool:
+        """Away for the rules strategy and hot water at ``now``."""
+        return rules_away(self.away, self.away_settings(), now)
+
+    def away_setpoint(self, sys: SystemRuntime) -> Optional[float]:
+        """The lowered setpoint of ``sys`` (whether or not Away is on)."""
+        settings = self.away_settings()
+        return away_setpoint(self._setpoint(sys), settings.setback_for(self.away), settings.min_indoor)
+
+    async def async_load_away(self) -> None:
+        """Restore the Away state; one whose return has passed ends now."""
+        try:
+            data = await self.away_store.async_load()
+        except Exception:  # noqa: BLE001 - a broken file must not stop setup
+            _LOGGER.exception("Could not load the Away state; Away is off")
+            data = None
+        state = AwayState.from_dict(data)
+        if state.expired(dt_util.utcnow()):
+            _LOGGER.info("NibePi Away ended while Home Assistant was stopped (return %s)", state.until)
+            state = AwayState()
+            await self.away_store.async_save(state.to_dict())
+        self.away = state
+        self._schedule_away_end()
+
+    async def async_set_away(
+        self, enabled: bool, until: Optional[datetime] = None, setback: Optional[float] = None
+    ) -> None:
+        """Start (or change) or end Away. ``until`` not in the future: no end."""
+        now = dt_util.utcnow()
+        if enabled:
+            state = away_start(now, until, setback)
+            if self.away.enabled and self.away.since is not None:
+                state = AwayState(True, state.until, state.setback, self.away.since)
+        else:
+            state = AwayState()
+        if state == self.away:
+            return
+        _LOGGER.info(
+            "NibePi Away %s%s",
+            "on" if state.enabled else "off",
+            " until %s" % state.until.isoformat() if state.until is not None else "",
+        )
+        if state.enabled and not self.away.enabled:
+            idle = [s.system for s in self.systems.values() if s.mode != MODE_ACTIVE]
+            if idle:
+                _LOGGER.info(
+                    "NibePi Away is on but %s %s not in active mode: the lowered target is "
+                    "only computed, nothing is written to the pump",
+                    ", ".join(idle), "is" if len(idle) == 1 else "are",
+                )
+        self.away = state
+        await self.away_store.async_save(state.to_dict())
+        self._schedule_away_end()
+        self._away_changed()
+
+    async def async_turn_away_on(self) -> None:
+        """The switch: start Away without an end; leave a running Away as it is."""
+        if not self.away.enabled:
+            await self.async_set_away(True)
+
+    def _away_changed(self) -> None:
+        self._notify()
+        if self.started is not None:
+            self.entry.async_create_background_task(self.hass, self.async_tick(), "nibepi tick")
+            self.optimizer.request_plan()
+
+    def _cancel_away_end(self) -> None:
+        if self._away_end is not None:
+            self._away_end()
+            self._away_end = None
+
+    def _schedule_away_end(self) -> None:
+        self._cancel_away_end()
+        until = self.away.until if self.away.enabled else None
+        if until is not None:
+            self._away_end = async_track_point_in_time(self.hass, self._async_away_end_cb, until)
+
+    async def _async_away_end_cb(self, _now: datetime) -> None:
+        self._away_end = None
+        if self.away.enabled:
+            _LOGGER.info("NibePi Away ends: the return time %s has come", self.away.until)
+            await self.async_set_away(False)
+
     # -- hot water --------------------------------------------------------
 
     def set_hw_mode(self, mode: str) -> None:
@@ -627,6 +748,7 @@ class NibePiRuntime:
                     self.price_level_at = now
                 level = self.price_level
                 windows, problem = self.optimizer.hw_plan_windows(now)
+                away_hw = self.away_settings().hot_water if self.away_rules(now) else None
                 inputs = HotWaterInputs(
                     now=now,
                     tz=_local_tz(),
@@ -636,12 +758,17 @@ class NibePiRuntime:
                     held=hw.leases.held(),
                     optimiser_windows=windows,
                     optimiser_problem=problem,
+                    away=away_hw,
                 )
                 settings = self._hw_settings()
                 learning = hw.mode != MODE_OFF and (
                     hw.features.get("learning", False) or hw.features.get("vv_control", False)
                 )
-                if sample and hw.controller.learn(inputs, settings, learning):
+                if learning and sample and away_hw is not None:
+                    # Away: no draws are expected; neither learn nor decay.
+                    if hw.controller.learn_away(inputs):
+                        self._save_vv_store()
+                elif sample and hw.controller.learn(inputs, settings, learning):
                     self._save_vv_store()
                 event = hw.controller.last_event
                 if event is not None and hw.controller.last_event_at == now:
@@ -760,7 +887,10 @@ class NibePiRuntime:
             return
         timeout = self.opt(OPT_SENSOR_TIMEOUT)
         indoor = self._indoor_reading(sys)
-        setpoint = self._setpoint(sys)
+        away = self.away_rules(now)
+        # Away: the indoor component and the price guard work on the
+        # lowered setpoint.
+        setpoint = self.away_setpoint(sys) if away else self._setpoint(sys)
         try:
             self.price_level = self._price_level(now)
             self.price_level_at = now
@@ -808,6 +938,11 @@ class NibePiRuntime:
             except Exception as err:  # noqa: BLE001 - a broken input counts as missing
                 _LOGGER.exception("NibePi %s %s component failed", sys.system, name)
                 decisions[name] = Decision.zero("error: %r" % err)
+        if away:
+            # A fixed away component only when indoor control cannot steer;
+            # otherwise the lowered setpoint already does (no double setback).
+            steering = indoor_active(sys.enabled.get("indoor", True), decisions.get("indoor"))
+            decisions["away"] = away_component(steering, self.away_settings().curve_offset)
 
         if sys.mode == MODE_ACTIVE and sys.lease.held and sys.lease.value is not None:
             reference: Optional[float] = float(sys.lease.value)

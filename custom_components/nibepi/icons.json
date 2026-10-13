@@ -66,6 +66,13 @@
       },
       "hw_optimiser": {
         "default": "mdi:cash-check"
+      },
+      "away": {
+        "default": "mdi:home-export-outline",
+        "state": {
+          "on": "mdi:home-export-outline",
+          "off": "mdi:home"
+        }
       }
     },
     "sensor": {
@@ -177,12 +184,18 @@
       },
       "hw_optimiser_plan": {
         "default": "mdi:water-boiler-auto"
+      },
+      "away_until": {
+        "default": "mdi:calendar-arrow-left"
       }
     }
   },
   "services": {
     "import_vv_profile": {
       "service": "mdi:file-import-outline"
+    },
+    "set_away": {
+      "service": "mdi:home-export-outline"
     }
   }
 }

@@ -47,6 +47,7 @@ async def async_setup_entry(
         entities.append(RmuLeaseStateSensor(runtime, system))
         entities.append(OptimiserPlanSensor(runtime, system))
         entities.append(HouseModelSensor(runtime, system))
+    entities.append(AwayUntilSensor(runtime))
     entities.append(SavingsTodaySensor(runtime))
     entities.append(HeatPumpCostTodaySensor(runtime))
     entities.append(HotWaterActionSensor(runtime))
@@ -100,6 +101,7 @@ class PlannedOffsetSensor(_SystemSensor):
             "reasons": plan.reasons if plan else {},
             "inputs_ok": plan.inputs_ok if plan else {},
             "base_adjust": self.runtime.base_adjust.get(sys.system, 0.0),
+            "away": "away" in (plan.components if plan else {}),
             "write_needed": plan.write if plan else None,
             "healthy": sys.healthy,
             "error": sys.error,
@@ -432,14 +434,19 @@ def _currency(runtime: NibePiRuntime) -> str:
     return str(getattr(runtime.hass.config, "currency", None) or "SEK")
 
 
-def _comfort(comfort: Any) -> Dict[str, float]:
-    """The comfort band the plans keep the indoor temperature in."""
-    return {
+def _comfort(comfort: Any, normal: Any = None, away: bool = False) -> Dict[str, Any]:
+    """The comfort band the plans keep the indoor temperature in now; with
+    Away on, the normal target too."""
+    out: Dict[str, Any] = {
         "target": round(comfort.target, 2),
         "lower": round(comfort.lower, 2),
         "upper": round(comfort.upper, 2),
         "floor": round(comfort.floor, 2),
+        "away": away,
     }
+    if normal is not None:
+        out["normal_target"] = round(normal.target, 2)
+    return out
 
 
 class OptimiserPlanSensor(_SystemSensor):
@@ -485,7 +492,9 @@ class OptimiserPlanSensor(_SystemSensor):
             "model_level": (models.fit.level if models.fit.ok else "prior") if models is not None else None,
             "planned_at": _iso(result.planned_at) if result is not None else None,
             "problem": result.problem if result is not None else optimizer.plan_error,
-            "comfort": _comfort(optimizer.comfort(system)),
+            "comfort": _comfort(
+                optimizer.comfort(system), optimizer.normal_comfort(system), self.runtime.away.active(dt_util.utcnow())
+            ),
         }
         if result is None or result.plan is None:
             return attrs
@@ -493,15 +502,23 @@ class OptimiserPlanSensor(_SystemSensor):
         tz = _local_tz()
         now = dt_util.utcnow()
         horizon = now + timedelta(hours=PLAN_HOURS)
+        # [HH:MM, offset, indoor at the end, ISO start, band lower, band upper]:
+        # the band changes over time when Away returns within the plan.
         rows: List[List[Any]] = []
         last_offset = None
-        for step in plan.plan.steps:
+        last_band = None
+        comforts = result.comforts
+        for i, step in enumerate(plan.plan.steps):
             if step.end <= now or step.start >= horizon:
                 continue
+            band = comforts[i] if i < len(comforts) else None
+            lower = round(band.lower, 1) if band is not None else None
+            upper = round(band.upper, 1) if band is not None else None
             on_hour = step.start.astimezone(tz).minute == 0
-            if step.offset != last_offset or on_hour:
-                rows.append([_hm(step.start, tz), step.offset, round(step.t_in_end, 1), _iso(step.start)])
+            if step.offset != last_offset or on_hour or (lower, upper) != last_band:
+                rows.append([_hm(step.start, tz), step.offset, round(step.t_in_end, 1), _iso(step.start), lower, upper])
             last_offset = step.offset
+            last_band = (lower, upper)
         base = plan.baseline.energy_adjusted
         attrs.update(
             {
@@ -526,6 +543,25 @@ class OptimiserPlanSensor(_SystemSensor):
             }
         )
         return attrs
+
+
+class AwayUntilSensor(NibePiEntity, SensorEntity):
+    """When Away ends by itself (the expected return); unknown without an end."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "away_until")
+
+    @property
+    def native_value(self) -> Optional[datetime]:
+        away = self.runtime.away
+        return away.until if away.enabled else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        away = self.runtime.away
+        return {"away": away.enabled, "since": _iso(away.since)}
 
 
 class SavingsTodaySensor(NibePiEntity, SensorEntity):

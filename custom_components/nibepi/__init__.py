@@ -21,18 +21,24 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     ATTR_CONFIG_ENTRY_ID,
+    ATTR_ENABLED,
     ATTR_PATH,
+    ATTR_SETBACK,
+    ATTR_UNTIL,
+    AWAY_STORE_VERSION,
     DOMAIN,
     OPT_STORE_VERSION,
     PLATFORMS,
     SERVICE_IMPORT_VV_PROFILE,
+    SERVICE_SET_AWAY,
     VV_STORE_VERSION,
+    away_store_key,
     opt_store_key,
     vv_store_key,
 )
 from .frontend_cards import async_register_cards
 from .logic.vvimport import ProfileImportError
-from .runtime import NibePiRuntime
+from .runtime import NibePiRuntime, _local_tz
 
 if TYPE_CHECKING:
     NibePiConfigEntry = ConfigEntry[NibePiRuntime]
@@ -44,6 +50,14 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 IMPORT_SCHEMA = vol.Schema(
     {vol.Required(ATTR_PATH): cv.string, vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string}
+)
+SET_AWAY_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENABLED): cv.boolean,
+        vol.Optional(ATTR_UNTIL): vol.Any(None, cv.datetime),
+        vol.Optional(ATTR_SETBACK): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0, max=10))),
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
 )
 
 
@@ -70,6 +84,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         except (ProfileImportError, OSError) as err:
             raise ServiceValidationError(str(err)) from err
 
+    async def _set_away(call: ServiceCall) -> None:
+        runtime = _loaded_runtime(hass, call)
+        until = call.data.get(ATTR_UNTIL)
+        if until is not None and until.tzinfo is None:
+            # A time without a zone is Home Assistant's local time.
+            until = until.replace(tzinfo=_local_tz())
+        await runtime.async_set_away(call.data[ATTR_ENABLED], until, call.data.get(ATTR_SETBACK))
+
+    hass.services.async_register(DOMAIN, SERVICE_SET_AWAY, _set_away, schema=SET_AWAY_SCHEMA)
     hass.services.async_register(
         DOMAIN,
         SERVICE_IMPORT_VV_PROFILE,
@@ -87,6 +110,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> bo
         raise ConfigEntryNotReady("MQTT integration is not available")
     runtime = NibePiRuntime(hass, entry)
     entry.runtime_data = runtime
+    # The Away state first: the switch shows it from the start.
+    await runtime.async_load_away()
     # Platforms first: the mode select restores its state before the first
     # tick. Until then every system is in shadow mode.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -106,6 +131,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> N
     # belong to the entry.
     await Store(hass, VV_STORE_VERSION, vv_store_key(entry.entry_id)).async_remove()
     await Store(hass, OPT_STORE_VERSION, opt_store_key(entry.entry_id)).async_remove()
+    await Store(hass, AWAY_STORE_VERSION, away_store_key(entry.entry_id)).async_remove()
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: NibePiConfigEntry) -> None:

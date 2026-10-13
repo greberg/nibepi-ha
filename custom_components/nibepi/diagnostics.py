@@ -197,6 +197,11 @@ async def async_get_config_entry_diagnostics(
         },
         "forecast": {"fetched": runtime.forecast_fetched, "points": len(runtime.forecast or [])},
         "readings": {str(reg): [r.value, r.ts] for reg, r in sorted(runtime.readings.items())},
+        "away": {
+            "state": runtime.away.to_dict(),
+            "settings": runtime.away_settings(),
+            "rules_away": runtime.away_rules(datetime.now(timezone.utc)),
+        },
         "systems": _systems(runtime),
         "hot_water": _hotwater(runtime),
         "optimizer": _optimizer(runtime),

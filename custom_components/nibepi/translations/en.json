@@ -279,6 +279,26 @@
           "hw_comfort_very_cheap": "With price comfort mode on, the pump's hot water comfort mode (47041) for each price level. Unchanged: the pump's own setting.",
           "hw_optimizer_floor": "With 'Optimise hot water charges' on, the optimiser's tank plan keeps BT6 above this."
         }
+      },
+      "away": {
+        "title": "Away (vacation)",
+        "description": "Away mode lowers the heating while nobody is home: switch 'Away' (e.g. from your alarm automation) or the nibepi.set_away action with an expected return. What is written to the pump still depends on the Mode and Hot water mode selects: in shadow mode Away is only computed. See the README.",
+        "data": {
+          "away_setback": "Setback (°C)",
+          "away_min_indoor": "Lowest indoor temperature while away (°C)",
+          "away_curve_offset": "Curve offset while away without indoor control",
+          "away_hot_water": "Hot water while away",
+          "away_preheat": "Heat back before the return (cost optimiser)",
+          "away_return_lead_h": "Return lead (h)"
+        },
+        "data_description": {
+          "away_setback": "The indoor setpoint (and the cost optimiser's comfort target) is lowered by this much while away. The nibepi.set_away action can override it.",
+          "away_min_indoor": "Absolute floor: the lowered target and the optimiser's hard comfort floor never go below this (frost and damp protection).",
+          "away_curve_offset": "Rules strategy: when the indoor component is off or has no usable sensor, this fixed component lowers the curve instead. With indoor control active it is 0: the lowered setpoint already pulls the curve down.",
+          "away_hot_water": "Economy: comfort mode economy, no planned charges or boosts, the pump heats hot water itself; the min-temp floor stays. Normal: unchanged. Minimum: with VV-AI control on, only the min-temp floor keeps the tank warm.",
+          "away_preheat": "With the cost optimiser and a known return time, plan so the house is back at the normal target when you come home.",
+          "away_return_lead_h": "The rules and hot water return to normal this many hours before the return time; the optimiser ramps its comfort band over it. 0: at the return."
+        }
       }
     },
     "error": {
@@ -343,6 +363,9 @@
       },
       "hw_optimiser": {
         "name": "Optimise hot water charges"
+      },
+      "away": {
+        "name": "Away"
       }
     },
     "sensor": {
@@ -457,6 +480,9 @@
       },
       "hw_optimiser_plan": {
         "name": "Hot water optimiser plan"
+      },
+      "away_until": {
+        "name": "Away until"
       }
     },
     "binary_sensor": {
@@ -526,6 +552,13 @@
         "medium": "Medium",
         "high": "High"
       }
+    },
+    "away_hot_water": {
+      "options": {
+        "economy": "Economy (pump heats itself in economy mode)",
+        "normal": "Normal (unchanged)",
+        "minimum": "Minimum (only the min-temp floor)"
+      }
     }
   },
   "issues": {
@@ -542,6 +575,28 @@
         "path": {
           "name": "File",
           "description": "Path of vv_ai_profile.json, relative to the configuration directory (e.g. nibepi/vv_ai_profile.json). Files outside the configuration directory are refused."
+        },
+        "config_entry_id": {
+          "name": "NibePi entry",
+          "description": "Only needed with more than one NibePi integration."
+        }
+      }
+    },
+    "set_away": {
+      "name": "Set away",
+      "description": "Starts or ends Away (vacation) mode for every climate system and hot water. With a return time, Away ends by itself then.",
+      "fields": {
+        "enabled": {
+          "name": "Away",
+          "description": "On starts Away (or changes a running one), off ends it."
+        },
+        "until": {
+          "name": "Until",
+          "description": "Expected return: Away ends by itself at this time. Empty or in the past: no end. A time without a zone is Home Assistant's local time."
+        },
+        "setback": {
+          "name": "Setback",
+          "description": "°C below the setpoint while away; empty: the option (default 3)."
         },
         "config_entry_id": {
           "name": "NibePi entry",

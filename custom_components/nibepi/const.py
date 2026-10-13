@@ -220,6 +220,36 @@ OPT_COMFORT_ABOVE = "comfort_above"
 OPT_COMFORT_FLOOR = "comfort_floor_below"
 
 
+# Options: Away (vacation) mode (shared). See logic/away.py.
+OPT_AWAY_SETBACK = "away_setback"
+OPT_AWAY_MIN_INDOOR = "away_min_indoor"
+OPT_AWAY_CURVE_OFFSET = "away_curve_offset"
+OPT_AWAY_HOT_WATER = "away_hot_water"
+OPT_AWAY_PREHEAT = "away_preheat"
+OPT_AWAY_RETURN_LEAD = "away_return_lead_h"
+AWAY_HOT_WATER_CHOICES = ("economy", "normal", "minimum")  # logic.away.HW_CHOICES
+
+AWAY_DEFAULTS: Dict[str, Any] = {
+    OPT_AWAY_SETBACK: 3.0,
+    OPT_AWAY_MIN_INDOOR: 16.0,
+    OPT_AWAY_CURVE_OFFSET: -3,
+    OPT_AWAY_HOT_WATER: "economy",
+    OPT_AWAY_PREHEAT: True,
+    OPT_AWAY_RETURN_LEAD: 0,
+}
+
+# The Away state (helpers.storage) and its action.
+AWAY_STORE_VERSION = 1
+SERVICE_SET_AWAY = "set_away"
+ATTR_ENABLED = "enabled"
+ATTR_UNTIL = "until"
+ATTR_SETBACK = "setback"
+
+
+def away_store_key(entry_id: str) -> str:
+    return "%s_away_%s" % (DOMAIN, entry_id)
+
+
 SHARED_DEFAULTS: Dict[str, Any] = {
     OPT_SENSOR_TIMEOUT: 60,
     OPT_PRICE_UNIT_FACTOR: 100.0,
@@ -238,6 +268,7 @@ SHARED_DEFAULTS: Dict[str, Any] = {
     OPT_SUN_HALF_CLEAR: 0.0,
     **HW_DEFAULTS,
     **OPTIMIZER_DEFAULTS,
+    **AWAY_DEFAULTS,
 }
 
 SYSTEM_DEFAULTS: Dict[str, Any] = {

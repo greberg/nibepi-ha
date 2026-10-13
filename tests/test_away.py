@@ -382,5 +382,39 @@ class LearningAwayTest(unittest.TestCase):
         self.assertIsNone(controller.last_event)
 
 
+class OptionsTest(unittest.TestCase):
+    def test_const_matches_the_logic(self) -> None:
+        import const
+        from logic import away
+
+        self.assertEqual(const.AWAY_HOT_WATER_CHOICES, away.HW_CHOICES)
+        settings = away.AwaySettings.from_values(**{
+            "setback": const.AWAY_DEFAULTS[const.OPT_AWAY_SETBACK],
+            "min_indoor": const.AWAY_DEFAULTS[const.OPT_AWAY_MIN_INDOOR],
+            "curve_offset": const.AWAY_DEFAULTS[const.OPT_AWAY_CURVE_OFFSET],
+            "hot_water": const.AWAY_DEFAULTS[const.OPT_AWAY_HOT_WATER],
+            "preheat": const.AWAY_DEFAULTS[const.OPT_AWAY_PREHEAT],
+            "return_lead_h": const.AWAY_DEFAULTS[const.OPT_AWAY_RETURN_LEAD],
+        })
+        self.assertEqual(settings, away.AwaySettings())
+
+    def test_translations(self) -> None:
+        import json
+        import os
+
+        import const
+
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "custom_components", "nibepi")
+        for name in ("strings.json", "translations/en.json", "translations/sv.json"):
+            with open(os.path.join(root, name), encoding="utf-8") as f:
+                data = json.load(f)
+            step = data["options"]["step"]["away"]
+            self.assertEqual(set(step["data"]), set(const.AWAY_DEFAULTS), name)
+            self.assertEqual(set(data["selector"]["away_hot_water"]["options"]), set(const.AWAY_HOT_WATER_CHOICES))
+            self.assertIn("away", data["entity"]["switch"])
+            self.assertIn("away_until", data["entity"]["sensor"])
+            self.assertEqual(set(data["services"]["set_away"]["fields"]), {"enabled", "until", "setback", "config_entry_id"})
+
+
 if __name__ == "__main__":
     unittest.main()

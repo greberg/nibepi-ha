@@ -3,7 +3,7 @@
 Setup:   user (name, prefix, S2) -> price -> [tibber_warning] ->
          [tibber_home | price_entity] -> system_s1 -> [system_s2] -> house
 Options: init (shared) -> [tibber_warning] -> [tibber_home | price_entity]
-         -> system_s1 -> [system_s2] -> house -> hotwater
+         -> system_s1 -> [system_s2] -> house -> hotwater -> away
 
 Setup asks only for what is needed to get going (price source, room
 sensors, setpoint); the options flow has everything. Both store the same
@@ -42,6 +42,7 @@ from homeassistant.helpers.selector import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    AWAY_HOT_WATER_CHOICES,
     CONF_NAME,
     CONF_PREFIX,
     CONF_SYSTEMS,
@@ -55,6 +56,12 @@ from .const import (
     HOUSE_FLOORS,
     HW_COMFORT_OPTIONS,
     METER_SCOPES,
+    OPT_AWAY_CURVE_OFFSET,
+    OPT_AWAY_HOT_WATER,
+    OPT_AWAY_MIN_INDOOR,
+    OPT_AWAY_PREHEAT,
+    OPT_AWAY_RETURN_LEAD,
+    OPT_AWAY_SETBACK,
     OPT_HW_AUTOLUX_DIFF,
     OPT_HW_AUTOLUX_TIME,
     OPT_HW_DAY_LARGE,
@@ -157,6 +164,7 @@ HW_COMFORT = SelectSelector(
 )
 # Whole numbers in the hot water step.
 HW_INT_OPTIONS = (OPT_HW_LEARNING_RATE, OPT_HW_PREHEAT, OPT_HW_PRICE_WINDOW, OPT_HW_AUTOLUX_TIME)
+AWAY_INT_OPTIONS = (OPT_AWAY_CURVE_OFFSET, OPT_AWAY_RETURN_LEAD)
 TEMPERATURE_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
 METER_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class=["power", "energy"]))
 
@@ -587,7 +595,7 @@ class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
         if user_input is not None:
             for key, value in user_input.items():
                 self._options[key] = int(value) if key in HW_INT_OPTIONS else value
-            return self.async_create_entry(data=self._options)
+            return await self.async_step_away()
         current = self._options
         fields: Dict[Any, Any] = {
             _required(OPT_HW_LEARNING_RATE, current, SHARED_DEFAULTS): _number(1, 10, 1),
@@ -608,3 +616,22 @@ class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
         for key in HW_COMFORT_OPTIONS.values():
             fields[_required(key, current, SHARED_DEFAULTS)] = HW_COMFORT
         return self.async_show_form(step_id="hotwater", data_schema=vol.Schema(fields))
+
+    async def async_step_away(self, user_input: Optional[Dict[str, Any]] = None) -> ConfigFlowResult:
+        """Away (vacation) mode: setback, absolute floor, hot water, return."""
+        if user_input is not None:
+            for key, value in user_input.items():
+                self._options[key] = int(value) if key in AWAY_INT_OPTIONS else value
+            return self.async_create_entry(data=self._options)
+        current = self._options
+        fields: Dict[Any, Any] = {
+            _required(OPT_AWAY_SETBACK, current, SHARED_DEFAULTS): _number(0, 10, 0.5),
+            _required(OPT_AWAY_MIN_INDOOR, current, SHARED_DEFAULTS): _number(5, 25, 0.5),
+            _required(OPT_AWAY_CURVE_OFFSET, current, SHARED_DEFAULTS): _number(-10, 0, 1),
+            _required(OPT_AWAY_HOT_WATER, current, SHARED_DEFAULTS): _choice(
+                AWAY_HOT_WATER_CHOICES, "away_hot_water"
+            ),
+            _required(OPT_AWAY_PREHEAT, current, SHARED_DEFAULTS): BOOL,
+            _required(OPT_AWAY_RETURN_LEAD, current, SHARED_DEFAULTS): _number(0, 24, 1),
+        }
+        return self.async_show_form(step_id="away", data_schema=vol.Schema(fields))

@@ -87,7 +87,9 @@ from .logic.opthistory import (
 from .logic import optcost
 from .logic.optimizer.gate import GateDecision, gate
 from .logic.optimizer.meter import MeterConfig, MeterReading
-from .logic.optimizer.planner import ComfortSettings
+from .logic.away import HW_NORMAL as AWAY_HW_NORMAL
+from .logic.away import away_comfort
+from .logic.optimizer.planner import ComfortSettings, comfort_at
 from .logic.optimizer.profile import HouseProfile
 from .logic.optrun import (
     PLAN_MAX_UP,
@@ -667,7 +669,8 @@ class OptimizerRuntime:
         self.strategy[system] = strategy
         self.request_plan()
 
-    def comfort(self, system: str) -> ComfortSettings:
+    def normal_comfort(self, system: str) -> ComfortSettings:
+        """The comfort band around the setpoint, as when nobody is away."""
         rt = self.rt
         sys = rt.systems[system]
         target = rt._setpoint(sys)
@@ -680,6 +683,30 @@ class OptimizerRuntime:
             models.prior.sensor_margin if models is not None else 0.0,
         )
 
+    def comfort_plan(self, system: str, now: datetime):
+        """(band now, band after the return, return time, ramp hours).
+
+        Not away: the normal band, nothing after. Away: the lowered band;
+        with preheat and a known return, the normal band from the return,
+        ramping over the return lead before it.
+        """
+        normal = self.normal_comfort(system)
+        away = self.rt.away
+        if not away.active(now):
+            return normal, None, None, 0.0
+        settings = self.rt.away_settings()
+        lowered = away_comfort(normal, settings.setback_for(away), settings.min_indoor)
+        if settings.preheat and away.until is not None:
+            return lowered, normal, away.until, settings.return_lead_h
+        return lowered, None, None, 0.0
+
+    def comfort(self, system: str, when: Optional[datetime] = None) -> ComfortSettings:
+        """The comfort band in force at ``when`` (default now): the gate's
+        floor and the band shown on the sensor."""
+        when = when or dt_util.utcnow()
+        now_band, after, change, ramp = self.comfort_plan(system, when)
+        return comfort_at(now_band, after, change, when, ramp)
+
     def _indoor(self, system: str, now: datetime):
         reading = self.rt._indoor_reading(self.rt.systems[system])
         problem = usable(reading, now, self.rt.opt(OPT_SENSOR_TIMEOUT))
@@ -690,7 +717,7 @@ class OptimizerRuntime:
         models = self.models.get(system)
         if models is None:
             return None
-        comfort = self.comfort(system)
+        comfort = self.comfort(system, now)
         t_in, problem = self._indoor(system, now)
         result = self.heating.get(system)
         planned = None
@@ -790,11 +817,12 @@ class OptimizerRuntime:
                 continue
             t_in, _problem = self._indoor(system, now)
             current = rt._value(sys.registers["offset"])
+            band, after, change, ramp = self.comfort_plan(system, now)
             out.append(
                 HeatingInputs(
                     system=system,
                     models=self.models[system],
-                    comfort=self.comfort(system),
+                    comfort=band,
                     prices=prices,
                     now=now,
                     tz=tz,
@@ -807,13 +835,20 @@ class OptimizerRuntime:
                     longitude=self.hass.config.longitude,
                     currency=currency,
                     history=history,
+                    comfort_after=after,
+                    comfort_change=change,
+                    comfort_ramp_h=ramp,
                 )
             )
         return out
 
+    def away_blocks_charges(self, now: datetime) -> bool:
+        """Away with economy or minimum hot water: no planned charges."""
+        return self.rt.away_rules(now) and self.rt.away_settings().hot_water != AWAY_HW_NORMAL
+
     def _tank_inputs(self, now: datetime) -> Optional[TankInputs]:
         rt = self.rt
-        if rt.hotwater.mode == MODE_OFF:
+        if rt.hotwater.mode == MODE_OFF or self.away_blocks_charges(now):
             return None
         readings = rt.readings
         timeout = rt.opt(OPT_SENSOR_TIMEOUT)
@@ -854,6 +889,8 @@ class OptimizerRuntime:
         inputs = self._heating_inputs(now)
         tank_inputs = self._tank_inputs(now)
         results, tank = await self.hass.async_add_executor_job(_run_plans, inputs, tank_inputs)
+        if tank is None and self.away_blocks_charges(now):
+            tank = TankResult(now, problem="away: no planned charges")
         self._book_savings(now, results, tank)
         self.tank = tank
         active = {r.system for r in results}
