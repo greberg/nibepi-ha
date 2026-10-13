@@ -196,6 +196,27 @@ class VvProfile:
         self.last_decay_day = day.isoformat()
         return True
 
+    def hold(self, day: date, slot: int) -> bool:
+        """Away mode: neither learn nor decay (no draws are expected).
+
+        Moves the decay bookkeeping to ``day`` without decaying the days
+        in between (they were not observed), and marks the hours of
+        ``day`` up to ``slot`` as seen, so the hours spent away are not
+        decayed as "no draw" when learning resumes. True when anything
+        changed.
+        """
+        changed = False
+        if self.seen_day != day.isoformat():
+            self.seen_day = day.isoformat()
+            self.seen = [False] * SLOTS
+            changed = True
+        start = day.weekday() * 24
+        for index in range(start, min(slot, start + 23) + 1):
+            if not self.seen[index]:
+                self.seen[index] = True
+                changed = True
+        return changed
+
     # -- learning ---------------------------------------------------------
 
     def register_draw(
