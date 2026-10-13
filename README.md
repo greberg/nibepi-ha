@@ -122,6 +122,7 @@ Shared:
 | The meter measures | the heat pump only | or the whole house |
 | Minimum model confidence to steer | high | low / medium / high |
 | Optimiser hot water floor (hot water step) | 45 °C | BT6, for the optimiser's tank plan |
+| Away: setback, lowest indoor, curve offset, hot water, heat back, return lead | 3 °C, 16 °C, -3, economy, on, 0 h | see [Away mode](#away-mode) |
 
 Per climate system:
 
@@ -599,6 +600,101 @@ Shared:
 Long attributes (plans, explanations, fits) are not recorded in the
 history database.
 
+## Away mode
+
+Away (vacation) mode lowers the heating while nobody is home. It is one
+state for the whole entry (both climate systems and hot water), kept
+across restarts:
+
+- the **Away** switch turns it on without an end and off again; this is
+  what an alarm automation toggles;
+- the **`nibepi.set_away`** action turns it on or off and can give the
+  expected return (`until`, when Away ends by itself; empty or in the past
+  means no end) and a setback for this trip (`setback`, °C);
+- the **Away until** sensor shows the return time (unknown without one).
+
+```yaml
+# The alarm knows when nobody is home.
+automation:
+  - alias: "Heat pump away when the alarm is armed away"
+    triggers:
+      - trigger: state
+        entity_id: alarm_control_panel.house
+        to: armed_away
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.nibe_f1255_away
+  - alias: "Heat pump home when the alarm is disarmed"
+    triggers:
+      - trigger: state
+        entity_id: alarm_control_panel.house
+        to: disarmed
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.nibe_f1255_away
+
+# A trip with a known return: back to normal (and warm) by then.
+action: nibepi.set_away
+data:
+  enabled: true
+  until: "2026-12-27 18:00:00"
+  setback: 4
+```
+
+What it does (options under **Configure**, last step *Away*):
+
+| Option | Default | Effect |
+|---|---|---|
+| Setback | 3 °C | the setpoint (and the optimiser's target) is lowered by this while away; `set_away` can override it |
+| Lowest indoor temperature | 16 °C | absolute floor: the lowered target and the optimiser's hard floor never go below it |
+| Curve offset without indoor control | -3 | rules strategy only, see below |
+| Hot water while away | economy | `economy` / `normal` / `minimum`, see below |
+| Heat back before the return | on | optimiser: plan so the house is at the normal target at `until` |
+| Return lead | 0 h | rules and hot water go back to normal this long before `until`; the optimiser ramps its band over it |
+
+- **Rules strategy.** The indoor component and the price guard work on
+  the lowered setpoint (20 °C - 3 = 17 °C), so the curve goes down until
+  the house is there and holds it. When the indoor component cannot
+  steer (switched off, or its sensor is missing or stale) a fixed **away**
+  component (-3) lowers the curve instead; while the indoor component is
+  active the away component is 0, so the setback is never applied twice.
+  The component shows in *Planned curve offset* (`components.away`,
+  `reasons.away`) and as a bar in the climate card. Without a return time
+  the rules simply go back to normal when Away is switched off; with one,
+  at `until` (minus the return lead).
+- **Cost optimiser.** The comfort target, the band's lower edge and the
+  hard floor move down by the setback (the floor never below the lowest
+  indoor temperature), and the gate's "below the floor: heat" rule uses
+  the lowered floor. Warmer than the lowered target is only paid for in
+  energy: the plan may still store heat in cheap hours. With a known
+  return and *Heat back before the return* on, the plan holds the lowered
+  band until `until` and the normal band from then on, so it heats back
+  ahead of time; a floor-heated house needs many hours for 3 °C (in the
+  tests about 16 h at -6 °C), so the return should be set a day ahead.
+  While it heats back, *Expected savings* can be negative: the baseline
+  holds the lowered base offset until the return and would come home to
+  a cold house.
+- **Hot water.** `economy`: comfort mode economy (47041 = 0), no VV-AI or
+  optimiser charges, no automatic luxury or priority boosts; VV-AI
+  control releases 47134, so the pump makes hot water itself in economy
+  mode, including its own periodic increase (legionella); the min-temp
+  floor still starts a one-time increase if BT7 falls under it.
+  `normal`: unchanged. `minimum`: where VV-AI control (or optimised
+  charges) is on and allowed to hold 47134 at 0, it keeps doing so and
+  only the min-temp floor heats; otherwise as economy. It never takes
+  47134 when VV-AI control is off, so it does not stop the pump's
+  periodic increase where it was not already stopped.
+- **Learning.** VV learning neither learns nor decays while away: no
+  draws are expected, and the days away must not fade the profile.
+
+**Away does not change the modes.** It changes what is planned; what is
+written still depends on *Mode* (per system) and *Hot water mode*. In
+`shadow` the planned values show the setback but nothing reaches the
+pump; the climate and hot water cards then show a warning ("Away is on
+but heating mode S1 is shadow: nothing is written to the pump").
+
 ## Cards
 
 The integration ships five custom cards for your own dashboards; nothing
@@ -617,10 +713,12 @@ Options common to all cards:
 the pump's curve offset against the planned one and its source (rules or
 optimiser) with the strategy's reason, the indoor, price and forecast
 parts as bars (or, with the optimiser, its offset against what the rules
-would do), and the strategy and mode as buttons. Alerts show only when
-something is wrong: gateway offline, the curve lease in error, the house
-model at prior/low confidence while the optimiser is selected, the RMU40
-feed on without an active lease. Tap a value for its history; switching a
+would do), an **Away** chip (tap to toggle; shows the return time, and
+the target shows the lowered and the normal value while away), and the
+strategy and mode as buttons. Alerts show only when something is wrong:
+gateway offline, the curve lease in error, the house model at prior/low
+confidence while the optimiser is selected, the RMU40 feed on without an
+active lease, Away on while the mode is not `active`. Tap a value for its history; switching a
 mode to `active` asks first.
 
 ```yaml
@@ -630,8 +728,9 @@ system: s1
 
 **Optimiser plan** (per system): the next `hours` (default 24) of the
 optimiser's plan as a chart: the planned offset as steps (right axis), the
-predicted indoor temperature in its comfort band (left axis) and the
-price level as coloured columns (green cheap, red expensive). Hover (on a
+predicted indoor temperature in its comfort band (left axis; the band
+steps up at the return when Away has one) and the price level as coloured
+columns (green cheap, red expensive). Hover (on a
 computer) for the values. Below it the plan's summary, the expected
 savings, the plan's cost against the baseline and the explanation.
 
@@ -644,8 +743,10 @@ hours: 24
 **Hot water**: BT7 and BT6, the planned action and each feature's reason,
 the next expected draw (with the profile's confidence), the next charge
 (the optimiser's when it is in use, else VV-AI's), a 24 h strip of the
-VV-AI windows and the optimiser's charges, the hot water mode, and the
-state of the 47041, 47134 and 48132 leases as dots.
+VV-AI windows and the optimiser's charges, the Away chip (with a warning
+when Away changes hot water but the hot water mode is not `active`), the
+hot water mode, and the state of the 47041, 47134 and 48132 leases as
+dots.
 
 ```yaml
 type: custom:nibepi-hotwater-card
@@ -714,7 +815,7 @@ Per system (`S1`, `S2`):
 - `switch` Indoor control, Price control, Forecast control
 - `switch` Send room temperature to pump (RMU40), off by default
 - `sensor` Planned curve offset (attributes: strategy, source, strategy_reason,
-  rules_total, total, components, reasons, inputs_ok, base_adjust,
+  rules_total, total, components, reasons, inputs_ok, base_adjust, away,
   last_tick, healthy, last_action)
 - `sensor` Indoor offset, Price offset, Forecast offset (attributes: reason
   and inputs)
@@ -728,6 +829,12 @@ Per system (`S1`, `S2`):
   feed_enabled, source_entity, room_temperature, reason, last_action)
 - `sensor` Optimiser plan, House model (see [Optimiser
   entities](#optimiser-entities))
+
+Away: `switch` Away (attributes: until, since, setback, min_indoor,
+hot_water, preheat, return_lead_h, rules_away, targets per system, modes,
+hw_mode), `sensor` Away until (timestamp), action `nibepi.set_away`
+(`enabled`, `until`, `setback`, `config_entry_id`); see [Away
+mode](#away-mode).
 
 Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
 price_source, price_status, and for Tibber tibber_home and

@@ -128,3 +128,36 @@ window with the block's target and runs it like a VV-AI window:
 
 The decision's `reasons.optimiser` and `inputs.plan_source` (`optimiser`
 or `vv_ai`) on *Hot water planned action* show which plan drives.
+
+## Away mode (G15)
+
+While Away is on (the **Away** switch or `nibepi.set_away`, see the
+README), the option *Hot water while away* decides what the controller
+does; `reasons.away` and `inputs.away` on *Hot water planned action* show
+it:
+
+| Choice | 47041 comfort mode | 47134 period | 48132 temporary lux |
+|---|---|---|---|
+| `economy` (default) | held at 0 (economy), whatever price comfort mode says | released: the pump makes hot water itself in economy mode, its periodic increase included | only the min-temp floor (BT7 under it: heat to floor + 4 °C) |
+| `normal` | unchanged | unchanged | unchanged |
+| `minimum` | held at 0 | held at 0 where VV-AI control (or optimised charges) is on and passes its usual checks; else released as in economy | only the min-temp floor |
+
+In `economy` and `minimum` there are no VV-AI or optimiser charges
+(the optimiser does not plan the tank while away) and no automatic
+luxury or priority boosts. `minimum` needs the min-temp floor on; without
+it, or when VV-AI control is off, the pump's own period is read 0 or
+unknown, or BT7 or the stop temperatures are missing, it falls back to
+economy. It never takes 47134 when VV-AI control is off: holding the
+period at 0 also holds off the pump's periodic increase (legionella), so
+Away only does that where VV-AI control already did. With a return lead
+(*Return lead*), hot water goes back to normal that long before the
+return.
+
+**Learning.** While away, draw detection is reset and nothing is learned
+(no draws are expected; a cooling tank is not a draw). The daily decay is
+skipped too: the days away are not counted as days without draws, which
+would fade the whole profile during a long trip. Technically the decay
+bookkeeping moves to the current day without decaying (`VvProfile.hold`)
+and the hours of the current day up to now count as seen, so the hours
+spent away on the day of the return are not decayed the next day either.
+
