@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  awayAlert,
+  awayModel,
   climateAlerts,
   contributions,
   countdown,
@@ -9,6 +11,7 @@ import {
   formatAge,
   formatDuration,
   formatSigned,
+  hotwaterAlerts,
   hotwaterWindows,
   leaseRows,
   nibepiEntries,
@@ -283,4 +286,67 @@ test("savings model, daily values and sparkline", () => {
   assert.deepEqual(dailyValues({}, "sensor.s"), []);
   assert.equal(sparkline([1]), "");
   assert.match(sparkline([1, 3, 2], 100, 20), /^M0 [\d.]+ L50 2 L100 [\d.]+$/);
+});
+
+test("plan points and chart carry a band per row (Away's return)", () => {
+  const rows = [
+    ["", -3, 18.0, iso(NOW - 5 * 60000), 17.6, 22.0],
+    ["", 3, 19.5, iso(NOW + 6 * H), 17.6, 22.0],
+    ["", 0, 20.8, iso(NOW + 12 * H), 20.6, 22.0],
+  ];
+  const pts = planPoints(rows, NOW);
+  assert.deepEqual([pts[0].lower, pts[2].lower], [17.6, 20.6]);
+  const chart = planChart({ rows, comfort: { lower: 17.6, upper: 22 }, now: NOW, hours: 24, width: 600, height: 220 });
+  assert.equal(chart.bands.length, 2);
+  assert.equal(chart.bands[0].x, chart.plot.x0);
+  assert.equal(Math.round(chart.bands[1].x), Math.round(chart.plot.x0 + (chart.plot.x1 - chart.plot.x0) / 2));
+  // The normal band sits higher: a smaller height from the same upper edge.
+  assert.ok(chart.bands[1].h < chart.bands[0].h);
+  assert.equal(chart.band, chart.bands[0]);
+  // Old rows without a band use the comfort attribute throughout.
+  const old = planChart({ rows: rows.map((r) => r.slice(0, 4)), comfort: { lower: 20, upper: 21.5 }, now: NOW });
+  assert.equal(old.bands.length, 1);
+  assert.equal(old.bands[0].lower, 20);
+});
+
+test("contributions show the away component when present", () => {
+  const items = contributions({ attributes: { source: "rules", components: { indoor: 0, price: 0, weather: 0, away: -3 }, reasons: { away: "away: fixed" } } });
+  assert.deepEqual(items.map((c) => c.key), ["indoor", "price", "weather", "away"]);
+  assert.equal(items[3].label, "Away");
+  assert.equal(items[3].value, -3);
+});
+
+test("away model and alerts", () => {
+  const ids = { away: "switch.away", away_until: "sensor.away_until", mode_s1: "select.mode_s1", hw_mode: "select.hw_mode", gateway_online: "g" };
+  const hass = {
+    states: {
+      g: { state: "on" },
+      "switch.away": { entity_id: "switch.away", state: "on", attributes: { until: iso(NOW + 26 * H), setback: 3, hot_water: "economy", targets: { s1: 17 } } },
+      "sensor.away_until": { state: iso(NOW + 26 * H) },
+      "select.mode_s1": { state: "shadow" },
+      "select.hw_mode": { state: "active" },
+    },
+  };
+  const model = awayModel(hass, ids, NOW);
+  assert.equal(model.on, true);
+  assert.equal(model.until, NOW + 26 * H);
+  assert.equal(model.countdown.text, "1 d 2 h");
+  assert.equal(model.targets.s1, 17);
+  assert.equal(model.entity, "switch.away");
+  const alerts = climateAlerts(hass, ids, "s1");
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].text, /Away is on but heating mode S1 is shadow: nothing is written/);
+  assert.equal(alerts[0].key, "mode_s1");
+  assert.deepEqual(hotwaterAlerts(hass, ids), []); // hot water is active
+  hass.states["select.hw_mode"].state = "shadow";
+  assert.match(hotwaterAlerts(hass, ids)[0].text, /hot water mode is shadow/);
+  hass.states["switch.away"].attributes.hot_water = "normal";
+  assert.deepEqual(hotwaterAlerts(hass, ids), []); // away leaves hot water alone
+  hass.states["select.mode_s1"].state = "active";
+  assert.deepEqual(climateAlerts(hass, ids, "s1"), []);
+  hass.states["select.mode_s1"].state = "shadow";
+  hass.states["switch.away"].state = "off";
+  assert.equal(awayAlert(hass, ids, "mode_s1", "x"), null);
+  assert.equal(awayModel(hass, ids, NOW).until, null);
+  assert.equal(awayModel({ states: {} }, {}, NOW), null);
 });

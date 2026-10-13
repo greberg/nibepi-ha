@@ -262,9 +262,11 @@ function anchorBefore(minutes, ref) {
 }
 
 /**
- * Plan rows ``[HH:MM, offset, indoor, ISO start?]`` as sorted points
- * {t, offset, tin}. Rows without the ISO start are placed from their local
- * "HH:MM": the first one is the step running now, later ones follow it.
+ * Plan rows ``[HH:MM, offset, indoor, ISO start?, band lower?, band upper?]``
+ * as sorted points {t, offset, tin, lower, upper}. Rows without the ISO
+ * start are placed from their local "HH:MM": the first one is the step
+ * running now, later ones follow it. The band is per row when Away returns
+ * within the plan (null in older rows: the comfort attribute's band).
  */
 export function planPoints(rows, now) {
   const points = [];
@@ -283,7 +285,7 @@ export function planPoints(rows, now) {
       }
     }
     prev = t;
-    points.push({ t, offset: toNumber(row[1]), tin: toNumber(row[2]) });
+    points.push({ t, offset: toNumber(row[1]), tin: toNumber(row[2]), lower: toNumber(row[4]), upper: toNumber(row[5]) });
   }
   return points.sort((a, b) => a.t - b.t);
 }
@@ -337,7 +339,7 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
     const stepEnd = i + 1 < points.length ? points[i + 1].t : end;
     const s = Math.max(p.t, start);
     const e = Math.min(stepEnd, end);
-    if (e > s) steps.push({ start: s, end: e, offset: p.offset, tin: p.tin });
+    if (e > s) steps.push({ start: s, end: e, offset: p.offset, tin: p.tin, lower: p.lower, upper: p.upper });
   });
   if (!steps.length) return { empty: true, width, height };
 
@@ -348,7 +350,15 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
   const temps = steps.map((s) => s.tin).filter((v) => v !== null);
   const lower = toNumber(comfort?.lower);
   const upper = toNumber(comfort?.upper);
-  const bounds = [...temps, ...[lower, upper].filter((v) => v !== null)];
+  // The band per step: the row's own (Away's return), else the comfort attribute's.
+  for (const s of steps) {
+    if (s.lower === null || s.upper === null) {
+      s.lower = lower;
+      s.upper = upper;
+    }
+  }
+  const bandEdges = steps.flatMap((s) => [s.lower, s.upper]).filter((v) => v !== null);
+  const bounds = [...temps, ...bandEdges];
   const [tLo, tHi] = bounds.length ? niceRange(Math.min(...bounds), Math.max(...bounds), 0.3, 2) : [19, 22];
   const yT = (v) => r1(plot.y1 - ((v - tLo) / (tHi - tLo)) * (plot.y1 - plot.y0));
   const offsets = steps.map((s) => s.offset).filter((v) => v !== null);
@@ -369,10 +379,24 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
   const lastStep = steps[steps.length - 1];
   if (indoorPath && lastStep.tin !== null) indoorPath += ` L${x(lastStep.end)} ${yT(lastStep.tin)}`;
 
-  const band =
-    lower !== null && upper !== null && upper > lower
-      ? { y: yT(upper), h: r1(yT(lower) - yT(upper)), lower, upper }
-      : null;
+  // Comfort band rectangles, one per run of steps with the same band.
+  const bands = [];
+  for (const s of steps) {
+    if (s.lower === null || s.upper === null || !(s.upper > s.lower)) continue;
+    const last = bands[bands.length - 1];
+    if (last && last.lower === s.lower && last.upper === s.upper && last.end === s.start) {
+      last.end = s.end;
+    } else {
+      bands.push({ start: s.start, end: s.end, lower: s.lower, upper: s.upper });
+    }
+  }
+  for (const b of bands) {
+    b.x = x(b.start);
+    b.w = r1(x(b.end) - x(b.start));
+    b.y = yT(b.upper);
+    b.h = r1(yT(b.lower) - yT(b.upper));
+  }
+  const band = bands[0] || null;
 
   const priceBands = priceSlots(levels, start, end).map((slot) => ({
     x: x(slot.start),
@@ -407,6 +431,7 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
     offsetPath,
     indoorPath,
     band,
+    bands,
     zeroY: yO(0),
     priceBands,
     nowX: x(now),
@@ -470,9 +495,10 @@ export function contributions(planned, optimiserOffset) {
   } else {
     const components = attrs.components || {};
     const reasons = attrs.reasons || {};
-    items = COMPONENTS.map((c) => ({
+    const keys = "away" in components ? [...COMPONENTS, "away"] : COMPONENTS;
+    items = keys.map((c) => ({
       key: c,
-      label: { indoor: "Indoor", price: "Price", weather: "Forecast" }[c],
+      label: { indoor: "Indoor", price: "Price", weather: "Forecast", away: "Away" }[c],
       value: toNumber(components[c]),
       reason: reasons[c] || "",
     }));
@@ -503,6 +529,8 @@ export function climateAlerts(hass, ids, system) {
       key: sysKey("house_model", system),
     });
   }
+  const away = awayAlert(hass, ids, sysKey("mode", system), `heating mode ${system.toUpperCase()}`);
+  if (away) alerts.push(away);
   const feed = st(sysKey("rmu_feed", system));
   const rmu = st(sysKey("rmu_lease_state", system));
   if (feed?.state === "on" && !["active", "grace"].includes(rmu?.state)) {
@@ -513,6 +541,53 @@ export function climateAlerts(hass, ids, system) {
     });
   }
   return alerts;
+}
+
+// --------------------------------------------------------------------------
+// Away
+// --------------------------------------------------------------------------
+
+/** The Away switch for the cards: null without the entity, else {on,
+ * entity, until (ms or null), untilText, setback, hotWater, targets}. */
+export function awayModel(hass, ids, now) {
+  const sw = stateOf(hass, ids, "away");
+  if (!sw) return null;
+  const a = sw.attributes || {};
+  const on = sw.state === "on";
+  const untilState = stateOf(hass, ids, "away_until");
+  const until = on ? parseTime(a.until ?? (isMissing(untilState) ? null : untilState.state)) : null;
+  return {
+    on,
+    entity: sw.entity_id || ids.away,
+    available: !isMissing(sw),
+    until,
+    countdown: until !== null ? countdown(until, now) : null,
+    setback: toNumber(a.setback),
+    hotWater: a.hot_water || null,
+    targets: a.targets && typeof a.targets === "object" ? a.targets : {},
+  };
+}
+
+/** A warning when Away is on but the mode select ``modeKey`` does not let
+ * anything be written: {level, text, key}, or null. */
+export function awayAlert(hass, ids, modeKey, label) {
+  const sw = stateOf(hass, ids, "away");
+  if (sw?.state !== "on") return null;
+  const mode = stateOf(hass, ids, modeKey);
+  if (!mode || mode.state === "active") return null;
+  return {
+    level: "warning",
+    text: `Away is on but ${label} is ${mode.state}: nothing is written to the pump`,
+    key: modeKey,
+  };
+}
+
+/** Alerts for the hot water card. */
+export function hotwaterAlerts(hass, ids) {
+  const sw = stateOf(hass, ids, "away");
+  if (sw?.attributes?.hot_water === "normal") return [];
+  const away = awayAlert(hass, ids, "hw_mode", "hot water mode");
+  return away ? [away] : [];
 }
 
 // --------------------------------------------------------------------------

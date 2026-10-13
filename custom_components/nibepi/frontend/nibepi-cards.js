@@ -10,6 +10,7 @@ const {
   HW_LEASES,
   LEASES,
   PRICE_COLORS,
+  awayModel,
   climateAlerts,
   contributions,
   countdown,
@@ -18,6 +19,7 @@ const {
   formatClock,
   formatNumber,
   formatSigned,
+  hotwaterAlerts,
   hotwaterWindows,
   isMissing,
   leaseColor,
@@ -82,6 +84,8 @@ const STYLES = `
   .chip.on { background: var(--primary-color); border-color: var(--primary-color);
     color: var(--text-primary-color, #fff); cursor: default; }
   .chip:disabled { opacity: 0.5; cursor: default; }
+  .chip.toggle.on { cursor: pointer; }
+  .chip ha-icon { --mdc-icon-size: 16px; vertical-align: -3px; margin-right: 4px; }
   .alerts { display: flex; flex-direction: column; gap: 6px; }
   .alert { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 8px;
     font-size: 13px; cursor: pointer; color: var(--primary-text-color); }
@@ -289,10 +293,34 @@ class NibePiCard extends HTMLElement {
       .join("")}</div>`;
   }
 
+  // The Away toggle chip with its return time; "" without the switch.
+  awayChip(now) {
+    const away = awayModel(this._hass, this._ids, now);
+    if (!away) return "";
+    const until = away.on && away.until !== null ? ` until ${esc(this.fmtTime(away.until))}` : "";
+    const title = away.on ? "Away is on: tap to end it" : "Tap to start Away (no end time)";
+    return `<div class="chips"><button class="chip toggle ${away.on ? "on" : ""}" ${away.available ? "" : "disabled"} data-toggle="away" title="${esc(
+      title,
+    )}"><ha-icon icon="${away.on ? "mdi:home-export-outline" : "mdi:home"}"></ha-icon>${away.on ? `Away${until}` : "Home"}</button></div>`;
+  }
+
+  alertList(alerts) {
+    return alerts
+      .map(
+        (a) =>
+          `<div class="alert ${a.level}" data-more="${esc(a.key)}" role="button" tabindex="0"><ha-icon icon="${
+            a.level === "error" ? "mdi:alert-circle" : "mdi:alert"
+          }"></ha-icon><span>${esc(a.text)}</span></div>`,
+      )
+      .join("");
+  }
+
   _onClick(ev) {
-    const target = ev.composedPath().find((el) => el.dataset && (el.dataset.more || el.dataset.select));
+    const target = ev.composedPath().find((el) => el.dataset && (el.dataset.more || el.dataset.select || el.dataset.toggle));
     if (!target) return;
-    if (target.dataset.select) {
+    if (target.dataset.toggle) {
+      this._toggle(target.dataset.toggle);
+    } else if (target.dataset.select) {
       this._select(target.dataset.select, target.dataset.option);
     } else {
       const entityId = this._ids?.[target.dataset.more];
@@ -300,6 +328,13 @@ class NibePiCard extends HTMLElement {
         this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true }));
       }
     }
+  }
+
+  // A switch toggle (reversible, so no confirmation).
+  _toggle(key) {
+    const s = this.st(key);
+    if (!s || isMissing(s)) return;
+    this._hass.callService("switch", s.state === "on" ? "turn_off" : "turn_on", { entity_id: s.entity_id || this._ids[key] });
   }
 
   _select(key, option) {
@@ -377,6 +412,8 @@ class NibePiClimateCard extends NibePiCard {
       `indoor_${s}`,
       "outdoor",
       "gateway_online",
+      "away",
+      "away_until",
       ...["planned_offset", "pump_offset", "optimiser_plan", "mode", "strategy", "lease_state", "house_model", "rmu_feed", "rmu_lease_state", "indoor_offset"].map(
         (k) => sysKey(k, s),
       ),
@@ -389,7 +426,7 @@ class NibePiClimateCard extends NibePiCard {
     return 6;
   }
 
-  renderBody() {
+  renderBody(now) {
     const s = this.system;
     const planned = this.st(this.sk("planned_offset"));
     const plan = this.st(this.sk("optimiser_plan"));
@@ -397,8 +434,20 @@ class NibePiClimateCard extends NibePiCard {
     const indoor = this.st(`indoor_${s}`);
     const outdoor = this.st("outdoor");
     const pa = planned?.attributes || {};
-    const target =
-      toNumber(plan?.attributes?.comfort?.target) ?? toNumber(this.st(this.sk("indoor_offset"))?.attributes?.setpoint);
+    const away = awayModel(this._hass, this._ids, now);
+    const comfort = plan?.attributes?.comfort || {};
+    const awayTarget = away?.on ? toNumber(away.targets?.[s]) : null;
+    // While away: the lowered target (the optimiser's band, else the switch's).
+    const target = away?.on
+      ? (comfort.away ? toNumber(comfort.target) : null) ?? awayTarget ?? toNumber(this.st(this.sk("indoor_offset"))?.attributes?.setpoint)
+      : toNumber(comfort.target) ?? toNumber(this.st(this.sk("indoor_offset"))?.attributes?.setpoint);
+    const normalTarget = toNumber(comfort.normal_target);
+    const targetText =
+      target === null
+        ? "–"
+        : `${formatNumber(target)} °C${
+            away?.on ? ` <span class="muted small">away${normalTarget !== null && normalTarget !== target ? ` · normal ${formatNumber(normalTarget)}` : ""}</span>` : ""
+          }`;
     const source = pa.source || "rules";
     const sourceText = { rules: "rules", optimiser: "optimiser", comfort_floor: "comfort floor" }[source] || source;
 
@@ -407,8 +456,8 @@ class NibePiClimateCard extends NibePiCard {
       <div class="grid" style="flex:1; min-width: 180px">
         ${
           this._ids?.[this.sk("optimiser_plan")]
-            ? this.stat(this.sk("optimiser_plan"), "Target", target !== null ? `${formatNumber(target)} °C` : "–")
-            : `<div class="stat"><span class="label">Target</span><span class="value">${target !== null ? `${formatNumber(target)} °C` : "–"}</span></div>`
+            ? this.stat(this.sk("optimiser_plan"), "Target", targetText)
+            : `<div class="stat"><span class="label">Target</span><span class="value">${targetText}</span></div>`
         }
         ${this.stat("outdoor", "Outdoor", outdoor ? `${formatNumber(num(outdoor))} °C` : "–")}
       </div>
@@ -429,7 +478,11 @@ class NibePiClimateCard extends NibePiCard {
       .map((c) => {
         const width = Math.abs(c.frac) * 50;
         const left = c.frac < 0 ? 50 - width : 50;
-        const key = ["indoor", "price", "weather"].includes(c.key) ? this.sk(`${c.key}_offset`) : this.sk("planned_offset");
+        const key = ["indoor", "price", "weather"].includes(c.key)
+          ? this.sk(`${c.key}_offset`)
+          : c.key === "away" && this._ids?.away
+            ? "away"
+            : this.sk("planned_offset");
         return `<div class="bar" data-more="${esc(key)}" title="${esc(c.reason || c.label)}" role="button" tabindex="0">
           <span>${esc(c.label)}</span>
           <span class="track"><span class="mid"></span><span class="fill ${c.frac < 0 ? "neg" : "pos"}" style="left:${left}%;width:${width}%"></span></span>
@@ -437,14 +490,7 @@ class NibePiClimateCard extends NibePiCard {
       })
       .join("");
 
-    const alerts = climateAlerts(this._hass, this._ids, s)
-      .map(
-        (a) =>
-          `<div class="alert ${a.level}" data-more="${esc(a.key)}" role="button" tabindex="0"><ha-icon icon="${
-            a.level === "error" ? "mdi:alert-circle" : "mdi:alert"
-          }"></ha-icon><span>${esc(a.text)}</span></div>`,
-      )
-      .join("");
+    const alerts = this.alertList(climateAlerts(this._hass, this._ids, s));
 
     return `<div class="content">
       ${alerts ? `<div class="alerts">${alerts}</div>` : ""}
@@ -452,6 +498,7 @@ class NibePiClimateCard extends NibePiCard {
       <div class="divider"></div>
       ${offsets}${reason}
       ${planned ? `<div class="bars">${bars}</div>` : ""}
+      ${this.awayChip(now)}
       ${this.chips(this.sk("strategy"), "Strategy")}
       ${this.chips(this.sk("mode"), "Mode")}
     </div>`;
@@ -477,7 +524,7 @@ class NibePiPlanCard extends NibePiCard {
 
   watched() {
     const ids = this._ids || {};
-    return [ids[this.sk("optimiser_plan")], ids.price_level].filter(Boolean);
+    return [ids[this.sk("optimiser_plan")], ids.price_level, ids.away].filter(Boolean);
   }
 
   connectedCallback() {
@@ -533,13 +580,14 @@ class NibePiPlanCard extends NibePiCard {
           )}</title></rect>`;
         })
         .join("")}
-      ${
-        chart.band
-          ? `<rect x="${p.x0}" y="${chart.band.y}" width="${p.x1 - p.x0}" height="${chart.band.h}" fill="var(--primary-color)" fill-opacity="0.10" stroke="var(--primary-color)" stroke-opacity="0.35" stroke-dasharray="3 3"><title>Comfort band ${formatNumber(
-              chart.band.lower,
-            )}–${formatNumber(chart.band.upper)} °C</title></rect>`
-          : ""
-      }
+      ${chart.bands
+        .map(
+          (b) =>
+            `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="var(--primary-color)" fill-opacity="0.10" stroke="var(--primary-color)" stroke-opacity="0.35" stroke-dasharray="3 3"><title>Comfort band ${formatNumber(
+              b.lower,
+            )}–${formatNumber(b.upper)} °C</title></rect>`,
+        )
+        .join("")}
       <line x1="${p.x0}" x2="${p.x1}" y1="${chart.zeroY}" y2="${chart.zeroY}" stroke="var(--divider-color)" />
       ${chart.tempTicks.map((t) => `<text x="${p.x0 - 4}" y="${t.y + 3}" text-anchor="end">${esc(t.label)}</text>`).join("")}
       ${chart.offsetTicks.map((t) => `<text x="${p.x1 + 4}" y="${t.y + 3}">${esc(t.label)}</text>`).join("")}
@@ -610,7 +658,7 @@ class NibePiHotWaterCard extends NibePiCard {
 
   watched() {
     const ids = this._ids || {};
-    return ["bt7_hw_top", "bt6_hw_load", "hw_mode", "hw_planned_action", "hw_draw_profile", "hw_optimiser_plan", ...HW_LEASES.map((l) => l.key)]
+    return ["bt7_hw_top", "bt6_hw_load", "hw_mode", "hw_planned_action", "hw_draw_profile", "hw_optimiser_plan", "away", "away_until", ...HW_LEASES.map((l) => l.key)]
       .map((k) => ids[k])
       .filter(Boolean);
   }
@@ -681,14 +729,20 @@ class NibePiHotWaterCard extends NibePiCard {
       )}"></i>${esc(l.register)}</span>`;
     }).join("");
 
+    const alerts = this.alertList(hotwaterAlerts(this._hass, this._ids));
+    const awayNote = aa.reasons?.away ? `<div class="reason">${esc(aa.reasons.away)}</div>` : "";
+
     return `<div class="content">
+      ${alerts ? `<div class="alerts">${alerts}</div>` : ""}
       ${temps}
+      ${awayNote}
       ${reasonList}
       <div class="grid">
         ${this.stat("hw_draw_profile", "Next draw", drawText)}
         ${this.stat(usingOpt ? "hw_optimiser_plan" : "hw_planned_action", "Next charge", nextCharge)}
       </div>
       ${strip}
+      ${this.awayChip(now)}
       ${this.chips("hw_mode", "Mode")}
       ${leases ? `<div class="dots"><span class="label" style="cursor:default">Leases</span>${leases}</div>` : ""}
     </div>`;
@@ -981,9 +1035,9 @@ class NibePiCardEditor extends HTMLElement {
 // --------------------------------------------------------------------------
 
 const CARDS = [
-  [NibePiClimateCard, "NibePi climate", "Indoor vs target, outdoor, the planned and pump curve offset with its parts, strategy and mode, and alerts for one climate system."],
+  [NibePiClimateCard, "NibePi climate", "Indoor vs target, outdoor, the planned and pump curve offset with its parts, the Away toggle, strategy and mode, and alerts for one climate system."],
   [NibePiPlanCard, "NibePi optimiser plan", "Chart of the optimiser's planned offset and predicted indoor temperature with the comfort band and price levels, plus the expected savings."],
-  [NibePiHotWaterCard, "NibePi hot water", "BT7/BT6, the planned action and its reasons, next draw and charge, the next 24 h of planned charges, hot water mode and leases."],
+  [NibePiHotWaterCard, "NibePi hot water", "BT7/BT6, the planned action and its reasons, next draw and charge, the next 24 h of planned charges, the Away toggle, hot water mode and leases."],
   [NibePiGatewayCard, "NibePi gateway", "Gateway status, last data, raw writes, bus errors, every lease with its countdown, and the RMU40 feeds."],
   [NibePiSavingsCard, "NibePi cost and savings", "Heat pump cost and expected savings today, against the plan and yesterday, with 7-day sparklines."],
 ];

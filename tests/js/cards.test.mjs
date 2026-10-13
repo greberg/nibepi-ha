@@ -234,3 +234,36 @@ test("editor schema per card", async () => {
   assert.deepEqual(gw.schema.map((s) => s.name), ["entry_id", "title", "status_url"]);
   assert.deepEqual(customElements.get("nibepi-plan-card").getStubConfig(makeHass()), { system: "s1" });
 });
+
+test("away chip, lowered target and the shadow-mode alert", () => {
+  const hass = makeHass();
+  const ids = hass.states["binary_sensor.nibe_gateway"].attributes.entities;
+  ids.away = "switch.away";
+  ids.away_until = "sensor.away_until";
+  hass.states["switch.away"] = {
+    entity_id: "switch.away",
+    state: "on",
+    attributes: { until: iso(now + 30 * H), setback: 3, hot_water: "economy", targets: { s1: 18 } },
+  };
+  hass.states["sensor.away_until"] = { state: iso(now + 30 * H), attributes: {} };
+  hass.states["sensor.plan_s1"].attributes.comfort = { target: 18, lower: 17.6, upper: 22, away: true, normal_target: 21 };
+  const { card, html } = render("nibepi-climate-card", { system: "s1" }, hass);
+  assert.match(html, /data-toggle="away"/);
+  assert.match(html, /Away until/);
+  assert.match(html, /18\.0 °C <span class="muted small">away · normal 21\.0/);
+  assert.match(html, /Away is on but heating mode S1 is shadow/);
+  card._onClick({ composedPath: () => [{ dataset: { toggle: "away" } }] });
+  assert.deepEqual(hass.calls.at(-1), ["switch", "turn_off", { entity_id: "switch.away" }]);
+
+  hass.states["select.hw_mode"].state = "shadow";
+  const hw = render("nibepi-hotwater-card", {}, hass).html;
+  assert.match(hw, /data-toggle="away"/);
+  assert.match(hw, /hot water mode is shadow/);
+
+  hass.states["switch.away"] = { entity_id: "switch.away", state: "off", attributes: {} };
+  const home = render("nibepi-climate-card", { system: "s1" }, hass);
+  assert.match(home.html, />Home<\/button>/);
+  assert.doesNotMatch(home.html, /Away is on/);
+  home.card._onClick({ composedPath: () => [{ dataset: { toggle: "away" } }] });
+  assert.deepEqual(hass.calls.at(-1), ["switch", "turn_on", { entity_id: "switch.away" }]);
+});
