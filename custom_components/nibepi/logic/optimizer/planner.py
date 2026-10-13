@@ -10,13 +10,20 @@ Cost of a slot (currency, same unit as the prices, e.g. SEK):
   emitter model at the supply the curve gives for that offset;
 - comfort, per hour, on the indoor temperature at the end of the slot:
   ``tracking × (T - target)²`` everywhere (keeps the plan near the target
-  when prices are flat), plus ``band_weight × x² + band_linear × x`` for
+  when prices are flat; above the target ``tracking_above`` when set, which
+  Away mode sets to 0), plus ``band_weight × x² + band_linear × x`` for
   ``x`` degrees outside ``[target - below, target + above]`` (much heavier
   below than above: 0.1 K under the band for an hour costs ~0.7, which is
   more than shifting can earn), plus ``floor_weight × x`` below the hard floor, which
   dwarfs any price so the floor wins;
 - switching: ``change_cost + step_cost × |Δoffset|`` whenever the offset
   changes (no flapping, and the pump's own regulation gets time to act).
+
+The comfort band may change over the horizon (Away mode with a known
+return: the lowered band until the return, the normal one from then on).
+``plan_heating(comforts=...)`` takes one ``ComfortSettings`` per slot,
+applied to the temperature at the end of that slot; ``comfort_schedule``
+builds them. The terminal value then uses the last slot's target.
 
 Terminal value: heat left in the house at the end is worth what it would
 cost to make later, ``(target - T_end) × C × mean price / COP``, so the
@@ -62,8 +69,8 @@ cost-to-go; the forward pass again replays the policy from the real
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from typing import List, Optional, Sequence, Tuple
 
 from .energy import EnergyModel
@@ -83,6 +90,8 @@ class ComfortSettings:
     above: float = 1.0  # ... and up to target + above
     hard_floor_below: float = 1.5  # floor = target - this
     tracking_weight: float = 1.0  # per K² h
+    # Above the target, when set (Away: 0, warmer only costs energy).
+    tracking_above: Optional[float] = None
     band_weight_below: float = 20.0  # per K² h
     band_weight_above: float = 2.0  # per K² h
     band_linear_below: float = 5.0  # per K h under the band
@@ -104,7 +113,7 @@ class ComfortSettings:
 
     def penalty_per_hour(self, t: float) -> float:
         dev = t - self.target
-        pen = self.tracking_weight * dev * dev
+        pen = (self.tracking_above if dev > 0 and self.tracking_above is not None else self.tracking_weight) * dev * dev
         if t < self.lower:
             x = self.lower - t
             pen += self.band_weight_below * x * x + self.band_linear_below * x
@@ -114,6 +123,53 @@ class ComfortSettings:
         if t < self.floor:
             pen += self.floor_weight * (self.floor - t)
         return pen
+
+
+def comfort_at(
+    now: ComfortSettings,
+    after: Optional[ComfortSettings],
+    change_at: Optional[datetime],
+    when: datetime,
+    ramp_h: float = 0.0,
+) -> ComfortSettings:
+    """The comfort band in force at ``when``: ``now`` until ``change_at -
+    ramp_h``, then linearly towards ``after``, which holds from ``change_at``."""
+    if after is None or change_at is None:
+        return now
+    if when >= change_at:
+        return after
+    if ramp_h <= 0:
+        return now
+    ramp_start = change_at - timedelta(hours=ramp_h)
+    if when <= ramp_start:
+        return now
+    f = (when - ramp_start).total_seconds() / (ramp_h * 3600.0)
+
+    def mix(a: float, b: float) -> float:
+        return a + (b - a) * f
+
+    return replace(
+        now,
+        target=mix(now.target, after.target),
+        below=mix(now.below, after.below),
+        above=mix(now.above, after.above),
+        hard_floor_below=mix(now.hard_floor_below, after.hard_floor_below),
+        tracking_above=mix(
+            now.tracking_above if now.tracking_above is not None else now.tracking_weight,
+            after.tracking_above if after.tracking_above is not None else after.tracking_weight,
+        ),
+    )
+
+
+def comfort_schedule(
+    slots: Sequence["HorizonSlot"],
+    now: ComfortSettings,
+    after: Optional[ComfortSettings],
+    change_at: Optional[datetime],
+    ramp_h: float = 0.0,
+) -> List[ComfortSettings]:
+    """One comfort band per slot, at the slot's end (where it is penalised)."""
+    return [comfort_at(now, after, change_at, slot.end, ramp_h) for slot in slots]
 
 
 @dataclass(frozen=True)
@@ -206,13 +262,23 @@ class Plan:
 class _Ctx:
     """Per-horizon constants shared by the backward and forward passes."""
 
-    def __init__(self, slots, house, curve, energy, comfort, settings):
+    def __init__(self, slots, house, curve, energy, comfort, settings, comforts=None):
         self.slots = slots
         self.house = house
         self.curve = curve
         self.energy = energy
         self.comfort = comfort
         self.settings = settings
+        if comforts is None:
+            self.comforts = [comfort] * len(slots)
+        else:
+            self.comforts = list(comforts)
+            if len(self.comforts) != len(slots):
+                raise ValueError("one comfort band per slot expected")
+        # The band at the end of the horizon values the heat left over.
+        self.end_comfort = self.comforts[-1] if self.comforts else comfort
+        self.grid_low = min([c.floor for c in self.comforts] or [comfort.floor])
+        self.grid_high = max([c.upper for c in self.comforts] or [comfort.upper])
         self.lagged = house.tau_f >= LAG_PLANNER_MIN_H
         prices = [s.price for s in slots]
         hours = [s.hours for s in slots]
@@ -228,7 +294,7 @@ class _Ctx:
         self.slab_capacity = energy.emitter_kw_per_k * house.drain_h if self.lagged else 0.0
         self.slab_value = self.slab_capacity * self.mean_price / self.cop_ref
         last_out = slots[-1].t_out if slots else mean_out
-        self.slab_ref = house.steady_supply(comfort.target, last_out)
+        self.slab_ref = house.steady_supply(self.end_comfort.target, last_out)
         self._steps: dict = {}
 
     def lag(self, hours: float) -> LagStep:
@@ -241,7 +307,7 @@ class _Ctx:
     def terminal(self, t: float, t_f: Optional[float] = None) -> float:
         if not self.settings.terminal_value:
             return 0.0
-        value = (self.comfort.target - t) * self.heat_value
+        value = (self.end_comfort.target - t) * self.heat_value
         if self.lagged and t_f is not None:
             value += (self.slab_ref - t_f) * self.slab_value
         return value
@@ -274,8 +340,7 @@ def _simulate(
     energy_cost = comfort_cost = switch_cost = kwh = below = above = 0.0
     lo = hi = t_in0
     changes = 0
-    comfort = ctx.comfort
-    for slot, offset in zip(ctx.slots, offsets):
+    for slot, offset, comfort in zip(ctx.slots, offsets, ctx.comforts):
         t_end, supply, cop, heat, el, f_end = ctx.transition(slot, offset, t, t_f)
         e_cost = el * slot.price
         c_cost = comfort.penalty_per_hour(t_end) * slot.hours
@@ -317,13 +382,15 @@ def simulate(
     settings: PlannerSettings = PlannerSettings(),
     prev_offset: Optional[int] = None,
     t_f0: Optional[float] = None,
+    comforts: Optional[Sequence[ComfortSettings]] = None,
 ) -> Trajectory:
     """Run a given offset schedule through the model (baseline, backtests).
 
     A lagged house starts its slab at ``t_f0`` (default: settled at the
     first slot's supply for ``prev_offset``, or the first offset).
+    ``comforts``: one band per slot (default ``comfort`` throughout).
     """
-    ctx = _Ctx(list(slots), house, curve, energy, comfort, settings)
+    ctx = _Ctx(list(slots), house, curve, energy, comfort, settings, comforts)
     if ctx.lagged and t_f0 is None and ctx.slots:
         first = prev_offset if prev_offset is not None else (offsets[0] if offsets else settings.base_offset)
         t_f0 = steady_slab(house, curve, ctx.slots[0].t_out, first)
@@ -350,6 +417,8 @@ def plan_heating(
     current_offset: Optional[int] = None,
     clock=None,
     t_f0: Optional[float] = None,
+    comforts: Optional[Sequence[ComfortSettings]] = None,
+    baseline_offsets: Optional[Sequence[int]] = None,
 ) -> Plan:
     """Cheapest offset schedule for ``slots`` from indoor ``t_in0``.
 
@@ -359,28 +428,39 @@ def plan_heating(
     temperature now, ``t_f0`` (``optrun.slab_now`` estimates it from the
     history); without it the slab is taken as settled at the current
     offset's supply.
+
+    ``comforts`` gives one comfort band per slot (Away mode's return; see
+    ``comfort_schedule``); ``comfort`` then only sets the reference
+    efficiency. ``baseline_offsets`` replaces the base offset held all
+    horizon long as the baseline (one per slot).
     """
     import time as _time
 
     tick = clock or _time.perf_counter
     t0 = tick()
     slots = list(slots)
-    ctx = _Ctx(slots, house, curve, energy, comfort, settings)
+    ctx = _Ctx(slots, house, curve, energy, comfort, settings, comforts)
+    if baseline_offsets is not None:
+        base_line = [int(o) for o in baseline_offsets]
+        if len(base_line) != len(slots):
+            raise ValueError("one baseline offset per slot expected")
+    else:
+        base_line = [settings.base_offset] * len(slots)
     if ctx.lagged:
         if t_f0 is None and slots:
             held = current_offset if current_offset is not None else settings.base_offset
             t_f0 = steady_slab(house, curve, slots[0].t_out, held)
-        return _plan_lagged(ctx, t_in0, t_f0, current_offset, tick, t0)
+        return _plan_lagged(ctx, t_in0, t_f0, current_offset, tick, t0, base_line)
     actions = settings.offsets()
     n_act = len(actions)
     base = settings.base_offset
-    baseline = _simulate(ctx, [base] * len(slots), t_in0, current_offset)
+    baseline = _simulate(ctx, base_line, t_in0, current_offset)
     if not slots:
         return Plan(baseline, baseline, [], settings, 0.0, ["no price slots"])
 
     step = settings.grid_step
-    g_lo = min(comfort.floor - 1.0, t_in0 - 0.5)
-    g_hi = max(comfort.upper + 1.5, t_in0 + 0.5)
+    g_lo = min(ctx.grid_low - 1.0, t_in0 - 0.5)
+    g_hi = max(ctx.grid_high + 1.5, t_in0 + 0.5)
     n_grid = int(math.ceil((g_hi - g_lo) / step)) + 1
     grid = [g_lo + i * step for i in range(n_grid)]
     inv = 1.0 / step
@@ -388,11 +468,6 @@ def plan_heating(
 
     sw = [[settings.switch_cost(p, a) for a in actions] for p in actions]
 
-    # Comfort constants hoisted for the inner loop.
-    tgt, tw = comfort.target, comfort.tracking_weight
-    lower, upper, floor = comfort.lower, comfort.upper, comfort.floor
-    wb, wa, fw = comfort.band_weight_below, comfort.band_weight_above, comfort.floor_weight
-    lb, la = comfort.band_linear_below, comfort.band_linear_above
     a, b, c, d = house.a, house.b, house.c, house.d
     ke = energy.emitter_kw_per_k
 
@@ -404,6 +479,13 @@ def plan_heating(
         slot = slots[k]
         h = slot.hours
         nxt = values[k + 1]
+        # Comfort constants of this slot, hoisted for the inner loop.
+        cs = ctx.comforts[k]
+        tgt, tw = cs.target, cs.tracking_weight
+        twa = cs.tracking_above if cs.tracking_above is not None else tw
+        lower, upper, floor = cs.lower, cs.upper, cs.floor
+        wb, wa, fw = cs.band_weight_below, cs.band_weight_above, cs.floor_weight
+        lb, la = cs.band_linear_below, cs.band_linear_above
         free = a * slot.t_out + c * slot.solar + d
         eq_off = free / a
         al_off = math.exp(-a * h)
@@ -426,7 +508,7 @@ def plan_heating(
                     tn = eq_off + (t - eq_off) * al_off
                     cost = 0.0
                 dev = tn - tgt
-                pen = tw * dev * dev
+                pen = (twa if dev > 0.0 else tw) * dev * dev
                 if tn < lower:
                     x = lower - tn
                     pen += wb * x * x + lb * x
@@ -472,7 +554,7 @@ def plan_heating(
         for ai in order:
             off = actions[ai]
             tn, supply, cop, heat, el, _ = ctx.transition(slot, off, t)
-            v = (el * slot.price + comfort.penalty_per_hour(tn) * slot.hours
+            v = (el * slot.price + ctx.comforts[k].penalty_per_hour(tn) * slot.hours
                  + settings.switch_cost(prev, off) + interp(values[k + 1][ai], tn))
             if best_v is None or v < best_v - 1e-9:
                 best_v, best_i, best_t = v, ai, tn
@@ -504,16 +586,17 @@ def _distance_min(q_rows: List[List[float]], change: float, step: float) -> List
     return [[q if q < m + change else m + change for q, m in zip(q_rows[p], best[p])] for p in range(n)]
 
 
-def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[int], tick, t0) -> Plan:
+def _plan_lagged(
+    ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[int], tick, t0, base_line: List[int]
+) -> Plan:
     """The DP over (indoor, slab) for a lagged house; see the module docstring."""
     slots = ctx.slots
     settings = ctx.settings
-    comfort = ctx.comfort
     house, curve, energy = ctx.house, ctx.curve, ctx.energy
     actions = settings.offsets()
     n_act = len(actions)
     base = settings.base_offset
-    baseline = _simulate(ctx, [base] * len(slots), t_in0, current_offset, t_f0)
+    baseline = _simulate(ctx, base_line, t_in0, current_offset, t_f0)
     if not slots:
         return Plan(baseline, baseline, [], settings, 0.0, ["no price slots"])
 
@@ -523,8 +606,8 @@ def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[
 
     # Indoor grid (shared) and per-slot constants.
     step_in = settings.lag_grid_step
-    g_lo = min(comfort.floor - 1.0, t_in0 - 0.5)
-    g_hi = max(comfort.upper + 1.5, t_in0 + 0.5)
+    g_lo = min(ctx.grid_low - 1.0, t_in0 - 0.5)
+    g_hi = max(ctx.grid_high + 1.5, t_in0 + 0.5)
     n_in = int(math.ceil((g_hi - g_lo) / step_in)) + 1
     grid_in = [g_lo + i * step_in for i in range(n_in)]
     inv_in = 1.0 / step_in
@@ -533,7 +616,8 @@ def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[
     ke = energy.emitter_kw_per_k
     a_, c_, d_ = house.a, house.c, house.d
     td = house.drain_h
-    per_slot = []  # (hours, price, free, eq_coast, charge matrix, coast matrix, [(supply, eq_in, unit)])
+    # (hours, free, eq_coast, charge matrix, coast matrix, [(supply, eq_in, unit)], comfort constants)
+    per_slot = []
     sup_lo: List[float] = []
     sup_hi: List[float] = []
     for slot in slots:
@@ -544,7 +628,12 @@ def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[
             supply = curve.supply(slot.t_out, off)
             unit = slot.price * ke / energy.cop(supply, slot.t_brine)
             acts.append((supply, (free + lag.b * supply) / lag.k, unit))
-        per_slot.append((slot.hours, free, free / a_, lag.charge, lag.drain, acts))
+        cs = ctx.comforts[len(per_slot)]
+        per_slot.append((slot.hours, free, free / a_, lag.charge, lag.drain, acts,
+                         (cs.target, cs.tracking_weight,
+                          cs.tracking_above if cs.tracking_above is not None else cs.tracking_weight,
+                          cs.lower, cs.upper, cs.floor, cs.band_weight_below,
+                          cs.band_weight_above, cs.floor_weight, cs.band_linear_below, cs.band_linear_above)))
         sup_lo.append(min(x[0] for x in acts))
         sup_hi.append(max(x[0] for x in acts))
 
@@ -562,10 +651,6 @@ def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[
         n_f = int(math.ceil((f_hi - f_lo) / step_f)) + 1
         f_grids.append((f_lo, n_f))
 
-    tgt, tw = comfort.target, comfort.tracking_weight
-    lower, upper, floor = comfort.lower, comfort.upper, comfort.floor
-    wb, wa, fw = comfort.band_weight_below, comfort.band_weight_above, comfort.floor_weight
-    lb, la = comfort.band_linear_below, comfort.band_linear_above
     inv_f = 1.0 / step_f
 
     # Terminal values on the end grid.
@@ -578,7 +663,7 @@ def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[
         """(cost, T_in, T_f) at the end of block ``k`` with action ``ai``."""
         cost = 0.0
         for i in blocks[k]:
-            h, free, eqd, cm, dm, acts = per_slot[i]
+            h, free, eqd, cm, dm, acts, (tgt, tw, twa, lower, upper, floor, wb, wa, fw, lb, la) = per_slot[i]
             sup, eqi, unit = acts[ai]
             di = ti - eqi
             df = tf - sup
@@ -598,7 +683,7 @@ def _plan_lagged(ctx: _Ctx, t_in0: float, t_f0: float, current_offset: Optional[
                 if heat > 0.0:
                     cost += unit * heat
             dev = ni - tgt
-            pen = tw * dev * dev
+            pen = (twa if dev > 0.0 else tw) * dev * dev
             if ni < lower:
                 x = lower - ni
                 pen += wb * x * x + lb * x

@@ -29,12 +29,18 @@ pulled towards BT3 when the fit uses it (``slab_estimate``); the floor
 loop's flow is calibrated from the heat meter and BT2 - BT3
 (``fit_loop``); ``plan_tank`` plans the hot water charges
 against the VV learning profile's expected draws.
+
+Away mode with a known return (``HeatingInputs.comfort_after`` from
+``comfort_change``): the planner gets one comfort band per slot, the
+lowered one now and the normal one from the return, so it heats the house
+back in time; the baseline holds the base offset of each band, and the
+offsets may go as far above the lowered base as the normal base needs.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, tzinfo
+from datetime import datetime, timedelta, tzinfo
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .inputs import ForecastPoint, PriceSlot
@@ -59,6 +65,7 @@ from .optimizer.planner import (
     ComfortSettings,
     Plan,
     PlannerSettings,
+    comfort_schedule,
     neutral_offset,
     plan_heating,
 )
@@ -593,6 +600,11 @@ class HeatingInputs:
     currency: str = "SEK"
     # The log's recent bins (a day), for the slab temperature of a lagged house.
     history: Optional[Mapping[int, Mapping[str, float]]] = None
+    # Away mode's return: ``comfort`` (lowered) until ``comfort_change -
+    # comfort_ramp_h``, ramping to ``comfort_after`` (normal) at the change.
+    comfort_after: Optional[ComfortSettings] = None
+    comfort_change: Optional[datetime] = None
+    comfort_ramp_h: float = 0.0
 
 
 @dataclass
@@ -607,6 +619,8 @@ class HeatingResult:
     blocks: List[Block] = field(default_factory=list)
     summary: str = ""
     problem: Optional[str] = None
+    # The comfort band of each plan step (all the same unless Away returns).
+    comforts: List[ComfortSettings] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -649,20 +663,31 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
     hours = sum(s.hours for s in slots)
     mean_out = sum(s.t_out * s.hours for s in slots) / hours
     result.base_offset = base_offset(models, mean_out, target)
+    comforts = None
+    baseline = None
+    max_up = PLAN_MAX_UP
+    after = inputs.comfort_after
+    change = inputs.comfort_change
+    if after is not None and change is not None and change - timedelta(hours=inputs.comfort_ramp_h) < slots[-1].end:
+        comforts = comfort_schedule(slots, inputs.comfort, after, change, inputs.comfort_ramp_h)
+        base_after = base_offset(models, mean_out, after.target)
+        baseline = [base_after if s.end >= change else result.base_offset for s in slots]
+        max_up = PLAN_MAX_UP + max(0, base_after - result.base_offset)
     if lagged:
         settings = PlannerSettings(
-            base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP,
+            base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=max_up,
             change_cost=LAG_CHANGE_COST, step_cost=LAG_STEP_COST, hold_slots=LAG_HOLD_SLOTS,
         )
         est = slab_estimate(inputs.history or {}, inputs.system, models.house, inputs.now)
         if est is not None:
             result.slab, result.slab_temp, result.slab_source = est.state, est.temp, est.source
     else:
-        settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=PLAN_MAX_UP)
+        settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=max_up)
     plan = plan_heating(
         slots, inputs.t_in, models.house, models.curve, models.energy, inputs.comfort, settings,
-        current_offset=inputs.current_offset, t_f0=result.slab,
+        current_offset=inputs.current_offset, t_f0=result.slab, comforts=comforts, baseline_offsets=baseline,
     )
+    result.comforts = list(comforts) if comforts is not None else [inputs.comfort] * len(slots)
     if lagged and result.slab is None and plan.plan.steps:
         result.slab = plan.plan.steps[0].slab_start
         if result.slab is not None:

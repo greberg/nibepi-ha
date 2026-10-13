@@ -56,6 +56,8 @@ def backtest_heating(
     lookahead: Optional[int] = None,
     forecast_error: Optional[Callable[[int, int], float]] = None,
     t_f0: Optional[float] = None,
+    comforts: Optional[Sequence[ComfortSettings]] = None,
+    baseline_offsets: Optional[Sequence[int]] = None,
 ) -> BacktestResult:
     """``forecast_error(plan_index, slot_index)`` °C added to the planner's t_out.
 
@@ -63,9 +65,12 @@ def backtest_heating(
     ``t_f0`` (default: settled at the base offset); the planner is told
     the true slab temperature at each replan, as the runtime estimates it
     from BT2. ``house_plan`` may be the one-node model of the same house,
-    to see what ignoring the lag costs.
+    to see what ignoring the lag costs. ``comforts`` (one band per slot of
+    ``truth``) makes the band change over time, as Away mode's return
+    does; ``baseline_offsets`` replaces the base offset as the baseline.
     """
     truth = list(truth)
+    bands = list(comforts) if comforts is not None else None
     model = house_plan or house_true
     offsets: List[int] = []
     t = t_in0
@@ -85,20 +90,22 @@ def backtest_heating(
                 slot = replace(slot, t_out=slot.t_out + forecast_error(i, j))
             seen.append(slot)
         started = time.perf_counter()
-        plan = plan_heating(seen, t, model, curve, energy, comfort, settings, current_offset=prev, t_f0=t_f)
+        plan = plan_heating(seen, t, model, curve, energy, comfort, settings, current_offset=prev, t_f0=t_f,
+                            comforts=bands[i:end] if bands is not None else None)
         worst = max(worst, time.perf_counter() - started)
         replans += 1
         take = plan.offsets[:replan_every]
         # Apply to the true house.
         part = simulate(truth[i:i + len(take)], take, t, house_true, curve, energy, comfort, settings, prev,
-                        t_f0=t_f)
+                        t_f0=t_f, comforts=bands[i:i + len(take)] if bands is not None else None)
         t = part.steps[-1].t_in_end
         t_f = part.steps[-1].slab_end
         offsets.extend(take)
         prev = take[-1]
         i += len(take)
     result = simulate(truth, offsets, t_in0, house_true, curve, energy, comfort, settings, settings.base_offset,
-                      t_f0=t_f0)
-    baseline = simulate(truth, [settings.base_offset] * len(truth), t_in0, house_true, curve, energy,
-                        comfort, settings, settings.base_offset, t_f0=t_f0)
+                      t_f0=t_f0, comforts=bands)
+    base_line = list(baseline_offsets) if baseline_offsets is not None else [settings.base_offset] * len(truth)
+    baseline = simulate(truth, base_line, t_in0, house_true, curve, energy,
+                        comfort, settings, settings.base_offset, t_f0=t_f0, comforts=bands)
     return BacktestResult(result, baseline, offsets, replans, worst)
