@@ -68,6 +68,13 @@ from .const import (
     OPT_HW_DAY_MEDIUM,
     OPT_HW_DAY_SMALL,
     OPT_HW_LEARNING_RATE,
+    OPT_HW_LEGIONELLA,
+    OPT_HW_LEGIONELLA_HOLD,
+    OPT_HW_LEGIONELLA_INTERVAL,
+    OPT_HW_LEGIONELLA_MAX,
+    OPT_HW_LEGIONELLA_START,
+    OPT_HW_LEGIONELLA_TEMP,
+    OPT_HW_LEGIONELLA_WINDOW,
     OPT_HW_MIN_DROP,
     OPT_HW_MIN_TEMP,
     OPT_HW_MIN_TEMP_ENABLE,
@@ -163,7 +170,15 @@ HW_COMFORT = SelectSelector(
     )
 )
 # Whole numbers in the hot water step.
-HW_INT_OPTIONS = (OPT_HW_LEARNING_RATE, OPT_HW_PREHEAT, OPT_HW_PRICE_WINDOW, OPT_HW_AUTOLUX_TIME)
+HW_INT_OPTIONS = (
+    OPT_HW_LEARNING_RATE,
+    OPT_HW_PREHEAT,
+    OPT_HW_PRICE_WINDOW,
+    OPT_HW_AUTOLUX_TIME,
+    OPT_HW_LEGIONELLA_INTERVAL,
+    OPT_HW_LEGIONELLA_HOLD,
+    OPT_HW_LEGIONELLA_START,
+)
 AWAY_INT_OPTIONS = (OPT_AWAY_CURVE_OFFSET, OPT_AWAY_RETURN_LEAD)
 TEMPERATURE_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
 METER_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class=["power", "energy"]))
@@ -612,6 +627,13 @@ class NibePiOptionsFlow(_NibePiSteps, OptionsFlow):
             _required(OPT_HW_AUTOLUX_DIFF, current, SHARED_DEFAULTS): _number(5, 50, 1),
             _required(OPT_HW_AUTOLUX_TIME, current, SHARED_DEFAULTS): _number(1, 50, 1),
             _required(OPT_HW_OPT_FLOOR, current, SHARED_DEFAULTS): _number(30, 60, 0.5),
+            _required(OPT_HW_LEGIONELLA, current, SHARED_DEFAULTS): BOOL,
+            _required(OPT_HW_LEGIONELLA_TEMP, current, SHARED_DEFAULTS): _number(50, 70, 0.5),
+            _required(OPT_HW_LEGIONELLA_INTERVAL, current, SHARED_DEFAULTS): _number(1, 90, 1),
+            _required(OPT_HW_LEGIONELLA_HOLD, current, SHARED_DEFAULTS): _number(1, 120, 1),
+            _required(OPT_HW_LEGIONELLA_WINDOW, current, SHARED_DEFAULTS): _number(0.5, 12, 0.5),
+            _required(OPT_HW_LEGIONELLA_MAX, current, SHARED_DEFAULTS): _number(1, 12, 0.5),
+            _required(OPT_HW_LEGIONELLA_START, current, SHARED_DEFAULTS): _number(0, 23, 1),
         }
         for key in HW_COMFORT_OPTIONS.values():
             fields[_required(key, current, SHARED_DEFAULTS)] = HW_COMFORT

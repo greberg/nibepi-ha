@@ -18,7 +18,7 @@ from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ServiceNotFound
+from homeassistant.exceptions import HomeAssistantError, ServiceNotFound
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import sun as sun_helper
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -42,7 +42,9 @@ from .const import (
     DOMAIN,
     FORECAST_REFRESH_SECONDS,
     HW_COMFORT_OPTIONS,
+    ISSUE_LEGIONELLA_FAILED,
     ISSUE_TIBBER_MISSING,
+    LEGIONELLA_HISTORY_DAYS,
     MANUFACTURER,
     OPT_AWAY_CURVE_OFFSET,
     OPT_AWAY_HOT_WATER,
@@ -63,6 +65,13 @@ from .const import (
     OPT_HW_PREHEAT,
     OPT_HW_PRICE_WINDOW,
     OPT_HW_USE_PRICE,
+    OPT_HW_LEGIONELLA,
+    OPT_HW_LEGIONELLA_HOLD,
+    OPT_HW_LEGIONELLA_INTERVAL,
+    OPT_HW_LEGIONELLA_MAX,
+    OPT_HW_LEGIONELLA_START,
+    OPT_HW_LEGIONELLA_TEMP,
+    OPT_HW_LEGIONELLA_WINDOW,
     OPT_INDOOR_ENTITY,
     OPT_INDOOR_FACTOR,
     OPT_PRICE_ENTITY,
@@ -125,6 +134,7 @@ from .logic.registers import came_online, registers_to_request
 from .logic.hwcontrol import (
     FEATURE_DEFAULTS,
     INPUT_REGISTERS,
+    REG_BT7,
     HotWaterController,
     HotWaterDecision,
     HotWaterInputs,
@@ -156,6 +166,15 @@ from .logic.price import (
 )
 from .logic.rmu import RoomTemperature, rmu_decide, rmu_lease_manager
 from .logic.vvimport import convert_nodered_store, read_json_file
+from .logic.legionella import (
+    RESULT_CANCELLED,
+    RESULT_DONE,
+    LegionellaSettings,
+    LegionellaState,
+    last_done_from_history,
+)
+from .logic.legionella import TOLERANCE as LEGIONELLA_TOLERANCE
+from .logic.opthistory import parse_states
 from .logic.vvlearn import VvProfile
 from .logic.vvplan import PlanSettings
 from .logic.weather import WeatherSettings, compute_weather
@@ -265,6 +284,8 @@ class NibePiRuntime:
         self.away = AwayState()
         self.away_store: Store = Store(hass, AWAY_STORE_VERSION, away_store_key(entry.entry_id))
         self._away_end: Optional[Callable[[], None]] = None
+        self._legionella_history_task: Optional[asyncio.Task] = None
+        self._legionella_history_tries = 0
         self.optimizer = OptimizerRuntime(self)
         # Card key (translation key, "_<system>" per system) -> entity id of
         # each added entity, for the cards (logic/cards.py).
@@ -377,7 +398,7 @@ class NibePiRuntime:
         for lease, action in self.hotwater.leases.release_all():
             await self._async_publish_lease(lease, action)
         if self.hotwater.store_loaded:
-            await self.vv_store.async_save(self.hotwater.controller.profile.to_dict())
+            await self.vv_store.async_save(self._vv_store_data())
         await self.optimizer.async_stop()
 
     async def async_options_updated(self) -> None:
@@ -673,12 +694,22 @@ class NibePiRuntime:
             _LOGGER.exception("Could not load the learned hot water profile; starting empty")
             data = None
         self.hotwater.controller.profile = VvProfile.from_dict(data)
+        # The legionella guard's state lives in the same store (key
+        # "legionella"; older files have none).
+        self.hotwater.controller.legionella.state = LegionellaState.from_dict(
+            data.get("legionella") if isinstance(data, dict) else None
+        )
         self.hotwater.store_loaded = True
 
+    def _vv_store_data(self) -> Dict[str, Any]:
+        controller = self.hotwater.controller
+        data = controller.profile.to_dict()
+        data["legionella"] = controller.legionella.state.to_dict()
+        return data
+
     def _save_vv_store(self) -> None:
-        hw = self.hotwater
         # Looked up at write time: an import replaces the profile object.
-        self.vv_store.async_delay_save(lambda: hw.controller.profile.to_dict(), VV_STORE_SAVE_DELAY)
+        self.vv_store.async_delay_save(self._vv_store_data, VV_STORE_SAVE_DELAY)
 
     async def async_import_vv_profile(self, path: str) -> Dict[str, Any]:
         """Replace the learned profile with Node-RED's ``vv_ai_profile.json``.
@@ -697,7 +728,7 @@ class NibePiRuntime:
             hw.controller.profile = profile
             hw.controller.detector.reset()
             hw.controller.vv.reset()
-            await self.vv_store.async_save(profile.to_dict())
+            await self.vv_store.async_save(self._vv_store_data())
         _LOGGER.info(
             "Imported the Node-RED hot water profile from %s: %d learned hours",
             source, summary["learned_slots"],
@@ -724,7 +755,126 @@ class NibePiRuntime:
             autolux_time=self.opt(OPT_HW_AUTOLUX_TIME),
             comfort={level: self.opt(key) for level, key in HW_COMFORT_OPTIONS.items()},
             sensor_timeout=self.opt(OPT_SENSOR_TIMEOUT),
+            legionella=self._legionella_settings(),
         )
+
+    def _legionella_settings(self) -> LegionellaSettings:
+        return LegionellaSettings.from_values(
+            enabled=self.opt(OPT_HW_LEGIONELLA),
+            temperature=self.opt(OPT_HW_LEGIONELLA_TEMP),
+            interval_days=self.opt(OPT_HW_LEGIONELLA_INTERVAL),
+            hold_minutes=self.opt(OPT_HW_LEGIONELLA_HOLD),
+            window_hours=self.opt(OPT_HW_LEGIONELLA_WINDOW),
+            max_hours=self.opt(OPT_HW_LEGIONELLA_MAX),
+            start_hour=self.opt(OPT_HW_LEGIONELLA_START),
+        )
+
+    # -- legionella guard -------------------------------------------------
+
+    async def async_run_legionella(self) -> None:
+        """The "Run legionella cycle now" button: start one at once."""
+        hw = self.hotwater
+        if hw.mode != MODE_ACTIVE:
+            _LOGGER.warning(
+                "NibePi: legionella cycle not started: hot water mode is %s (it runs only in active)", hw.mode
+            )
+            raise HomeAssistantError(
+                "Hot water mode is %s: a legionella cycle runs only in active mode" % hw.mode
+            )
+        if not self._legionella_settings().enabled:
+            raise HomeAssistantError("The legionella guard is off in the hot water options")
+        _LOGGER.info("NibePi: legionella cycle requested")
+        hw.controller.legionella.requested = True
+        self._hw_step_soon()
+
+    def _legionella_after_step(self, now: datetime) -> None:
+        """Save, log and raise or clear the repair issue after a step."""
+        guard = self.hotwater.controller.legionella
+        ended = guard.ended
+        guard.ended = None
+        if ended == RESULT_DONE:
+            _LOGGER.info("NibePi: legionella cycle done")
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_LEGIONELLA_FAILED)
+        elif ended == RESULT_CANCELLED:
+            _LOGGER.info("NibePi: legionella cycle cancelled (hot water mode not active or guard off)")
+        elif ended is not None:
+            _LOGGER.warning("NibePi: legionella cycle %s; retried later", ended)
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_LEGIONELLA_FAILED,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_LEGIONELLA_FAILED,
+                translation_placeholders={"result": ended},
+            )
+        elif guard.state.last_done is not None and guard.state.last_done == now:
+            _LOGGER.info("NibePi: legionella temperature held (%s)", guard.state.last_done_by)
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_LEGIONELLA_FAILED)
+        if guard.dirty:
+            guard.dirty = False
+            self._save_vv_store()
+        if (
+            self.hotwater.store_loaded
+            and not guard.state.history_checked
+            and self._legionella_history_task is None
+            and self.hass.is_running
+        ):
+            self._legionella_history_task = self.entry.async_create_background_task(
+                self.hass, self._async_legionella_history(), "nibepi legionella history"
+            )
+
+    async def _async_legionella_history(self) -> None:
+        """First start: find the last legionella hold in the recorder's BT7."""
+        hw = self.hotwater
+        guard = hw.controller.legionella
+        now = dt_util.utcnow()
+        done_at: Optional[datetime] = None
+        covered: Optional[datetime] = None
+        try:
+            entity_id = self.optimizer.gateway_entity(REG_BT7)
+            if "recorder" not in self.hass.config.components or entity_id is None:
+                self._legionella_history_tries += 1
+                if self._legionella_history_tries < 10:
+                    return  # discovery may come later: tried again on a later tick
+                _LOGGER.info("NibePi: no BT7 history for the legionella guard; counting from now")
+            else:
+                from homeassistant.components.recorder import get_instance
+
+                from .opt_runtime import _fetch_history
+
+                settings = self._legionella_settings()
+                status = guard.status
+                temperature = status.info.get("temperature") if status is not None else None
+                if temperature is None:
+                    temperature = settings.temperature
+                start = now - timedelta(days=LEGIONELLA_HISTORY_DAYS)
+                rows = await get_instance(self.hass).async_add_executor_job(
+                    _fetch_history, self.hass, entity_id, start, now
+                )
+                points = parse_states(rows)
+                done = last_done_from_history(
+                    points, temperature - LEGIONELLA_TOLERANCE, settings.hold_minutes * 60.0, now.timestamp()
+                )
+                if done is not None:
+                    done_at = dt_util.utc_from_timestamp(done)
+                if points:
+                    covered = dt_util.utc_from_timestamp(points[0][0])
+                _LOGGER.info(
+                    "NibePi: legionella history of %s (%d rows): last hold of %.1f °C %s",
+                    entity_id, len(rows), temperature, done_at.isoformat() if done_at else "not found",
+                )
+            async with hw.lock:
+                guard.apply_history(done_at, covered, now)
+            self._save_vv_store()
+            self._notify()
+        except Exception:  # noqa: BLE001 - detection on live values goes on
+            _LOGGER.exception("NibePi: legionella history lookup failed")
+            async with hw.lock:
+                guard.apply_history(None, None, now)
+            self._save_vv_store()
+        finally:
+            self._legionella_history_task = None
 
     async def _async_hotwater_step(self, now: datetime, sample: bool = True) -> None:
         """Learn, decide and publish the hot water leases for this tick.
@@ -785,6 +935,7 @@ class NibePiRuntime:
                 hw.error = repr(err)
                 hw.controller.reset_control()
             hw.last_tick = now
+            self._legionella_after_step(now)
             for lease, action in hw.leases.decide(hw.mode, hw.decision, hw.healthy, in_grace):
                 if await self._async_publish_lease(lease, action):
                     hw.last_actions[lease.register] = "%s %s" % (

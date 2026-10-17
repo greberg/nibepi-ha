@@ -266,7 +266,14 @@
           "hw_comfort_normal": "Comfort mode at normal",
           "hw_comfort_expensive": "Comfort mode at expensive",
           "hw_comfort_very_expensive": "Comfort mode at very expensive",
-          "hw_optimizer_floor": "Cost optimiser: hot water floor, BT6 (°C)"
+          "hw_optimizer_floor": "Cost optimiser: hot water floor, BT6 (°C)",
+          "hw_legionella_enable": "Legionella guard",
+          "hw_legionella_temp": "Legionella temperature when the pump's is unreadable (°C)",
+          "hw_legionella_interval": "Legionella interval when the pump's periodic increase is off (days)",
+          "hw_legionella_hold": "Legionella: minutes BT7 must hold the temperature",
+          "hw_legionella_window": "Legionella: length of the cycle window (h)",
+          "hw_legionella_max_hours": "Legionella: abort a cycle after (h)",
+          "hw_legionella_start_hour": "Legionella: start hour without prices"
         },
         "data_description": {
           "hw_learning_rate": "How much one draw moves the learned value of its hour, and how fast hours without draws fade (vv_ai_learning_rate).",
@@ -277,7 +284,11 @@
           "hw_min_temp_enable": "With VV-AI control, BT7 under the floor heats to the floor + 4 °C. VV-AI control keeps the pump from heating hot water on its own, so keep this on.",
           "hw_autolux_diff": "A BT6 fall this large within the time below starts a one-time increase (temporary lux).",
           "hw_comfort_very_cheap": "With price comfort mode on, the pump's hot water comfort mode (47041) for each price level. Unchanged: the pump's own setting.",
-          "hw_optimizer_floor": "With 'Optimise hot water charges' on, the optimiser's tank plan keeps BT6 above this."
+          "hw_optimizer_floor": "With 'Optimise hot water charges' on, the optimiser's tank plan keeps BT6 above this.",
+          "hw_legionella_enable": "With hot water mode active, run a legionella cycle (47047 = the legionella temperature, one-time increase) when the pump's own periodic increase has not reached the temperature in time. Every BT7 hold at the temperature counts, also the pump's own. In shadow mode the plan is only shown.",
+          "hw_legionella_temp": "The pump's periodic stop temperature (47046) is used when it can be read.",
+          "hw_legionella_interval": "With the pump's periodic increase on (47050), its interval (47051) is used, and the guard waits one more day for the pump.",
+          "hw_legionella_window": "The cycle starts in the cheapest window of this length before it is due."
         }
       },
       "away": {
@@ -308,6 +319,11 @@
     }
   },
   "entity": {
+    "button": {
+      "hw_legionella_run": {
+        "name": "Run legionella cycle now"
+      }
+    },
     "select": {
       "mode": {
         "name": "Mode {system}",
@@ -424,7 +440,8 @@
           "block": "Blocked (waiting for the plan)",
           "economy": "Economy",
           "normal": "Normal",
-          "luxury": "Luxury"
+          "luxury": "Luxury",
+          "legionella": "Legionella cycle"
         }
       },
       "hw_draw_profile": {
@@ -483,6 +500,22 @@
       },
       "away_until": {
         "name": "Away until"
+      },
+      "hw_legionella_last_done": {
+        "name": "Legionella last done"
+      },
+      "hw_legionella_next_due": {
+        "name": "Legionella next due"
+      },
+      "hw_lux_stop_lease_state": {
+        "name": "Luxury stop temperature lease",
+        "state": {
+          "active": "Active",
+          "grace": "Grace (after gateway restart)",
+          "restoring": "Restoring",
+          "inactive": "Inactive",
+          "error": "Error"
+        }
       }
     },
     "binary_sensor": {
@@ -565,6 +598,10 @@
     "tibber_missing": {
       "title": "Tibber prices are not available",
       "description": "NibePi is set to read electricity prices with the tibber.get_prices action, but the Tibber integration is not set up or not loaded. Set up the Tibber integration, or choose another price source in NibePi's options. Until then the price component contributes 0."
+    },
+    "legionella_failed": {
+      "title": "Legionella cycle did not complete",
+      "description": "NibePi's legionella guard ended a cycle without BT7 reaching the legionella temperature ({result}). It tries again in 12 hours. Check that the pump can reach the temperature (immersion heater allowed for hot water, the stop temperatures) and that BT7 is reported. The issue clears when BT7 next holds the temperature."
     }
   },
   "services": {

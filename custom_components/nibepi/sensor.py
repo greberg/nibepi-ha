@@ -18,6 +18,7 @@ from . import NibePiConfigEntry
 from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
+from .logic.legionella import REG_LUX_STOP
 from .logic.lease import MODE_ACTIVE, LeaseManager
 from .logic.optcost import summary as cost_summary
 from .logic.optrun import models_summary
@@ -31,6 +32,7 @@ HW_LEASES = {
     REG_COMFORT: "hw_comfort_lease_state",
     REG_PERIOD: "hw_period_lease_state",
     REG_TEMP_LUX: "hw_temp_lux_lease_state",
+    REG_LUX_STOP: "hw_lux_stop_lease_state",
 }
 
 
@@ -53,6 +55,8 @@ async def async_setup_entry(
     entities.append(HotWaterActionSensor(runtime))
     entities.append(DrawProfileSensor(runtime))
     entities.append(HotWaterOptimiserSensor(runtime))
+    entities.append(LegionellaLastDoneSensor(runtime))
+    entities.append(LegionellaNextDueSensor(runtime))
     entities.extend(HotWaterLeaseSensor(runtime, reg, key) for reg, key in HW_LEASES.items())
     async_add_entities(entities)
 
@@ -349,6 +353,55 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
                 "last_actions": {str(reg): text for reg, text in hw.last_actions.items()},
             }
         )
+        return attrs
+
+
+class LegionellaLastDoneSensor(NibePiEntity, SensorEntity):
+    """When BT7 last held the legionella temperature (pump or HA cycle)."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "hw_legionella_last_done")
+
+    @property
+    def native_value(self) -> Optional[datetime]:
+        return self.runtime.hotwater.controller.legionella.state.last_done
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        guard = self.runtime.hotwater.controller.legionella
+        status = guard.status
+        return {
+            "by": guard.state.last_done_by,
+            "temperature": status.info.get("temperature") if status is not None else None,
+            "hold_since": _iso(guard.hold_since),
+        }
+
+
+class LegionellaNextDueSensor(NibePiEntity, SensorEntity):
+    """When the legionella guard steps in next; its state and plan."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "hw_legionella_next_due")
+
+    @property
+    def native_value(self) -> Optional[datetime]:
+        status = self.runtime.hotwater.controller.legionella.status
+        return status.info.get("due") if status is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        status = self.runtime.hotwater.controller.legionella.status
+        if status is None:
+            return {"state": None}
+        attrs: Dict[str, Any] = {"state": status.state, "reason": status.reason}
+        for key, value in status.info.items():
+            if key == "due":
+                continue
+            attrs[key] = _iso(value) if isinstance(value, datetime) else value
         return attrs
 
 

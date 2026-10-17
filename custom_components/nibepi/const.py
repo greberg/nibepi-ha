@@ -8,7 +8,7 @@ DOMAIN = "nibepi"
 MANUFACTURER = "NIBE"
 OWNER = "ha"
 
-PLATFORMS = ["binary_sensor", "select", "sensor", "switch"]
+PLATFORMS = ["binary_sensor", "button", "select", "sensor", "switch"]
 
 # Config entry data
 CONF_PREFIX = "prefix"
@@ -97,6 +97,7 @@ PRICE_SOURCE_NONE = "none"
 PRICE_SOURCES = (PRICE_SOURCE_TIBBER, PRICE_SOURCE_ENTITY, PRICE_SOURCE_NONE)
 
 ISSUE_TIBBER_MISSING = "tibber_missing"
+ISSUE_LEGIONELLA_FAILED = "legionella_failed"
 
 PRICE_LEVEL_OPTIONS = {
     "VERY_CHEAP": "price_very_cheap",
@@ -121,6 +122,15 @@ OPT_HW_MIN_TEMP_ENABLE = "hw_min_temp_enable"
 OPT_HW_MIN_TEMP = "hw_min_temp"
 OPT_HW_AUTOLUX_DIFF = "hw_autolux_diff"
 OPT_HW_AUTOLUX_TIME = "hw_autolux_time"
+# Legionella guard (logic/legionella.py).
+OPT_HW_LEGIONELLA = "hw_legionella_enable"
+OPT_HW_LEGIONELLA_TEMP = "hw_legionella_temp"
+OPT_HW_LEGIONELLA_INTERVAL = "hw_legionella_interval"
+OPT_HW_LEGIONELLA_HOLD = "hw_legionella_hold"
+OPT_HW_LEGIONELLA_WINDOW = "hw_legionella_window"
+OPT_HW_LEGIONELLA_MAX = "hw_legionella_max_hours"
+OPT_HW_LEGIONELLA_START = "hw_legionella_start_hour"
+LEGIONELLA_HISTORY_DAYS = 35
 
 HW_COMFORT_OPTIONS = {
     "VERY_CHEAP": "hw_comfort_very_cheap",
@@ -144,6 +154,13 @@ HW_DEFAULTS: Dict[str, Any] = {
     OPT_HW_MIN_TEMP: 35.0,
     OPT_HW_AUTOLUX_DIFF: 20.0,
     OPT_HW_AUTOLUX_TIME: 10,
+    OPT_HW_LEGIONELLA: True,
+    OPT_HW_LEGIONELLA_TEMP: 60.0,
+    OPT_HW_LEGIONELLA_INTERVAL: 14,
+    OPT_HW_LEGIONELLA_HOLD: 10,
+    OPT_HW_LEGIONELLA_WINDOW: 2.0,
+    OPT_HW_LEGIONELLA_MAX: 4.0,
+    OPT_HW_LEGIONELLA_START: 2,
     "hw_comfort_very_cheap": "2",
     "hw_comfort_cheap": "1",
     "hw_comfort_normal": "0",

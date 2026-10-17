@@ -99,6 +99,14 @@ def _hotwater(runtime: NibePiRuntime) -> Dict[str, Any]:
             else None
         ),
         "leases": {str(reg): _lease(lease) for reg, lease in hw.leases.leases.items()},
+        "legionella": {
+            "state": hw.controller.legionella.state.to_dict(),
+            "status": (
+                {"state": status.state, "run": status.run, "reason": status.reason, "info": status.info}
+                if (status := hw.controller.legionella.status) is not None
+                else None
+            ),
+        },
         "profile": {"learned": profile.learned, "imported_from": profile.imported_from,
                     "last_learn": profile.last_learn, "values": [round(v, 2) for v in profile.profile]},
     }

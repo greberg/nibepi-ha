@@ -8,6 +8,11 @@
         }
       }
     },
+    "button": {
+      "hw_legionella_run": {
+        "default": "mdi:water-thermometer"
+      }
+    },
     "select": {
       "mode": {
         "default": "mdi:cog-transfer-outline",
@@ -131,7 +136,8 @@
           "block": "mdi:timer-sand",
           "economy": "mdi:leaf",
           "normal": "mdi:water-thermometer",
-          "luxury": "mdi:water-plus"
+          "luxury": "mdi:water-plus",
+          "legionella": "mdi:bacteria-outline"
         }
       },
       "hw_draw_profile": {
@@ -187,6 +193,22 @@
       },
       "away_until": {
         "default": "mdi:calendar-arrow-left"
+      },
+      "hw_lux_stop_lease_state": {
+        "default": "mdi:water-thermometer",
+        "state": {
+          "active": "mdi:lock-check",
+          "grace": "mdi:lock-clock",
+          "restoring": "mdi:lock-reset",
+          "inactive": "mdi:lock-open-variant-outline",
+          "error": "mdi:lock-alert"
+        }
+      },
+      "hw_legionella_last_done": {
+        "default": "mdi:bacteria-outline"
+      },
+      "hw_legionella_next_due": {
+        "default": "mdi:calendar-clock"
       }
     }
   },
