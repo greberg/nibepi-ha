@@ -519,6 +519,48 @@
       },
       "gateway_version": {
         "name": "Gatewayversion"
+      },
+      "outdoor": {
+        "name": "Utomhustemperatur (BT1)"
+      },
+      "bt7_hw_top": {
+        "name": "Varmvatten topp (BT7)"
+      },
+      "bt6_hw_load": {
+        "name": "Varmvatten laddning (BT6)"
+      },
+      "supply": {
+        "name": "Framledningstemperatur (BT2) {system}"
+      },
+      "bt3_return": {
+        "name": "Returtemperatur (BT3)"
+      },
+      "bt50": {
+        "name": "Rumstemperatur (BT50) {system}"
+      },
+      "degree_minutes": {
+        "name": "Gradminuter"
+      },
+      "compressor_frequency": {
+        "name": "Kompressorfrekvens"
+      },
+      "compressor_power": {
+        "name": "Kompressoreffekt"
+      },
+      "priority": {
+        "name": "Prioritet",
+        "state": {
+          "off": "Av",
+          "hot_water": "Varmvatten",
+          "heating": "Värme",
+          "pool": "Pool",
+          "pool_2": "Pool 2",
+          "transfer": "Överföring",
+          "cooling": "Kyla"
+        }
+      },
+      "bus_health": {
+        "name": "Bussfel"
       }
     },
     "binary_sensor": {

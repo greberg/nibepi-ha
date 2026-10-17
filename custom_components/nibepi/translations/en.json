@@ -519,6 +519,48 @@
       },
       "gateway_version": {
         "name": "Gateway version"
+      },
+      "outdoor": {
+        "name": "Outdoor temperature (BT1)"
+      },
+      "bt7_hw_top": {
+        "name": "Hot water top (BT7)"
+      },
+      "bt6_hw_load": {
+        "name": "Hot water charging (BT6)"
+      },
+      "supply": {
+        "name": "Supply temperature (BT2) {system}"
+      },
+      "bt3_return": {
+        "name": "Return temperature (BT3)"
+      },
+      "bt50": {
+        "name": "Room temperature (BT50) {system}"
+      },
+      "degree_minutes": {
+        "name": "Degree minutes"
+      },
+      "compressor_frequency": {
+        "name": "Compressor frequency"
+      },
+      "compressor_power": {
+        "name": "Compressor power"
+      },
+      "priority": {
+        "name": "Priority",
+        "state": {
+          "off": "Off",
+          "hot_water": "Hot water",
+          "heating": "Heating",
+          "pool": "Pool",
+          "pool_2": "Pool 2",
+          "transfer": "Transfer",
+          "cooling": "Cooling"
+        }
+      },
+      "bus_health": {
+        "name": "Bus errors"
       }
     },
     "binary_sensor": {

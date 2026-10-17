@@ -323,3 +323,8 @@ def system_key(key: str, system: str) -> str:
 
 def signal_update(entry_id: str) -> str:
     return "%s_%s_update" % (DOMAIN, entry_id)
+
+
+def signal_reading(entry_id: str, source: Any) -> str:
+    """A new value of register ``source`` (or ``bus_health``) arrived."""
+    return "%s_%s_reading_%s" % (DOMAIN, entry_id, source)

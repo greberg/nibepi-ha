@@ -117,6 +117,7 @@ from .const import (
     VV_STORE_VERSION,
     away_store_key,
     price_source,
+    signal_reading,
     signal_update,
     system_key,
     vv_store_key,
@@ -177,6 +178,7 @@ from .logic.legionella import (
 )
 from .logic.legionella import TOLERANCE as LEGIONELLA_TOLERANCE
 from .logic.opthistory import parse_states
+from .logic.pump import BUS_HEALTH, parse_bus_health, pump_registers
 from .logic.vvlearn import VvProfile
 from .logic.vvplan import PlanSettings
 from .logic.weather import WeatherSettings, compute_weather
@@ -259,6 +261,9 @@ class NibePiRuntime:
         self.status_at: Optional[datetime] = None
         self.gateway_state_at: Optional[datetime] = None
         self.gateway_state_live_at: Optional[datetime] = None
+        # The gateway's <prefix>bus_health (logic/pump.py) and when it came.
+        self.bus_health: Optional[Dict[str, Any]] = None
+        self.bus_health_at: Optional[datetime] = None
         self.forecast: Optional[List[ForecastPoint]] = None
         self.forecast_fetched: Optional[datetime] = None
         self.price_cache = PriceCache()
@@ -377,6 +382,9 @@ class NibePiRuntime:
         # Cost optimiser: brine, compressor power and frequency, addition,
         # heat meters, BT3 and the heating medium pump.
         regs.update(OPTIMIZER_REGISTERS)
+        # The own pump sensors (BT1, BT7, BT6, BT2, BT3, BT50 of each
+        # system, degree minutes, compressor, priority).
+        regs.update(pump_registers(self.systems))
         return sorted(regs)
 
     async def _publish(self, topic: str, payload: str, retain: bool = False) -> None:
@@ -483,6 +491,9 @@ class NibePiRuntime:
         self._unsubs.append(
             await mqtt.async_subscribe(self.hass, self.prefix + "gateway/state", self._on_gateway_state)
         )
+        self._unsubs.append(
+            await mqtt.async_subscribe(self.hass, self.prefix + BUS_HEALTH, self._on_bus_health)
+        )
         leases = [lease for sys in self.systems.values() for lease in (sys.lease, sys.rmu_lease)]
         leases.extend(self.hotwater.leases.leases.values())
         for lease in leases:
@@ -512,6 +523,7 @@ class NibePiRuntime:
             value = to_float(msg.payload)
             if value is not None:
                 self.readings[reg] = Reading(value, dt_util.utcnow())
+                async_dispatcher_send(self.hass, signal_reading(self.entry.entry_id, reg))
 
         return _cb
 
@@ -564,6 +576,14 @@ class NibePiRuntime:
             if not getattr(msg, "retain", False):
                 self.gateway_state_live_at = now
             self._notify()
+
+    @callback
+    def _on_bus_health(self, msg: Any) -> None:
+        data = parse_bus_health(msg.payload)
+        if data is not None:
+            self.bus_health = data
+            self.bus_health_at = dt_util.utcnow()
+            async_dispatcher_send(self.hass, signal_reading(self.entry.entry_id, BUS_HEALTH))
 
     @callback
     def _check_status(self, _now: datetime) -> None:

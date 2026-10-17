@@ -1,7 +1,8 @@
 """Sensors: planned offset, component offsets, pump offset, lease states,
-price level, the hot water plan, draw profile and leases, and the cost
+price level, the hot water plan, draw profile and leases, the cost
 optimiser's plans, house model, expected savings and the heat pump's
-measured cost."""
+measured cost, and read-only pump values (BT1, BT7, BT6, BT2, BT3, BT50,
+degree minutes, compressor, priority, bus errors; logic/pump.py)."""
 
 from __future__ import annotations
 
@@ -9,13 +10,14 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, UnitOfFrequency, UnitOfPower, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
-from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
+from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source, signal_reading
 from .entity import NibePiEntity
 from .logic.gateway import gateway_version
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
@@ -25,6 +27,14 @@ from .logic.optcost import summary as cost_summary
 from .logic.optrun import models_summary
 from .logic.optstrategy import SOURCE_RULES, offset_at
 from .logic.price import LEVELS
+from .logic.pump import (
+    BUS_HEALTH,
+    PRIORITY_STATES,
+    PUMP_SENSORS,
+    SYSTEM_PUMP_SENSORS,
+    is_fresh,
+    priority_state,
+)
 from .logic.vvlearn import DAYS, next_draw, slot_name, top_slots
 from .logic.vvplan import PlanSettings, day_sums
 from .runtime import NibePiRuntime, SystemRuntime, _local_tz
@@ -60,6 +70,8 @@ async def async_setup_entry(
     entities.append(LegionellaLastDoneSensor(runtime))
     entities.append(LegionellaNextDueSensor(runtime))
     entities.extend(HotWaterLeaseSensor(runtime, reg, key) for reg, key in HW_LEASES.items())
+    entities.extend(_pump_sensors(runtime))
+    entities.append(BusErrorsSensor(runtime))
     async_add_entities(entities)
 
 
@@ -852,3 +864,111 @@ class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
             }
         )
         return attrs
+
+
+# -- read-only pump values ----------------------------------------------------
+
+# key -> (device class, unit, state class, display precision); the keys
+# and registers are in logic/pump.py.
+_TEMPERATURE = (SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT, 1)
+PUMP_SENSOR_KINDS: Dict[str, Any] = {
+    "outdoor": _TEMPERATURE,
+    "bt7_hw_top": _TEMPERATURE,
+    "bt6_hw_load": _TEMPERATURE,
+    "bt3_return": _TEMPERATURE,
+    "supply": _TEMPERATURE,
+    "bt50": _TEMPERATURE,
+    "degree_minutes": (None, "DM", SensorStateClass.MEASUREMENT, 0),
+    "compressor_frequency": (SensorDeviceClass.FREQUENCY, UnitOfFrequency.HERTZ, SensorStateClass.MEASUREMENT, 0),
+    "compressor_power": (SensorDeviceClass.POWER, UnitOfPower.WATT, SensorStateClass.MEASUREMENT, 0),
+    "priority": (SensorDeviceClass.ENUM, None, None, None),
+}
+
+
+def _pump_sensors(runtime: NibePiRuntime) -> List[SensorEntity]:
+    found: List[SensorEntity] = [PumpValueSensor(runtime, key, reg) for key, reg in PUMP_SENSORS.items()]
+    for system in runtime.systems:
+        for key, by_system in SYSTEM_PUMP_SENSORS.items():
+            if system in by_system:
+                found.append(PumpValueSensor(runtime, key, by_system[system], system))
+    return found
+
+
+class _ReadingSensor(NibePiEntity, SensorEntity):
+    """Written when its value arrives, besides the tick's update (which
+    also turns a stale one unavailable)."""
+
+    _source: Any = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, signal_reading(self.runtime.entry.entry_id, self._source), self._handle_update
+            )
+        )
+
+
+class PumpValueSensor(_ReadingSensor):
+    """A register as the gateway last sent it (logic/pump.py).
+
+    Unavailable until a value arrived and when the last one is older than
+    ``STALE_AFTER`` (60 min): the gateway sends every polled register on
+    each poll, so an old value means the gateway or the bus is down, and
+    a stale temperature should not show (or be recorded) as current.
+    """
+
+    def __init__(self, runtime: NibePiRuntime, key: str, register: int, system: Optional[str] = None) -> None:
+        super().__init__(runtime, key, system)
+        self.register = register
+        self._source = register
+        device_class, unit, state_class, precision = PUMP_SENSOR_KINDS[key]
+        self._attr_device_class = device_class
+        self._attr_native_unit_of_measurement = unit
+        self._attr_state_class = state_class
+        self._attr_suggested_display_precision = precision
+        if device_class == SensorDeviceClass.ENUM:
+            self._attr_options = list(PRIORITY_STATES.values())
+        self._attr_extra_state_attributes = {"register": register}
+
+    @property
+    def available(self) -> bool:
+        reading = self.runtime.readings.get(self.register)
+        return reading is not None and is_fresh(reading.ts, dt_util.utcnow())
+
+    @property
+    def native_value(self) -> Any:
+        reading = self.runtime.readings.get(self.register)
+        if reading is None:
+            return None
+        if self._attr_device_class == SensorDeviceClass.ENUM:
+            return priority_state(reading.value)
+        return reading.value
+
+
+class BusErrorsSensor(_ReadingSensor):
+    """The gateway's RS485 bus errors per minute (``<prefix>bus_health``):
+    CHKSUM frames plus reads without a reply; unavailable like the pump
+    values."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = "errors/min"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _source = BUS_HEALTH
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, BUS_HEALTH)
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.bus_health is not None and is_fresh(self.runtime.bus_health_at, dt_util.utcnow())
+
+    @property
+    def native_value(self) -> Optional[int]:
+        data = self.runtime.bus_health
+        return data["errors"] if data is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        data = self.runtime.bus_health or {}
+        return {"ok": data.get("ok"), "chksum": data.get("chksum"), "no_respond": data.get("no_respond")}

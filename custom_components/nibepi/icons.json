@@ -212,6 +212,48 @@
       },
       "gateway_version": {
         "default": "mdi:tag-outline"
+      },
+      "outdoor": {
+        "default": "mdi:thermometer"
+      },
+      "bt7_hw_top": {
+        "default": "mdi:water-thermometer"
+      },
+      "bt6_hw_load": {
+        "default": "mdi:water-thermometer-outline"
+      },
+      "supply": {
+        "default": "mdi:thermometer-chevron-up"
+      },
+      "bt3_return": {
+        "default": "mdi:thermometer-chevron-down"
+      },
+      "bt50": {
+        "default": "mdi:home-thermometer"
+      },
+      "degree_minutes": {
+        "default": "mdi:counter"
+      },
+      "compressor_frequency": {
+        "default": "mdi:sine-wave"
+      },
+      "compressor_power": {
+        "default": "mdi:flash"
+      },
+      "priority": {
+        "default": "mdi:format-list-numbered",
+        "state": {
+          "off": "mdi:power-off",
+          "hot_water": "mdi:water-boiler",
+          "heating": "mdi:radiator",
+          "pool": "mdi:pool",
+          "pool_2": "mdi:pool",
+          "transfer": "mdi:swap-horizontal",
+          "cooling": "mdi:snowflake"
+        }
+      },
+      "bus_health": {
+        "default": "mdi:lan-check"
       }
     }
   },
