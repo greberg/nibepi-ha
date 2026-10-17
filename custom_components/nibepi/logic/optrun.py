@@ -70,7 +70,14 @@ from .optimizer.planner import (
     plan_heating,
 )
 from .optimizer.profile import HousePrior, HouseProfile, house_prior
-from .optimizer.tank import HotWaterPlan, TankModel, TankSettings, draws_from_week_profile, plan_hot_water
+from .optimizer.tank import (
+    HotWaterPlan,
+    PinnedCharge,
+    TankModel,
+    TankSettings,
+    draws_from_week_profile,
+    plan_hot_water,
+)
 
 HEATING_SHARE = 0.5  # an hour counts as heating when prio was 30 this much
 HW_SHARE = 0.1  # ... and as free of hot water charging below this
@@ -715,6 +722,8 @@ class TankInputs:
     confidence: float = 0.7
     t_brine: Optional[float] = None
     pump_starts_itself: bool = False
+    # A planned (or running) legionella cycle: (start, end, temperature).
+    legionella: Optional[Tuple[datetime, datetime, float]] = None
 
 
 @dataclass
@@ -758,7 +767,8 @@ def plan_tank(inputs: TankInputs) -> TankResult:
     draws = draws_from_week_profile(
         list(inputs.profile), slots[0].start, slots[-1].end, inputs.tz, inputs.confidence
     )
-    result.plan = plan_hot_water(slots, inputs.bt6, draws, TankModel(), settings, inputs.tz)
+    pinned = [PinnedCharge(*inputs.legionella)] if inputs.legionella is not None else []
+    result.plan = plan_hot_water(slots, inputs.bt6, draws, TankModel(), settings, inputs.tz, pinned)
     return result
 
 

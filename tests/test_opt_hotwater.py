@@ -173,6 +173,14 @@ class PlanTankTest(unittest.TestCase):
         self.assertLess(charges[0].start, self.NOW + timedelta(hours=5))
         self.assertGreaterEqual(result.plan.min_temp, 45.0 - 0.5)
 
+    def test_legionella_window_is_pinned_and_not_a_controller_window(self) -> None:
+        start = self.NOW + timedelta(hours=2)
+        result = plan_tank(self.inputs(legionella=(start, start + timedelta(hours=2), 60.0)))
+        blocks = [b for b in result.plan.blocks if b.action == "legionella"]
+        self.assertEqual([(b.start, b.target) for b in blocks], [(start, 60.0)])
+        windows = hw_windows(result.plan.blocks, self.NOW, STHLM)
+        self.assertFalse([w for w in windows if w.start < start + timedelta(hours=2) and w.end > start])
+
     def test_default_floor_is_45(self) -> None:
         self.assertEqual(OPTIMIZER_DEFAULTS[OPT_HW_OPT_FLOOR], 45.0)
 

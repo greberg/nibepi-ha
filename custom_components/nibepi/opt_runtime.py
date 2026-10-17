@@ -65,6 +65,7 @@ from .const import (
 from .logic.curve import CurvePlan
 from .logic.hotwater import START_REGISTERS, STOP_REGISTERS
 from .logic.hwcontrol import REG_BT6, REG_PRIO
+from .logic.legionella import REG_LUX_STOP, legionella_pin
 from .logic.lease import MODE_OFF
 from .logic.inputs import Reading, state_timestamp, state_value, to_float, usable
 from .logic.opthistory import (
@@ -857,6 +858,8 @@ class OptimizerRuntime:
             return self._fresh(readings.get(reg), now, timeout)
 
         profile = rt.hotwater.controller.profile
+        guard = rt.hotwater.controller.legionella
+        lux_held = rt.hotwater.leases.held().get(REG_LUX_STOP, False)
         return TankInputs(
             prices=scale_prices(rt.price_slots, rt.opt(OPT_PRICE_UNIT_FACTOR)),
             now=now,
@@ -865,11 +868,12 @@ class OptimizerRuntime:
             economy_stop=value(STOP_REGISTERS[0]),
             normal_start=value(START_REGISTERS[1]),
             normal_stop=value(STOP_REGISTERS[1]),
-            lux_stop=value(STOP_REGISTERS[2]),
+            lux_stop=guard.lux_stop(now, value(STOP_REGISTERS[2]), lux_held),
             floor=to_float(rt.opt(OPT_HW_OPT_FLOOR)) or 45.0,
             profile=list(profile.profile),
             confidence=profile_confidence(profile.learned, bool(profile.imported_from)),
             t_brine=self._fresh(readings.get(REG_BRINE_IN), now),
+            legionella=legionella_pin(guard.status),
         )
 
     def hw_plan_windows(self, now: datetime):

@@ -430,6 +430,7 @@ class LegionellaGuard:
             "last_result": state.last_result,
             "last_result_at": state.ended_at,
             "retry_after": state.retry_after,
+            "timeout_at": None,
         }
 
         def status(name: str, reason: str, run: bool = False, temp: Optional[float] = None) -> LegionellaStatus:
@@ -468,7 +469,9 @@ class LegionellaGuard:
                     if self.hold_since is not None
                     else ""
                 )
-                info["planned_end"] = state.running_since + timedelta(hours=settings.max_hours)
+                info["planned_start"] = state.running_since
+                info["planned_end"] = max(now, state.running_since + timedelta(hours=settings.window_hours))
+                info["timeout_at"] = state.running_since + timedelta(hours=settings.max_hours)
                 return status(
                     "running",
                     "legionella cycle: heat to %.1f °C, BT7 %s%s" % (temp, "%.1f" % bt7, held),
@@ -484,7 +487,7 @@ class LegionellaGuard:
             return status("disabled", "legionella guard off")
 
         if self.requested and active:
-            return self._start(now, params, lux_reading, info, status, "run now (requested)")
+            return self._start(now, params, settings, lux_reading, info, status, "run now (requested)")
         self.requested = False
 
         first = due
@@ -513,9 +516,9 @@ class LegionellaGuard:
             return status("planned", "due: planned %s-%s (%s)" % (_hm(start, tz), _hm(start + length, tz), how))
         if not active:
             return status("planned", "due: would run now (hot water mode %s)" % mode)
-        return self._start(now, params, lux_reading, info, status, "due (%s)" % how)
+        return self._start(now, params, settings, lux_reading, info, status, "due (%s)" % how)
 
-    def _start(self, now, params, lux_reading, info, status, why) -> LegionellaStatus:
+    def _start(self, now, params, settings, lux_reading, info, status, why) -> LegionellaStatus:
         state = self.state
         self.requested = False
         state.running_since = now
@@ -524,11 +527,26 @@ class LegionellaGuard:
             state.lux_before = lux_reading
         state.retry_after = None
         self.dirty = True
-        info["planned_start"] = info["planned_start"] or now
+        info["planned_start"] = now
+        info["planned_end"] = now + timedelta(hours=settings.window_hours)
+        info["timeout_at"] = now + timedelta(hours=settings.max_hours)
         return status(
             "running", "legionella cycle started, %s: heat to %.1f °C" % (why, params.temperature), True,
             params.temperature,
         )
+
+
+def legionella_pin(status: Optional[LegionellaStatus]) -> Optional[Tuple[datetime, datetime, float]]:
+    """A planned or running cycle as (start, end, temperature) for the
+    optimiser's tank plan, else None."""
+    if status is None or status.state not in ("planned", "running"):
+        return None
+    start = status.info.get("planned_start")
+    end = status.info.get("planned_end")
+    temperature = status.temperature if status.temperature is not None else status.info.get("temperature")
+    if not isinstance(start, datetime) or not isinstance(end, datetime) or end <= start or temperature is None:
+        return None
+    return start, end, float(temperature)
 
 
 def _hm(when: datetime, tz: tzinfo) -> str:

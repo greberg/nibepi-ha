@@ -28,6 +28,13 @@ hold/charge and the previous action in the state (a charge start costs
 which outweighs any price. The baseline is the pump on its own in normal
 mode (start/stop at the normal temperatures).
 
+Pinned charges (``PinnedCharge``): a legionella cycle planned by the
+legionella guard is a fixed charge to its temperature in its window, in
+the plan and in the baseline alike (it happens either way). The planner
+then does not buy a redundant charge just before it; it shows as a
+``legionella`` block, which the controller does not run as a charge (the
+guard runs it).
+
 Output: per-slot steps and ``HotWaterBlock``s, each either ``charge``
 (target temperature; stage 2 maps that to temporary lux 48132 when the
 target is above the normal stop temperature, otherwise to comfort mode
@@ -131,13 +138,32 @@ class TankStep:
     heat_kwh: float
     electric_kwh: float
     cost: float
+    pinned: bool = False  # a fixed charge (legionella cycle)
+
+
+@dataclass(frozen=True)
+class PinnedCharge:
+    start: datetime
+    end: datetime
+    target: float
+    reason: str = "legionella cycle"
+
+
+def slot_pins(slots: Sequence[HorizonSlot], pinned: Sequence[PinnedCharge]) -> List[Optional[float]]:
+    """The pinned target of each slot that overlaps a pinned charge."""
+    out: List[Optional[float]] = [None] * len(slots)
+    for pin in pinned:
+        for i, slot in enumerate(slots):
+            if slot.start < pin.end and pin.start < slot.end:
+                out[i] = max(out[i] or -math.inf, float(pin.target))
+    return out
 
 
 @dataclass(frozen=True)
 class HotWaterBlock:
     start: datetime
     end: datetime
-    action: str  # "charge" or "hold"
+    action: str  # "charge", "hold" or "legionella" (pinned)
     target: Optional[float]
     mode: int  # suggested 47041: 0 economy, 1 normal, 2 luxury
     boost: bool  # use temporary lux (48132) to start the charge
@@ -192,12 +218,21 @@ def _step(
     return t_end, heat, el
 
 
-def _simulate_pump(slots, draws_kwh, t0, tank, start_temp, stop_temp) -> List[TankStep]:
-    """The pump on its own: start below ``start_temp``, charge to ``stop_temp``."""
+def _simulate_pump(slots, draws_kwh, t0, tank, start_temp, stop_temp, pins=None) -> List[TankStep]:
+    """The pump on its own: start below ``start_temp``, charge to ``stop_temp``;
+    pinned slots charge to their target."""
     steps: List[TankStep] = []
     t = t0
     running = False
+    pins = pins or [None] * len(slots)
     for i, slot in enumerate(slots):
+        if pins[i] is not None:
+            t_end, heat, el = _step(tank, t, slot.hours, draws_kwh[i], True, pins[i], slot.t_brine)
+            steps.append(TankStep(slot.start, slot.end, slot.price, True, False, pins[i], t, t_end,
+                                  draws_kwh[i], heat, el, el * slot.price, True))
+            running = False
+            t = t_end
+            continue
         if t < start_temp:
             running = True
         t_end, heat, el = _step(tank, t, slot.hours, draws_kwh[i], running, stop_temp, slot.t_brine)
@@ -219,6 +254,7 @@ def plan_hot_water(
     tank: TankModel = TankModel(),
     settings: TankSettings = TankSettings(),
     tz: tzinfo = timezone.utc,
+    pinned: Sequence[PinnedCharge] = (),
 ) -> HotWaterPlan:
     """Cheapest hold / charge-to-normal / charge-to-lux schedule.
 
@@ -230,7 +266,8 @@ def plan_hot_water(
     """
     slots = list(slots)
     dk = slot_draws(slots, draws, tank, settings.risk)
-    baseline = _simulate_pump(slots, dk, t_tank0, tank, settings.normal_start, settings.normal_stop)
+    pins = slot_pins(slots, pinned)
+    baseline = _simulate_pump(slots, dk, t_tank0, tank, settings.normal_start, settings.normal_stop, pins)
     if not slots:
         return HotWaterPlan([], [], 0.0, 0.0, t_tank0, t_tank0, ["no price slots"])
     targets = {HOLD: settings.economy_stop, NORMAL: settings.charge_target or settings.normal_stop,
@@ -238,7 +275,7 @@ def plan_hot_water(
     acts = (HOLD, NORMAL, LUX)
     step = settings.grid_step
     g_lo = min(settings.floor - 12.0, t_tank0 - 1.0)
-    g_hi = max(targets[LUX], t_tank0) + 1.0
+    g_hi = max([targets[LUX], t_tank0] + [p for p in pins if p is not None]) + 1.0
     n = int(math.ceil((g_hi - g_lo) / step)) + 1
     grid = [g_lo + i * step for i in range(n)]
     last = n - 1
@@ -261,6 +298,13 @@ def plan_hot_water(
 
     def stage(i, t, act):
         slot = slots[i]
+        if pins[i] is not None:
+            # Pinned: the same charge whatever the action.
+            t_end, heat, el = _step(tank, t, slot.hours, dk[i], True, pins[i], slot.t_brine)
+            cost = el * slot.price
+            if t_end < settings.floor:
+                cost += settings.floor_weight * (settings.floor - t_end) * slot.hours
+            return t_end, cost, heat, el, False
         forced = act == HOLD and t < settings.economy_start
         t_end, heat, el = _step(tank, t, slot.hours, dk[i], act != HOLD or forced, targets[act], slot.t_brine)
         cost = el * slot.price
@@ -304,6 +348,11 @@ def plan_hot_water(
     for i, slot in enumerate(slots):
         act = plan[i]
         t_end, cost, heat, el, forced = stage(i, t, act)
+        if pins[i] is not None:
+            steps.append(TankStep(slot.start, slot.end, slot.price, True, False, pins[i], t, t_end,
+                                  dk[i], heat, el, el * slot.price, True))
+            t = t_end
+            continue
         # A planned charge that adds nothing (already at target) is shown as hold.
         planned = act != HOLD and heat > 1e-3
         steps.append(TankStep(slot.start, slot.end, slot.price, planned or forced, forced,
@@ -320,8 +369,10 @@ def plan_hot_water(
 def _blocks(
     steps: Sequence[TankStep], settings: TankSettings, mean_price: float, tz: tzinfo
 ) -> List[HotWaterBlock]:
-    def key(s: TankStep) -> bool:
-        return s.charging and not s.forced
+    def key(s: TankStep) -> str:
+        if s.pinned:
+            return "legionella"
+        return "charge" if s.charging and not s.forced else "hold"
 
     blocks: List[HotWaterBlock] = []
     i = 0
@@ -333,7 +384,11 @@ def _blocks(
         heat = sum(s.heat_kwh for s in chunk)
         cost = sum(s.cost for s in chunk)
         avg = sum(s.price for s in chunk) / len(chunk)
-        if key(steps[i]):
+        if key(steps[i]) == "legionella":
+            target = max(s.target or 0.0 for s in chunk)
+            blocks.append(HotWaterBlock(chunk[0].start, chunk[-1].end, "legionella", target, 2, True,
+                                        heat, cost, "legionella cycle (fixed)"))
+        elif key(steps[i]) == "charge":
             target = max(s.target or 0.0 for s in chunk)
             later = [s for s in steps[j + 1:] if s.draw_kwh > 0.05]
             why = "price %.2f vs %.2f average" % (avg, mean_price)

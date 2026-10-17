@@ -9,6 +9,7 @@ from context import utc
 from logic.optimizer.horizon import HorizonSlot
 from logic.optimizer.tank import (
     DrawForecast,
+    PinnedCharge,
     TankModel,
     TankSettings,
     draws_from_week_profile,
@@ -74,6 +75,31 @@ class TankTest(unittest.TestCase):
         self.assertTrue(charge.boost)
         self.assertEqual(charge.mode, 2)
         self.assertGreaterEqual(plan.min_temp, 40.0 - 0.05)
+
+    def test_pinned_legionella_replaces_the_charge_before_it(self) -> None:
+        pin = PinnedCharge(START + timedelta(hours=3), START + timedelta(hours=5), 60.0)
+        plan = plan_hot_water(day(se3), 46.0, [MORNING], TankModel(), TankSettings(), pinned=[pin])
+        legionella = [b for b in plan.blocks if b.action == "legionella"]
+        self.assertEqual(len(legionella), 1)
+        self.assertEqual((legionella[0].start, legionella[0].end, legionella[0].target), (pin.start, pin.end, 60.0))
+        # The pinned charge covers the morning draw: no extra charge before it.
+        charges = [b for b in plan.blocks if b.action == "charge" and b.start < MORNING.start]
+        self.assertEqual(charges, [])
+        pinned = [s for s in plan.steps if s.pinned]
+        self.assertEqual(len(pinned), 8)
+        self.assertGreater(pinned[-1].t_end, 59.0)
+        # Without the pin the plan charges before the draw.
+        free = plan_hot_water(day(se3), 46.0, [MORNING], TankModel(), TankSettings())
+        self.assertTrue([b for b in free.blocks if b.action == "charge" and b.start < MORNING.start])
+
+    def test_pin_is_in_the_baseline_too(self) -> None:
+        pin = PinnedCharge(START + timedelta(hours=3), START + timedelta(hours=5), 60.0)
+        flat = day(lambda h: 1.0)
+        with_pin = plan_hot_water(flat, 48.0, [], TankModel(), TankSettings(), pinned=[pin])
+        without = plan_hot_water(flat, 48.0, [], TankModel(), TankSettings())
+        # The cycle happens either way: it does not show as savings or loss.
+        self.assertGreater(with_pin.cost, without.cost)
+        self.assertGreater(with_pin.baseline_cost, without.baseline_cost)
 
     def test_no_draws_no_charges(self) -> None:
         plan = plan_hot_water(day(lambda h: 1.0), 48.0, [], TankModel(), TankSettings())

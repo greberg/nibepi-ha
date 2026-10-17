@@ -18,6 +18,7 @@ from logic.legionella import (
     LegionellaState,
     due_times,
     last_done_from_history,
+    legionella_pin,
     parameters,
     plan_window,
 )
@@ -197,6 +198,20 @@ class Guard(unittest.TestCase):
         self.assertEqual(status.info["due"], rig.guard.state.last_done + timedelta(days=13))
         status = rig.tick(minutes=7 * 60)
         self.assertEqual(status.state, "idle")
+
+    def test_pin_for_the_optimiser(self):
+        start = utc(2026, 10, 14, 10)
+        rig = Rig(start)
+        rig.guard.state.last_done = start - timedelta(days=13, hours=1)
+        rig.prices = slots(start, [5] * 40 + [1] * 8 + [5] * 48)
+        status = rig.tick()
+        self.assertEqual(legionella_pin(status), (utc(2026, 10, 14, 20), utc(2026, 10, 14, 22), 60.0))
+        status = rig.tick(minutes=600)
+        self.assertEqual(status.state, "running")
+        self.assertEqual(legionella_pin(status), (rig.now, rig.now + 2 * H, 60.0))
+        self.assertIsNone(legionella_pin(None))
+        rig.guard.state.last_done = rig.now
+        self.assertIsNone(legionella_pin(rig.tick(minutes=1)))
 
     def test_shadow_plans_but_never_runs(self):
         rig = Rig(utc(2026, 10, 14, 10))
