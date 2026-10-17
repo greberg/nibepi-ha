@@ -272,8 +272,14 @@ It has its own **Hot water mode** select (`off` / `shadow` (default) /
 | Hot water priority | off | A one-time increase when BT7 reaches the start temperature | 48132 |
 | Hot water comfort mode by price | off | Comfort mode (economy/normal/luxury) per price level | 47041 |
 
+The [legionella guard](#legionella-guard) is an option (on by default),
+not a switch: with Hot water mode `active` it runs a legionella cycle
+when the pump's own periodic increase has not reached the temperature in
+time (47047, 48132, 47134).
+
 Automatic luxury or priority on makes VV-AI control stand aside, as in
-Node-RED. One controller owns the three registers and writes them through
+Node-RED. One controller owns the hot water registers (and, for the
+[legionella guard](#legionella-guard), 47047) and writes them through
 leases (`ttl` 900 s, renewed every 5 minutes):
 
 - 48132 temporary lux is leased at 4 only while a charge is wanted, and
@@ -291,8 +297,9 @@ leases (`ttl` 900 s, renewed every 5 minutes):
   once. If Home Assistant goes away, they expire after 15 minutes.
 
 Registers read (and added to the gateway's polling): BT7 40013, BT6
-40014, prio 43086, 47041, 47134, 48132, and the start/stop temperatures
-47043-47045 / 47047-47049.
+40014, prio 43086, 47041, 47134, 48132, the start/stop temperatures
+47043-47045 / 47047-47049, and the pump's periodic increase 47046, 47050,
+47051.
 
 The learned profile is stored in `.storage/nibepi_vv_profile_<entry id>`
 (debounced saves, survives restarts, removed with the integration). Its
@@ -333,6 +340,65 @@ Removing the container kept that folder.
 
 Only paths inside the configuration directory are accepted. The import
 replaces the current profile; days since Node-RED stopped are not decayed.
+
+### Legionella guard
+
+The F1255 heats the tank to a legionella temperature by itself every few
+days: its *periodic increase* (47050 on/off, 47051 interval in days,
+47046 stop temperature). The guard makes sure that keeps happening while
+NibePi controls hot water, and steps in only when it does not.
+
+- **It watches.** Every time BT7 holds the legionella temperature
+  (- 0.5 °C) for 10 minutes counts as a cycle, whoever heated it: the
+  pump's periodic increase, a luxury charge or the guard itself. That is
+  *Legionella last done*. On the first start it is looked up in the
+  recorder's BT7 history (the gateway's discovered sensor); without one
+  the guard counts from the start of that history, or from now.
+- **Temperature and interval** come from the pump: 47046 and, when the
+  periodic increase is on (47050 = 1), 47051. When they cannot be read,
+  or the periodic increase is off, the options are used (60 °C, 14 days).
+- **When it steps in.** With the pump's periodic increase on, the pump is
+  expected to do it: the guard waits until one day after the pump's own
+  run should have happened, so it does not run a redundant cycle just
+  before the pump's. With it off, the guard is due one day before the
+  interval ends. *Legionella next due* shows that time.
+- **Where.** Once due, the cycle is placed in the cheapest 2 h window
+  (prices of the configured source, time-weighted) before the deadline
+  (one day later); on equal prices a night window wins. Without prices it
+  starts at 02:00; with the deadline at hand or passed, at once. The plan
+  shows in the sensor's attributes (`planned_start`, `planned_end`,
+  `state`: off / disabled / idle / planned / running / done / aborted)
+  and as a red block on the hot water card's 24 h strip; the cost
+  optimiser treats it as a fixed charge and plans no extra charge right
+  before it.
+- **The cycle** (Hot water mode `active` only): 47047 (luxury stop
+  temperature) is leased at the legionella temperature and 48132 = 4
+  (one-time increase) is leased, and the 47134 hold is released so the
+  pump can charge. It ends when BT7 has held the temperature for the hold
+  time; the leases are released and the gateway restores 47047 to its
+  baseline and 48132 to 0. After 4 h without success, or as soon as BT7
+  is missing or stale, the cycle is aborted, a repair issue is raised and
+  it is retried 12 h later. The cycle comes before every other hot water
+  decision (VV-AI, the optimiser, the min-temp floor, Away).
+- **Run legionella cycle now** (button) starts one at once; it is refused
+  unless Hot water mode is `active` and the guard is on.
+- **Shadow mode** shows the plan ("would run now") and writes nothing;
+  `off` only keeps watching BT7.
+- **Away.** Legionella safety does not pause while away: a due cycle runs
+  whatever *Hot water while away* says (with Hot water mode `active`).
+
+Verified by the user on the F1255: a one-time increase (48132 = 4) heats
+the tank to the luxury stop temperature 47047. Believed but not verified:
+holding the hot water period 47134 at 0 (VV-AI control, optimised charges)
+does not block the pump's own periodic increase. If it does, the guard
+still catches it one day late. Whether 47047 above the compressor's
+maximum is reached depends on the immersion heater being allowed for hot
+water.
+
+Options (*Hot water* step): legionella guard on, temperature 60 °C and
+interval 14 days (used when the pump's cannot be read or its periodic
+increase is off), hold time 10 min, window 2 h, abort after 4 h, start
+hour without prices 2.
 
 ## Cost optimiser
 
@@ -685,7 +751,8 @@ What it does (options under **Configure**, last step *Away*):
   charges) is on and allowed to hold 47134 at 0, it keeps doing so and
   only the min-temp floor heats; otherwise as economy. It never takes
   47134 when VV-AI control is off, so it does not stop the pump's
-  periodic increase where it was not already stopped.
+  periodic increase where it was not already stopped. A due
+  [legionella cycle](#legionella-guard) runs in every choice.
 - **Learning.** VV learning neither learns nor decays while away: no
   draws are expected, and the days away must not fade the profile.
 
@@ -743,10 +810,11 @@ hours: 24
 **Hot water**: BT7 and BT6, the planned action and each feature's reason,
 the next expected draw (with the profile's confidence), the next charge
 (the optimiser's when it is in use, else VV-AI's), a 24 h strip of the
-VV-AI windows and the optimiser's charges, the Away chip (with a warning
-when Away changes hot water but the hot water mode is not `active`), the
-hot water mode, and the state of the 47041, 47134 and 48132 leases as
-dots.
+VV-AI windows, the optimiser's charges and a planned legionella cycle,
+the legionella guard (last done and by whom, next due or the planned
+window, running), the Away chip (with a warning when Away changes hot
+water but the hot water mode is not `active`), the hot water mode, and the
+state of the 47041, 47134, 48132 and 47047 leases as dots.
 
 ```yaml
 type: custom:nibepi-hotwater-card
@@ -848,7 +916,7 @@ Hot water:
 - `switch` Hot water learning, VV-AI control, automatic luxury, priority,
   comfort mode by price, optimise hot water charges
 - `sensor` Hot water planned action (off / fault / idle / heat_now /
-  block / economy / normal / luxury; attributes: reasons per feature,
+  block / economy / normal / luxury / legionella; attributes: reasons per feature,
   targets per register, next_heat_start, closed_until, plan_24h, inputs,
   last_actions)
 - `sensor` Hot water next expected draw (timestamp; attributes:
@@ -856,7 +924,15 @@ Hot water:
   expected_drop, learned_draws, last_learned, last_event, day_sums,
   top_slots, imported_from, profile)
 - `sensor` Hot water comfort mode lease (47041), Hot water period lease
-  (47134), Temporary lux lease (48132), as the lease sensors above
+  (47134), Temporary lux lease (48132), Luxury stop temperature lease
+  (47047), as the lease sensors above
+- `sensor` Legionella last done (timestamp; attributes: by (`pump`, `ha`,
+  `history`), temperature, hold_since) and Legionella next due (timestamp;
+  attributes: state, reason, temperature, temperature_source,
+  interval_days, interval_source, pump_periodic, deadline, planned_start,
+  planned_end, placed_by, running_since, timeout_at, last_result,
+  last_result_at, retry_after); see [Legionella guard](#legionella-guard)
+- `button` Run legionella cycle now
 
 The Gateway sensor is on when `<prefix>status` says `online` or a live
 `gateway/state` arrived in the last 3 minutes, and off when the status

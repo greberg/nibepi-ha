@@ -161,3 +161,82 @@ bookkeeping moves to the current day without decaying (`VvProfile.hold`)
 and the hours of the current day up to now count as seen, so the hours
 spent away on the day of the return are not decayed the next day either.
 
+## Legionella guard (G16)
+
+`logic/legionella.py`; the hot water controller runs it on every tick and
+stays the one owner of the registers. User-facing description: README,
+*Legionella guard*.
+
+**Why.** Nothing checked that the tank ever reaches a legionella
+temperature. VV-AI control and optimised charges hold 47134 at 0 and keep
+the tank cool, and the pump's periodic increase (47050/47051/47046) is the
+only thing that heats it to 55-70 °C.
+
+**Facts from the pump.** Verified by the user: a one-time increase
+(48132 = 4) heats the tank to the luxury stop temperature 47047. Believed,
+not verified: 47134 = 0 does not block the periodic increase. So the guard
+mostly detects the pump's own cycles and acts as a backstop.
+
+**Detection.** `last_done` = the moment BT7 has held
+`temperature - 0.5 °C` for `hold` minutes (default 10); a missing or stale
+BT7 breaks the hold. It is tracked in every hot water mode except during
+a failed tick, persisted in the hot water store under `legionella`
+(older stores load without it), and seeded once from the recorder's BT7
+history (35 days; without a hold found, counting starts at the first
+history row, else now).
+
+**Due and deadline.** `ref` = `last_done` (or the counting start):
+
+| 47050 periodic HW | due | deadline |
+|---|---|---|
+| 1 (pump runs it) | ref + interval + 1 day | due + 1 day |
+| 0 or unreadable | ref + interval - 1 day | ref + interval |
+
+Interval: 47051 when 47050 = 1 and readable, else the option (14 days).
+Temperature: 47046 when readable (55-70 °C), else the option (60 °C).
+
+**Window.** From `max(now, due)` to the deadline, 15-minute steps: the
+cheapest window of `window` hours (2) among windows fully covered by
+known price slots (time-weighted average); ties go to a night start
+(22-06 local), then the earlier one. No covered window: the first
+`start_hour` (02:00) in the span, else at once; the deadline at hand or
+passed: at once. The plan is recomputed every tick until it starts.
+
+**Cycle** (mode `active`):
+
+1. lease 47047 = legionella temperature (one decimal, lease limits
+   45..70 °C; the gateway captures the pump's own value as the baseline);
+2. lease 48132 = 4 (one-time increase);
+3. release 47134 (the gateway restores the pump's period), so the pump
+   may charge even where VV-AI control or optimised charges held it at 0;
+4. 47041 is left to the other features: the one-time increase heats to
+   47047 whatever the comfort mode;
+5. done when BT7 has held the temperature for the hold time: release
+   47047 and 48132 (the gateway restores the baseline and 0).
+
+Aborts: 4 h (`max_hours`) without success, or BT7 missing or stale: the
+leases are released, a repair issue `legionella_failed` is raised (cleared
+by the next successful hold), and the next attempt waits 12 h. Leaving
+`active` or turning the guard off cancels a running cycle. The button
+*Run legionella cycle now* starts one at once in `active` mode.
+
+**Priority.** The cycle overrides VV-AI control, optimised charges, the
+min-temp floor, automatic luxury, priority and Away (all choices): the
+controller's state is `legionella`. While 47047 is leased (and 15 min
+after, until the pump's value is read back) the plans use the luxury stop
+temperature from before the cycle, so the VV-AI plan and the optimiser
+do not take the legionella temperature for the pump's luxury setting.
+
+**Optimiser.** A planned or running cycle is a pinned block in the tank
+plan (`PinnedCharge`): a forced charge to its temperature in its window,
+in the plan and the baseline alike. The plan then has no reason to buy a
+charge right before it, and the block (`legionella`) is not turned into a
+controller window.
+
+**Shadow** shows the plan (`state` planned, "would run now") and writes
+nothing; `off` only watches BT7.
+
+**To verify on the pump:** whether 47134 = 0 blocks the periodic increase;
+whether BT7 (the top sensor) reaches 47047 - 0.5 °C when the pump stops
+on its own charge sensor; whether the immersion heater is used above the
+compressor's maximum (otherwise a 60+ °C cycle times out).
