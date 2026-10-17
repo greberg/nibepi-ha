@@ -15,6 +15,7 @@ import {
   hotwaterWindows,
   leaseRows,
   legionellaModel,
+  versionLine,
   nibepiEntries,
   planChart,
   planPoints,
@@ -384,4 +385,11 @@ test("legionellaModel reads the two sensors", () => {
   assert.equal(idle.due, null);
   assert.equal(idle.lastDone, null);
   assert.equal(legionellaModel({ state: iso(NOW), attributes: { state: "running", planned_start: iso(NOW - H), planned_end: iso(NOW + H) } }).running, true);
+});
+
+test("versionLine shows the gateway and integration versions", () => {
+  const v = { state: "2.0.0", attributes: { build: "20261017-87eb233", integration_version: "0.6.0" } };
+  assert.equal(versionLine(v, null), "Gateway v2.0.0 (build 20261017-87eb233) · Integration v0.6.0");
+  assert.equal(versionLine({ state: "unknown", attributes: { integration_version: "0.6.0" } }, { attributes: { version: "1.9.0" } }), "Gateway v1.9.0 · Integration v0.6.0");
+  assert.equal(versionLine(undefined, undefined), "");
 });

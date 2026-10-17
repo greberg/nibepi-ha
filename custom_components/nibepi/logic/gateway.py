@@ -17,7 +17,7 @@ is not running, or not on this broker or topic prefix.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Mapping, Optional, Tuple
 
 STATUS_TIMEOUT = timedelta(seconds=120)
 # gateway/state is published once a minute; allow one missed publish.
@@ -43,6 +43,36 @@ def gateway_online(
     if started is not None and now - started >= STATUS_TIMEOUT:
         return False
     return None
+
+
+def _text(value: Any) -> Optional[str]:
+    """A short version-like string from a payload field, else None."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:64] if value else None
+
+
+def gateway_version(state: Mapping[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """(version, build) from the gateway's ``gateway/state`` payload."""
+    return _text(state.get("version")), _text(state.get("build"))
+
+
+def device_sw_version(
+    version: Optional[str], build: Optional[str], integration: Optional[str]
+) -> Optional[str]:
+    """The device page's firmware line: "gateway 2.0.0 (20261017-87eb233),
+    integration 0.6.0"; the parts that are known."""
+    parts = []
+    if version:
+        parts.append("gateway %s%s" % (version, " (%s)" % build if build else ""))
+    if integration:
+        parts.append("integration %s" % integration)
+    return ", ".join(parts) or None
 
 
 def status_hint(topic: str) -> str:

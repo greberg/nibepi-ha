@@ -33,6 +33,7 @@ const {
   sparkline,
   stateOf,
   sysKey,
+  versionLine,
   toNumber,
 } = core;
 
@@ -846,10 +847,12 @@ class NibePiGatewayCard extends NibePiCard {
       })
       .join("");
 
+    const versions = versionLine(this.st("gateway_version"), gw);
     return `<div class="content">
       ${hint}${status}
       ${leases ? `<div class="divider"></div>${leases}` : ""}
       ${rmu ? `<div class="grid">${rmu}</div>` : ""}
+      ${versions ? `<div class="muted small" data-more="gateway_version" role="button" tabindex="0">${esc(versions)}</div>` : ""}
     </div>`;
   }
 }

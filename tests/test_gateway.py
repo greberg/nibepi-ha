@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import context  # noqa: F401
 from context import utc
-from logic.gateway import gateway_online, status_hint
+from logic.gateway import device_sw_version, gateway_online, gateway_version, status_hint
 
 
 class GatewayOnlineTest(unittest.TestCase):
@@ -37,6 +37,23 @@ class GatewayOnlineTest(unittest.TestCase):
 
     def test_hint_names_topic(self) -> None:
         self.assertIn("nibe/modbus/status", status_hint("nibe/modbus/status"))
+
+
+class VersionTest(unittest.TestCase):
+    def test_gateway_version(self) -> None:
+        self.assertEqual(gateway_version({"version": " 2.0.0 ", "build": "20261017-87eb233"}), ("2.0.0", "20261017-87eb233"))
+        self.assertEqual(gateway_version({"version": 2, "build": None}), ("2", None))
+        self.assertEqual(gateway_version({"version": True, "build": ["x"]}), (None, None))
+        self.assertEqual(gateway_version({}), (None, None))
+
+    def test_device_sw_version(self) -> None:
+        self.assertEqual(
+            device_sw_version("2.0.0", "20261017-87eb233", "0.6.0"),
+            "gateway 2.0.0 (20261017-87eb233), integration 0.6.0",
+        )
+        self.assertEqual(device_sw_version("2.0.0", None, None), "gateway 2.0.0")
+        self.assertEqual(device_sw_version(None, "x", "0.6.0"), "integration 0.6.0")
+        self.assertIsNone(device_sw_version(None, None, None))
 
 
 if __name__ == "__main__":

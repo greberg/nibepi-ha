@@ -824,8 +824,10 @@ type: custom:nibepi-hotwater-card
 raw writes (`raw_set`), bus errors per minute (the gateway's *Bus errors*
 sensor), the last message, every lease with its state, value and time
 left (curve offset and RMU40 per system, the hot water registers) and
-errors, and the RMU40 feed per system. `status_url` adds a link to the
-gateway's status page.
+errors, and the RMU40 feed per system; at the bottom the gateway's and
+the integration's versions ("Gateway v2.0.0 (build 20261017-87eb233) ·
+Integration v0.6.0"). `status_url` adds a link to the gateway's status
+page.
 
 ```yaml
 type: custom:nibepi-gateway-card
@@ -908,7 +910,14 @@ Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
 price_source, price_status, and for Tibber tibber_home and
 prices_fetched), `binary_sensor` Gateway (online/offline, see below),
 `sensor` Expected savings today, Heat pump cost today and Hot water optimiser plan (see
-[Optimiser entities](#optimiser-entities)).
+[Optimiser entities](#optimiser-entities)), and the diagnostic `sensor`
+Gateway version (the gateway's `version` from `gateway/state`, unknown
+until one arrives; attributes: build (the image's build id, date and
+backend commit), core, integration_version).
+
+The device page (Settings → Devices → NibePi) shows both versions as its
+firmware: "gateway 2.0.0 (20261017-87eb233), integration 0.6.0", updated
+when the gateway reports a new version.
 
 Hot water:
 

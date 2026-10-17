@@ -110,6 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NibePiConfigEntry) -> bo
         raise ConfigEntryNotReady("MQTT integration is not available")
     runtime = NibePiRuntime(hass, entry)
     entry.runtime_data = runtime
+    await runtime.async_load_integration_version()
     # The Away state first: the switch shows it from the start.
     await runtime.async_load_away()
     # Platforms first: the mode select restores its state before the first

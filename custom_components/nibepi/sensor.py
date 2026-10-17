@@ -17,6 +17,7 @@ from homeassistant.util import dt as dt_util
 from . import NibePiConfigEntry
 from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source
 from .entity import NibePiEntity
+from .logic.gateway import gateway_version
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
 from .logic.legionella import REG_LUX_STOP
 from .logic.lease import MODE_ACTIVE, LeaseManager
@@ -55,6 +56,7 @@ async def async_setup_entry(
     entities.append(HotWaterActionSensor(runtime))
     entities.append(DrawProfileSensor(runtime))
     entities.append(HotWaterOptimiserSensor(runtime))
+    entities.append(GatewayVersionSensor(runtime))
     entities.append(LegionellaLastDoneSensor(runtime))
     entities.append(LegionellaNextDueSensor(runtime))
     entities.extend(HotWaterLeaseSensor(runtime, reg, key) for reg, key in HW_LEASES.items())
@@ -243,6 +245,29 @@ class RmuLeaseStateSensor(LeaseStateSensor):
             }
         )
         return attrs
+
+
+class GatewayVersionSensor(NibePiEntity, SensorEntity):
+    """The gateway's version (from ``gateway/state``) and the integration's."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "gateway_version")
+
+    @property
+    def native_value(self) -> Optional[str]:
+        return gateway_version(self.runtime.gateway_state)[0]
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        runtime = self.runtime
+        build = gateway_version(runtime.gateway_state)[1]
+        return {
+            "build": build,
+            "core": runtime.gateway_state.get("core"),
+            "integration_version": runtime.integration_version,
+        }
 
 
 class PriceLevelSensor(NibePiEntity, SensorEntity):

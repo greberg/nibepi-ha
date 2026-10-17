@@ -209,6 +209,9 @@
       },
       "hw_legionella_next_due": {
         "default": "mdi:calendar-clock"
+      },
+      "gateway_version": {
+        "default": "mdi:tag-outline"
       }
     }
   },

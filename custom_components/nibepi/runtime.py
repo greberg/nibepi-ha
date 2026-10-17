@@ -19,6 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceNotFound
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import sun as sun_helper
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -29,6 +30,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.storage import Store
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import SpeedConverter, TemperatureConverter
 
@@ -129,7 +131,7 @@ from .logic.away import (
     rules_away,
 )
 from .logic.away import start as away_start
-from .logic.gateway import STATUS_TIMEOUT, gateway_online, status_hint
+from .logic.gateway import STATUS_TIMEOUT, device_sw_version, gateway_online, gateway_version, status_hint
 from .logic.registers import came_online, registers_to_request
 from .logic.hwcontrol import (
     FEATURE_DEFAULTS,
@@ -250,6 +252,9 @@ class NibePiRuntime:
         self.readings: Dict[int, Reading] = {}
         self.base_adjust: Dict[str, float] = {}
         self.gateway_state: Dict[str, Any] = {}
+        # The integration's own version (manifest), set before the platforms.
+        self.integration_version: Optional[str] = None
+        self._sw_version: Optional[str] = None
         self.status_payload: Optional[str] = None
         self.status_at: Optional[datetime] = None
         self.gateway_state_at: Optional[datetime] = None
@@ -304,7 +309,33 @@ class NibePiRuntime:
             name=self.entry.data.get(CONF_NAME, DEFAULT_NAME),
             manufacturer=MANUFACTURER,
             model="F1255 (NibePi gateway)",
+            sw_version=self.sw_version,
         )
+
+    @property
+    def sw_version(self) -> Optional[str]:
+        """The device page's firmware line: gateway and integration versions."""
+        version, build = gateway_version(self.gateway_state)
+        return device_sw_version(version, build, self.integration_version)
+
+    async def async_load_integration_version(self) -> None:
+        try:
+            integration = await async_get_integration(self.hass, DOMAIN)
+            self.integration_version = str(integration.version) if integration.version else None
+        except Exception:  # noqa: BLE001 - the version is only shown
+            _LOGGER.debug("NibePi: integration version unknown", exc_info=True)
+        self._sw_version = self.sw_version
+
+    def _update_device_version(self) -> None:
+        """Show a new gateway version on the device page."""
+        sw_version = self.sw_version
+        if sw_version == self._sw_version:
+            return
+        self._sw_version = sw_version
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, self.entry.entry_id)})
+        if device is not None and device.sw_version != sw_version:
+            registry.async_update_device(device.id, sw_version=sw_version)
 
     def opt(self, key: str, system: Optional[str] = None) -> Any:
         options = self.entry.options
@@ -527,6 +558,7 @@ class NibePiRuntime:
             now = dt_util.utcnow()
             self.gateway_state = data
             self.gateway_state_at = now
+            self._update_device_version()
             # The retained copy replayed on subscribe may be from a gateway
             # that has since died; only a live one shows it is running.
             if not getattr(msg, "retain", False):

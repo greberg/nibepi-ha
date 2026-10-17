@@ -630,6 +630,18 @@ export function hotwaterAlerts(hass, ids) {
 // Gateway and leases
 // --------------------------------------------------------------------------
 
+/** "Gateway v2.0.0 (build 20261017-87eb233) · Integration v0.6.0" from the
+ * Gateway version sensor, falling back to the Gateway entity's version
+ * attribute; the parts that are known, "" without any. */
+export function versionLine(versionState, gatewayState) {
+  const a = versionState?.attributes || {};
+  const gw = !isMissing(versionState) ? versionState.state : gatewayState?.attributes?.version || null;
+  const parts = [];
+  if (gw) parts.push(`Gateway v${gw}${a.build ? ` (build ${a.build})` : ""}`);
+  if (a.integration_version) parts.push(`Integration v${a.integration_version}`);
+  return parts.join(" · ");
+}
+
 /** One row per lease entity present: {key, label, register, state,
  * countdown, error, value}. */
 export function leaseRows(hass, ids, now, leases = LEASES) {

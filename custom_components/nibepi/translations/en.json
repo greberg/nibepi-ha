@@ -516,6 +516,9 @@
           "inactive": "Inactive",
           "error": "Error"
         }
+      },
+      "gateway_version": {
+        "name": "Gateway version"
       }
     },
     "binary_sensor": {
