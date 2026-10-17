@@ -182,15 +182,23 @@ def _row(row: Any) -> Tuple[Any, Optional[float]]:
 
 
 def parse_states(
-    rows: Iterable[Any], convert: Optional[Callable[[float], Optional[float]]] = None
+    rows: Iterable[Any],
+    convert: Optional[Callable[[float], Optional[float]]] = None,
+    states: Optional[Mapping[str, float]] = None,
 ) -> List[Tuple[float, Optional[float]]]:
-    """Recorder rows -> sorted (epoch, value); unavailable/unknown is None."""
+    """Recorder rows -> sorted (epoch, value); unavailable/unknown is None.
+
+    ``states``: the number of a text state (an enum sensor's, e.g. the own
+    priority sensor's ``hot_water`` -> 20)."""
     out: List[Tuple[float, Optional[float]]] = []
     for row in rows or ():
         state, ts = _row(row)
         if ts is None:
             continue
-        value = state_value(state)
+        if states is not None and isinstance(state, str) and state in states:
+            value: Optional[float] = states[state]
+        else:
+            value = state_value(state)
         if value is not None and convert is not None:
             value = convert(value)
         out.append((ts, value))
@@ -276,6 +284,7 @@ def import_series(
     convert: Optional[Callable[[float], Optional[float]]] = None,
     meter: Optional[MeterConfig] = None,
     wanted: Optional[float] = None,
+    states: Optional[Mapping[str, float]] = None,
 ) -> Dict[int, float]:
     """Recorder rows of one entity -> one value per 10-minute bin.
 
@@ -284,7 +293,7 @@ def import_series(
     ``running`` (share of the bin above 0, e.g. a pump) or ``meter``
     (kWh per bin from the user's meter, ``meter`` config).
     """
-    points = parse_states(rows, convert)
+    points = parse_states(rows, convert, states)
     if kind == "meter":
         if meter is None:
             raise ValueError("meter config missing")

@@ -884,8 +884,10 @@ class NibePiRuntime:
         done_at: Optional[datetime] = None
         covered: Optional[datetime] = None
         try:
-            entity_id = self.optimizer.gateway_entity(REG_BT7)
-            if "recorder" not in self.hass.config.components or entity_id is None:
+            # The own BT7 sensor and the gateway's discovered one (older
+            # history, when its discovery is on): one series, merged.
+            sources = self.optimizer.history_sources(REG_BT7)
+            if "recorder" not in self.hass.config.components or not sources:
                 self._legionella_history_tries += 1
                 if self._legionella_history_tries < 10:
                     return  # discovery may come later: tried again on a later tick
@@ -901,9 +903,13 @@ class NibePiRuntime:
                 if temperature is None:
                     temperature = settings.temperature
                 start = now - timedelta(days=LEGIONELLA_HISTORY_DAYS)
-                rows = await get_instance(self.hass).async_add_executor_job(
-                    _fetch_history, self.hass, entity_id, start, now
-                )
+                rows: List[Any] = []
+                for entity_id in sources:
+                    rows.extend(
+                        await get_instance(self.hass).async_add_executor_job(
+                            _fetch_history, self.hass, entity_id, start, now
+                        )
+                    )
                 points = parse_states(rows)
                 done = last_done_from_history(
                     points, temperature - LEGIONELLA_TOLERANCE, settings.hold_minutes * 60.0, now.timestamp()
@@ -914,7 +920,7 @@ class NibePiRuntime:
                     covered = dt_util.utc_from_timestamp(points[0][0])
                 _LOGGER.info(
                     "NibePi: legionella history of %s (%d rows): last hold of %.1f °C %s",
-                    entity_id, len(rows), temperature, done_at.isoformat() if done_at else "not found",
+                    ", ".join(sources), len(rows), temperature, done_at.isoformat() if done_at else "not found",
                 )
             async with hw.lock:
                 guard.apply_history(done_at, covered, now)

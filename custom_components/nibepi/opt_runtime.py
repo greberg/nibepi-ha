@@ -12,7 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import callback
@@ -27,6 +27,7 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from homeassistant.components import mqtt
 
 from .const import (
+    DOMAIN,
     HOUSE_EMITTERS,
     METER_SCOPE_HEAT_PUMP,
     METER_SCOPES,
@@ -86,6 +87,7 @@ from .logic.opthistory import (
     retention_start,
 )
 from .logic import optcost
+from .logic.pump import PRIORITY_VALUES, history_sources, own_unique_id, register_owner
 from .logic.optimizer.gate import GateDecision, gate
 from .logic.optimizer.meter import MeterConfig, MeterReading
 from .logic.away import HW_NORMAL as AWAY_HW_NORMAL
@@ -165,6 +167,15 @@ class ImportItem:
     kind: str
     wanted: Optional[float] = None
     problem: Optional[str] = None
+    # Read after ``entity_id``, for the bins it left empty (the gateway's
+    # discovered sensor behind the integration's own one).
+    fallbacks: Tuple[str, ...] = ()
+    # Text state -> number (the own priority sensor's enum states).
+    states: Optional[Dict[str, float]] = None
+
+    @property
+    def sources(self) -> Tuple[str, ...]:
+        return ((self.entity_id,) if self.entity_id else ()) + self.fallbacks
 
 
 def _tz() -> Any:
@@ -361,6 +372,27 @@ class OptimizerRuntime:
             return None
         return registry.async_get_entity_id("sensor", "mqtt", register_unique_id(ids[0], register))
 
+    def own_entity(self, register: Any) -> Optional[str]:
+        """The entity id of the integration's own sensor for ``register``
+        (logic/pump.py, or the pump offset), unless it is disabled."""
+        rt = self.rt
+        offsets = {system: sys.registers["offset"] for system, sys in rt.systems.items()}
+        owner = register_owner(register, rt.systems, offsets)
+        if owner is None:
+            return None
+        key, system = owner
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, own_unique_id(rt.entry.entry_id, key, system))
+        entry = registry.async_get(entity_id) if entity_id else None
+        if entry is None or entry.disabled_by is not None:
+            return None
+        return entity_id
+
+    def history_sources(self, register: Any) -> Tuple[str, ...]:
+        """Where ``register``'s recorder history is: the own sensor, then the
+        gateway's discovered one (logic/pump.py ``history_sources``)."""
+        return history_sources(self.own_entity(register), self.gateway_entity(register))
+
     @property
     def meter_scope(self) -> str:
         """What the meter measures: ``heat_pump`` (default) or ``whole_house``."""
@@ -491,9 +523,11 @@ class OptimizerRuntime:
         items: List[ImportItem] = []
 
         def register_item(name: str, reg: int, kind: str, wanted: Optional[float] = None) -> ImportItem:
-            entity_id = self.gateway_entity(reg)
-            problem = None if entity_id else "no discovered gateway sensor for register %d" % reg
-            return ImportItem(name, entity_id, kind, wanted, problem)
+            sources = self.history_sources(reg)
+            if not sources:
+                return ImportItem(name, None, kind, wanted, "no own or discovered gateway sensor for register %d" % reg)
+            states = PRIORITY_VALUES if reg == REG_PRIO else None
+            return ImportItem(name, sources[0], kind, wanted, None, sources[1:], states)
 
         for name, reg, kind, wanted in SHARED_SOURCES:
             items.append(register_item(name, reg, kind, wanted))
@@ -543,37 +577,40 @@ class OptimizerRuntime:
                 self.bootstrap_report[item.column] = "skipped: %s" % (item.problem or "no entity")
                 missing.append(item.column)
                 continue
-            if self.imported.get(item.column) == item.entity_id:
+            key = ",".join(item.sources)
+            if self.imported.get(item.column) == key:
                 continue
-            state = self.hass.states.get(item.entity_id)
-            convert = None
-            if item.kind == "mean" and state is not None and state.attributes.get("device_class") == "temperature":
-                convert = _celsius(state.attributes.get("unit_of_measurement"))
-            rows = await get_instance(self.hass).async_add_executor_job(
-                _fetch_history, self.hass, item.entity_id, start, end
-            )
-            series = await self.hass.async_add_executor_job(
-                import_series,
-                rows,
-                item.kind,
-                start.timestamp(),
-                end.timestamp(),
-                convert,
-                self.meter_config if item.kind == "meter" else None,
-                item.wanted,
-            )
-            added = self.log.fill(item.column, series)
-            self.imported[item.column] = item.entity_id
-            self.bootstrap_report[item.column] = "%s: %d of %d bins imported (%d rows)" % (
-                item.entity_id, added, len(series), len(rows),
-            )
+            # The own sensor first; a fallback only fills the bins left empty.
+            report = []
+            for entity_id in item.sources:
+                state = self.hass.states.get(entity_id)
+                convert = None
+                if item.kind == "mean" and state is not None and state.attributes.get("device_class") == "temperature":
+                    convert = _celsius(state.attributes.get("unit_of_measurement"))
+                rows = await get_instance(self.hass).async_add_executor_job(
+                    _fetch_history, self.hass, entity_id, start, end
+                )
+                series = await self.hass.async_add_executor_job(
+                    import_series,
+                    rows,
+                    item.kind,
+                    start.timestamp(),
+                    end.timestamp(),
+                    convert,
+                    self.meter_config if item.kind == "meter" else None,
+                    item.wanted,
+                    item.states,
+                )
+                added = self.log.fill(item.column, series)
+                report.append("%s: %d of %d bins imported (%d rows)" % (entity_id, added, len(series), len(rows)))
+            self.imported[item.column] = key
+            self.bootstrap_report[item.column] = "; ".join(report)
             changed = True
         if missing:
             self._log_once(
                 "missing",
-                "NibePi optimiser: no recorder history for %s (gateway sensors are found by "
-                "their MQTT discovery unique id; is discovery on in the gateway?). "
-                "The history builds up from now on.",
+                "NibePi optimiser: no recorder history for %s (no own sensor for it, and "
+                "no gateway sensor from MQTT discovery). The history builds up from now on.",
                 ", ".join(missing),
             )
         if changed:

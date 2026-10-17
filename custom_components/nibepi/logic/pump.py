@@ -2,9 +2,10 @@
 
 Key pump values (BT1, BT7, BT6, BT2, BT3, BT50, degree minutes, the
 compressor and the priority) become sensors of the integration, fed from
-the register values it already receives for control, so they do not
-depend on the gateway's MQTT discovery (``mqtt.discovery``, off by
-default).
+the register values it already receives for control. The cards and the
+optimiser's history import no longer depend on the gateway's MQTT
+discovery (``mqtt.discovery``, off by default): its sensors are only a
+fallback.
 
 A sensor's key is its translation key and, with ``_<system>`` for a
 per-system one, its card key (logic/cards.py).
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 # Shared sensors: key -> register.
 PUMP_SENSORS: Dict[str, int] = {
@@ -53,6 +54,7 @@ PRIORITY_STATES: Dict[int, str] = {
     50: "transfer",
     60: "cooling",
 }
+PRIORITY_VALUES: Dict[str, float] = {state: float(value) for value, state in PRIORITY_STATES.items()}
 
 
 def pump_registers(systems: Iterable[str]) -> List[int]:
@@ -79,6 +81,29 @@ def pump_sensor_keys(systems: Iterable[str]) -> Dict[str, Any]:
 def own_unique_id(entry_id: str, key: str, system: Optional[str] = None) -> str:
     """The unique id of an integration entity (entity.py's format)."""
     return "%s_%s_%s" % (entry_id, system, key) if system else "%s_%s" % (entry_id, key)
+
+
+def register_owner(
+    register: Any, systems: Iterable[str], offsets: Optional[Mapping[str, int]] = None
+) -> Optional[Tuple[str, Optional[str]]]:
+    """(key, system) of the own sensor that shows ``register``, or None.
+
+    ``offsets``: system -> curve offset register, shown by the per-system
+    ``pump_offset`` sensor."""
+    systems = list(systems)
+    for system, reg in (offsets or {}).items():
+        if reg == register:
+            return "pump_offset", system
+    for key, reg in PUMP_SENSORS.items():
+        if reg == register:
+            return key, None
+    for system in systems:
+        for key, by_system in SYSTEM_PUMP_SENSORS.items():
+            if by_system.get(system) == register:
+                return key, system
+    if register == BUS_HEALTH:
+        return BUS_HEALTH, None
+    return None
 
 
 def is_fresh(received: Optional[datetime], now: datetime, stale_after: timedelta = STALE_AFTER) -> bool:
@@ -123,3 +148,16 @@ def parse_bus_health(payload: Any) -> Optional[Dict[str, Any]]:
         errors = chksum + no_respond
     return {"errors": errors, "ok": count("ok"), "chksum": count("chksum"), "no_respond": count("no_respond")}
 
+
+def history_sources(own: Optional[str], gateway: Optional[str]) -> Tuple[str, ...]:
+    """The entities to read a value's recorder history from, best first.
+
+    The integration's own sensor first; the gateway's discovered sensor
+    (when there is one) after it, for the time before the own sensor
+    existed. Empty when there is neither.
+    """
+    found: List[str] = []
+    for entity_id in (own, gateway):
+        if entity_id and entity_id not in found:
+            found.append(entity_id)
+    return tuple(found)
