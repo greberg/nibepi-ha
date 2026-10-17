@@ -286,5 +286,65 @@ class LeaseTest(unittest.TestCase):
         self.assertEqual(lease.decide(MODE_ACTIVE, 7, True), LeaseAction("set", 2))
 
 
+class LegionellaTest(unittest.TestCase):
+    """The legionella guard inside the controller (logic/legionella.py)."""
+
+    def overdue_rig(self) -> Rig:
+        rig = Rig(local(2026, 10, 13, 12))
+        rig.values[47050] = 0.0
+        rig.values[47046] = 60.0
+        rig.controller.legionella.state.last_done = rig.now - timedelta(days=15)
+        return rig
+
+    def test_cycle_overrides_vv_control_and_away(self) -> None:
+        from dataclasses import replace
+
+        rig = self.overdue_rig()
+        decision = rig.decide(vv_control=True)
+        self.assertEqual(decision.state, "legionella")
+        self.assertEqual(decision.targets[47047], 60.0)
+        self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
+        self.assertIsNone(decision.targets[REG_PERIOD], "47134 released so the pump may charge")
+        self.assertIn("legionella", decision.details["heat_sources"])
+        # Away economy does not pause it.
+        inputs = replace(rig.inputs(), away="economy")
+        decision = rig.controller.decide(MODE_ACTIVE, {"vv_control": True}, inputs, rig.settings)
+        self.assertEqual(decision.targets[47047], 60.0)
+        self.assertEqual(decision.targets[REG_COMFORT], 0, "47041 left to the other features")
+
+    def test_shadow_plans_and_writes_nothing(self) -> None:
+        rig = self.overdue_rig()
+        decision = rig.decide(MODE_SHADOW, vv_control=True)
+        self.assertNotEqual(decision.state, "legionella")
+        self.assertIsNone(decision.targets[47047])
+        self.assertEqual(decision.legionella.state, "planned")
+
+    def test_off_still_watches_bt7(self) -> None:
+        rig = Rig(local(2026, 10, 13, 12))
+        rig.values[REG_BT7] = 61.0
+        rig.decide(MODE_OFF)
+        rig.now += timedelta(minutes=10)
+        decision = rig.decide(MODE_OFF)
+        self.assertEqual(decision.legionella.state, "off")
+        self.assertEqual(rig.controller.legionella.state.last_done, rig.now)
+
+    def test_plans_use_the_luxury_stop_from_before_the_cycle(self) -> None:
+        rig = self.overdue_rig()
+        rig.decide(vv_control=True)
+        rig.values[47047] = 60.0  # the leased value comes back from the pump
+        rig.held = {47047: True}
+        rig.now += timedelta(minutes=1)
+        decision = rig.decide(vv_control=True)
+        self.assertEqual(decision.details["stop_temperatures"]["luxury"], 56.0)
+
+    def test_lux_stop_lease_has_one_decimal(self) -> None:
+        leases = HotWaterLeases()
+        rig = self.overdue_rig()
+        actions = dict((lease.register, action) for lease, action in leases.decide(MODE_ACTIVE, rig.decide(), True))
+        self.assertEqual(actions[47047], LeaseAction("set", 60.0))
+        self.assertEqual(leases.leases[47047].decide(MODE_ACTIVE, 62.54, True), LeaseAction("set", 62.5))
+        self.assertEqual(leases.leases[47047].decide(MODE_ACTIVE, 80, True), LeaseAction("set", 70))
+
+
 if __name__ == "__main__":
     unittest.main()

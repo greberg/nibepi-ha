@@ -1,4 +1,4 @@
-"""The hot water controller: one owner for 47041, 47134 and 48132.
+"""The hot water controller: one owner for 47041, 47134, 48132 and 47047.
 
 Node-RED had three writers for these registers (``vvAiTick``,
 ``hotwaterPlugin``, ``priceAdjustCurve``) that kept each other apart with
@@ -60,6 +60,20 @@ Away mode (``HotWaterInputs.away``, the ``away_hot_water`` option):
   off, so the pump's own periodic increase (legionella) is only held off
   where it already was.
 - Learning neither learns nor decays while away (``learn_away``).
+
+Legionella guard (``logic/legionella.py``, settings ``legionella``):
+
+- Every tick, in every mode but ``off``, BT7 is watched for a legionella
+  hold (the pump's own periodic increase counts), and a window is planned
+  when a cycle is due.
+- While a cycle runs (hot water mode ``active`` only) it overrides every
+  other decision, Away included: 47047 (luxury stop temperature) = the
+  legionella temperature, 48132 = 4 (a one-time increase heats to 47047),
+  47134 released so the pump may charge. 47041 is left to the other
+  features: a one-time increase heats to the luxury stop temperature
+  whatever the comfort mode.
+- While 47047 is (or was just) leased, the luxury stop temperature the
+  plans use is the value from before the cycle.
 """
 
 from __future__ import annotations
@@ -81,6 +95,17 @@ from .hotwater import (
     comfort_mode,
 )
 from .inputs import PriceSlot, Reading, to_float, usable
+from .legionella import INPUT_REGISTERS as LEGIONELLA_REGISTERS
+from .legionella import (
+    REG_LUX_STOP,
+    REG_PERIODIC,
+    REG_PERIODIC_INTERVAL,
+    REG_PERIODIC_STOP,
+    LegionellaGuard,
+    LegionellaSettings,
+    LegionellaStatus,
+    parameters,
+)
 from .away import HW_ECONOMY as AWAY_ECONOMY
 from .away import HW_MINIMUM as AWAY_MINIMUM
 from .lease import MODE_ACTIVE, MODE_OFF, LeaseAction, LeaseManager
@@ -110,9 +135,10 @@ INPUT_REGISTERS = (
     REG_COMFORT,
     REG_PERIOD,
     REG_TEMP_LUX,
-) + tuple(sorted(set(START_REGISTERS.values()) | set(STOP_REGISTERS.values())))
+) + tuple(sorted(set(START_REGISTERS.values()) | set(STOP_REGISTERS.values()) | set(LEGIONELLA_REGISTERS)))
 
-LEASE_LIMITS = {REG_COMFORT: (0, 2), REG_PERIOD: (0, 180), REG_TEMP_LUX: (0, 4)}
+LEASE_LIMITS = {REG_COMFORT: (0, 2), REG_PERIOD: (0, 180), REG_TEMP_LUX: (0, 4), REG_LUX_STOP: (45, 70)}
+LEASE_DECIMALS = {REG_LUX_STOP: 1}
 
 FEATURES = ("learning", "vv_control", "autoluxury", "priority", "price_comfort", "optimiser")
 # Node-RED's defaults, except learning (see docs/hotwater.md).
@@ -125,7 +151,7 @@ FEATURE_DEFAULTS = {
     "optimiser": False,
 }
 
-STATES = ("off", "fault", "idle", "heat_now", "block", "economy", "normal", "luxury")
+STATES = ("off", "fault", "idle", "heat_now", "block", "economy", "normal", "luxury", "legionella")
 DEFAULT_FLOOR_TEMP = 35.0
 
 
@@ -140,6 +166,7 @@ class HotWaterSettings:
     autolux_time: Any = DEFAULT_AUTOLUX_TIME
     comfort: Mapping[str, Any] = field(default_factory=lambda: dict(COMFORT_DEFAULTS))
     sensor_timeout: Optional[float] = None
+    legionella: LegionellaSettings = field(default_factory=LegionellaSettings)
 
 
 @dataclass(frozen=True)
@@ -160,12 +187,13 @@ class HotWaterInputs:
 @dataclass
 class HotWaterDecision:
     state: str
-    targets: Dict[int, Optional[int]]
+    targets: Dict[int, Optional[float]]
     reasons: Dict[str, str]
     inputs_ok: bool = True
     windows: List[HeatWindow] = field(default_factory=list)
     next_heat: Optional[datetime] = None
     details: Dict[str, Any] = field(default_factory=dict)
+    legionella: Optional[LegionellaStatus] = None
 
     @classmethod
     def idle(cls, state: str, reason: str) -> "HotWaterDecision":
@@ -183,6 +211,7 @@ class HotWaterController:
         self.priority = HwPriority()
         self.last_event: Optional[DrawEvent] = None
         self.last_event_at: Optional[datetime] = None
+        self.legionella = LegionellaGuard()
 
     def reset_control(self) -> None:
         self.vv.reset()
@@ -239,14 +268,23 @@ class HotWaterController:
     ) -> HotWaterDecision:
         """``sample`` False: an extra decision between ticks, which does not
         add an automatic luxury sample (they are counted per minute)."""
-        if mode == MODE_OFF:
-            self.reset_control()
-            return HotWaterDecision.idle("off", "hot water mode off")
         now = inputs.now
         timeout = settings.sensor_timeout
+        legionella = self._legionella(mode, inputs, settings)
+        if mode == MODE_OFF:
+            self.reset_control()
+            decision = HotWaterDecision.idle("off", "hot water mode off")
+            decision.legionella = legionella
+            return decision
+        lux_held = bool(inputs.held.get(REG_LUX_STOP))
 
         def value(reg: int) -> Optional[float]:
-            return self._value(inputs, reg, timeout)
+            raw = self._value(inputs, reg, timeout)
+            if reg == REG_LUX_STOP:
+                # During (and just after) a cycle 47047 reads the
+                # legionella temperature; plan with the pump's own value.
+                return self.legionella.lux_stop(now, raw, lux_held)
+            return raw
 
         def on(name: str) -> bool:
             return bool(features.get(name, FEATURE_DEFAULTS[name]))
@@ -416,7 +454,17 @@ class HotWaterController:
         if sources:
             targets[REG_TEMP_LUX] = TEMP_LUX_START
 
-        if targets[REG_TEMP_LUX] is not None:
+        # Legionella cycle: first priority, Away included.
+        reasons["legionella"] = legionella.reason
+        if legionella.run and legionella.temperature is not None:
+            targets[REG_LUX_STOP] = legionella.temperature
+            targets[REG_TEMP_LUX] = TEMP_LUX_START
+            targets[REG_PERIOD] = None
+            sources.append("legionella")
+
+        if targets[REG_LUX_STOP] is not None:
+            state = "legionella"
+        elif targets[REG_TEMP_LUX] is not None:
             state = "heat_now"
         elif targets[REG_PERIOD] is not None:
             state = "block"
@@ -440,6 +488,7 @@ class HotWaterController:
             "floor_active": self.vv.floor_active,
             "plan_source": "optimiser" if optimised else ("away" if reduced else "vv_ai"),
             "away": inputs.away,
+            "legionella": legionella.state,
         }
         return HotWaterDecision(
             state=state,
@@ -449,15 +498,39 @@ class HotWaterController:
             windows=windows,
             next_heat=next_heat_start(windows, now, self.vv.closed_until, use_price),
             details=details,
+            legionella=legionella,
+        )
+
+    def _legionella(self, mode: str, inputs: HotWaterInputs, settings: HotWaterSettings) -> LegionellaStatus:
+        """Watch BT7 for a legionella hold and plan or run a cycle."""
+        timeout = settings.sensor_timeout
+
+        def value(reg: int) -> Optional[float]:
+            return self._value(inputs, reg, timeout)
+
+        guard = self.legionella
+        params = parameters(
+            settings.legionella, value(REG_PERIODIC), value(REG_PERIODIC_INTERVAL), value(REG_PERIODIC_STOP)
+        )
+        bt7 = value(REG_BT7)
+        temperature = guard.state.run_temperature or params.temperature
+        guard.observe(inputs.now, bt7, temperature, settings.legionella.hold_minutes)
+        lux = value(REG_LUX_STOP)
+        if inputs.held.get(REG_LUX_STOP):
+            lux = None  # ours: not the pump's own value
+        return guard.step(
+            inputs.now, inputs.tz, mode, settings.legionella, bt7, params, inputs.price_slots, lux
         )
 
 
 class HotWaterLeases:
-    """The three leases and when to set, renew or release them."""
+    """The four leases and when to set, renew or release them."""
 
     def __init__(self, owner: str = "ha", clock: Optional[Callable[[], datetime]] = None) -> None:
         self.leases: Dict[int, LeaseManager] = {
-            reg: LeaseManager(reg, owner=owner, clock=clock, low=low, high=high)
+            reg: LeaseManager(
+                reg, owner=owner, clock=clock, low=low, high=high, decimals=LEASE_DECIMALS.get(reg, 0)
+            )
             for reg, (low, high) in LEASE_LIMITS.items()
         }
 
