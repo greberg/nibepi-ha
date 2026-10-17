@@ -22,6 +22,8 @@ export const SYSTEM_KEYS = [
   "rmu_lease_state",
   "optimiser_plan",
   "house_model",
+  "supply",
+  "bt50",
 ];
 
 export const COMPONENTS = ["indoor", "price", "weather"];
@@ -86,6 +88,11 @@ export function registryIds(hass, deviceIds) {
     } else if (!(key in ids)) {
       ids[key] = entry.entity_id;
     }
+  }
+  // The indoor sensor the integration uses is only in the map; BT50 is
+  // the default one.
+  for (const s of SYSTEMS) {
+    if (!ids[`indoor_${s}`] && ids[`bt50_${s}`]) ids[`indoor_${s}`] = ids[`bt50_${s}`];
   }
   return ids;
 }

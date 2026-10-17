@@ -8,9 +8,12 @@ attribute: card key -> entity id, built here.
 Keys:
 
 - the integration's entities by translation key, ``<key>_<system>`` for a
-  per-system entity (``planned_offset_s1``, ``price_level``);
-- the gateway's MQTT-discovered sensors in ``GATEWAY_SENSORS`` and, per
-  system, ``SYSTEM_SENSORS`` (``bt50_s1``, ``supply_s2``);
+  per-system entity (``planned_offset_s1``, ``price_level``), among them
+  its own pump sensors (logic/pump.py: ``outdoor``, ``bt7_hw_top``,
+  ``supply_s1``, ``bt50_s2``, ``bus_health``, ...);
+- for a pump sensor key without an own entity (disabled), the gateway's
+  MQTT-discovered sensor for the same register, when the gateway's
+  discovery is on;
 - ``indoor_<system>``: the indoor sensor the integration uses, the
   configured entity, else BT50.
 
@@ -21,33 +24,11 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
-# The gateway's discovered sensors: key -> register (unique id
+from .pump import pump_sensor_keys
+
+# Card key -> register of the gateway's discovered sensors (unique id
 # ``<device>_<register>``; ``bus_health`` is the Bus errors sensor).
-GATEWAY_SENSORS: Dict[str, Any] = {
-    "outdoor": 40004,  # BT1
-    "bt7_hw_top": 40013,
-    "bt6_hw_load": 40014,
-    "bt3_return": 40012,
-    "degree_minutes": 43005,
-    "compressor_frequency": 43136,
-    "compressor_power": 43141,
-    "priority": 43086,
-    "bus_health": "bus_health",
-}
-SYSTEM_SENSORS: Dict[str, Dict[str, int]] = {
-    "bt50": {"s1": 40033, "s2": 40032},
-    "supply": {"s1": 40008, "s2": 40007},  # BT2 / EP21-BT2
-}
-
-
-def gateway_sensor_keys(systems: Iterable[str]) -> Dict[str, Any]:
-    """Card key -> register of the gateway's discovered sensors."""
-    found = dict(GATEWAY_SENSORS)
-    for system in systems:
-        for name, regs in SYSTEM_SENSORS.items():
-            if system in regs:
-                found["%s_%s" % (name, system)] = regs[system]
-    return found
+gateway_sensor_keys = pump_sensor_keys
 
 
 def card_entities(
@@ -62,6 +43,8 @@ def card_entities(
     systems = list(systems)
     found: Dict[str, str] = {k: v for k, v in own.items() if v}
     for key, register in gateway_sensor_keys(systems).items():
+        if key in found:
+            continue  # the integration's own sensor
         entity_id = gateway_entity(register)
         if entity_id:
             found[key] = entity_id

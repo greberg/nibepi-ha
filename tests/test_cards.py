@@ -26,6 +26,26 @@ class CardEntitiesTest(unittest.TestCase):
         self.assertNotIn("bt7_hw_top", found)
         self.assertEqual(list(found), sorted(found))
 
+    def test_own_sensors_win(self) -> None:
+        own = {"outdoor": "sensor.own_bt1", "bt7_hw_top": "sensor.own_bt7", "bt50_s1": "sensor.own_bt50"}
+        gateway = {40004: "sensor.gw_bt1", 40013: "sensor.gw_bt7", 40014: "sensor.gw_bt6", 40033: "sensor.gw_bt50"}
+        found = card_entities(own, gateway.get, ["s1"], {"s1": None})
+        self.assertEqual(found["outdoor"], "sensor.own_bt1")
+        self.assertEqual(found["bt7_hw_top"], "sensor.own_bt7")
+        self.assertEqual(found["bt6_hw_load"], "sensor.gw_bt6")  # no own one (disabled): the gateway's
+        self.assertEqual(found["indoor_s1"], "sensor.own_bt50")
+
+    def test_no_gateway_discovery(self) -> None:
+        own = {
+            "outdoor": "sensor.bt1", "bt7_hw_top": "sensor.bt7", "bt6_hw_load": "sensor.bt6",
+            "supply_s1": "sensor.bt2", "bt3_return": "sensor.bt3", "bt50_s1": "sensor.bt50",
+            "bus_health": "sensor.bus",
+        }
+        found = card_entities(own, lambda register: None, ["s1"], {"s1": None})
+        for key, entity_id in own.items():
+            self.assertEqual(found[key], entity_id)
+        self.assertEqual(found["indoor_s1"], "sensor.bt50")
+
     def test_configured_indoor_wins(self) -> None:
         found = card_entities({}, {40033: "sensor.bt50"}.get, ["s1", "s2"], {"s1": "sensor.netatmo"})
         self.assertEqual(found["indoor_s1"], "sensor.netatmo")

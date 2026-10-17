@@ -79,6 +79,40 @@ test("resolveEntities falls back to the registry without the map", () => {
   assert.deepEqual(r.systems, ["s1", "s2"]);
 });
 
+test("the registry fallback finds the own pump sensors", () => {
+  const hass = hassWith({
+    entities: [
+      reg("binary_sensor.nibe_gateway", "gateway_online"),
+      reg("sensor.nibe_outdoor_temperature_bt1", "outdoor"),
+      reg("sensor.nibe_hot_water_top_bt7", "bt7_hw_top"),
+      reg("sensor.nibe_hot_water_charging_bt6", "bt6_hw_load"),
+      reg("sensor.nibe_supply_temperature_bt2_s1", "supply"),
+      reg("sensor.nibe_room_temperature_bt50_s1", "bt50"),
+      reg("sensor.nibe_bus_errors", "bus_health"),
+    ],
+    states: { "binary_sensor.nibe_gateway": { state: "on", attributes: {} } },
+  });
+  const r = resolveEntities(hass, {});
+  assert.equal(r.ids.outdoor, "sensor.nibe_outdoor_temperature_bt1");
+  assert.equal(r.ids.bt7_hw_top, "sensor.nibe_hot_water_top_bt7");
+  assert.equal(r.ids.bt6_hw_load, "sensor.nibe_hot_water_charging_bt6");
+  assert.equal(r.ids.bus_health, "sensor.nibe_bus_errors");
+  assert.equal(r.ids.supply_s1, "sensor.nibe_supply_temperature_bt2_s1");
+  assert.equal(r.ids.bt50_s1, "sensor.nibe_room_temperature_bt50_s1");
+  assert.equal(r.ids.indoor_s1, "sensor.nibe_room_temperature_bt50_s1");
+});
+
+test("registryIds: per-system pump sensors and BT50 as indoor", () => {
+  const hass = hassWith({
+    entities: [reg("sensor.nibe_supply_s1", "supply"), reg("sensor.nibe_bt50_s2", "bt50")],
+  });
+  const ids = registryIds(hass);
+  assert.equal(ids.supply_s1, "sensor.nibe_supply_s1");
+  assert.equal(ids.bt50_s2, "sensor.nibe_bt50_s2");
+  assert.equal(ids.indoor_s2, "sensor.nibe_bt50_s2");
+  assert.equal(ids.indoor_s1, undefined);
+});
+
 test("resolveEntities chooses the entry and reports ambiguity", () => {
   const hass = hassWith({
     entities: [reg("binary_sensor.a_gateway", "gateway_online", "dev1"), reg("binary_sensor.b_gateway", "gateway_online", "dev2")],
