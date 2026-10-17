@@ -23,6 +23,7 @@ const {
   hotwaterWindows,
   isMissing,
   leaseColor,
+  legionellaModel,
   leaseRows,
   num,
   parseTime,
@@ -119,6 +120,7 @@ const STYLES = `
   .strip .seg { position: absolute; top: 0; bottom: 0; }
   .strip .seg.vv { background: var(--info-color, var(--primary-color)); opacity: 0.55; }
   .strip .seg.charge { background: var(--warning-color, #ffa600); }
+  .strip .seg.legionella { background: var(--error-color, #db4437); }
   .ticks { position: relative; height: 14px; font-size: 10px; color: var(--secondary-text-color); }
   .ticks span { position: absolute; transform: translateX(-50%); }
   ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--primary-text-color); }
@@ -658,7 +660,7 @@ class NibePiHotWaterCard extends NibePiCard {
 
   watched() {
     const ids = this._ids || {};
-    return ["bt7_hw_top", "bt6_hw_load", "hw_mode", "hw_planned_action", "hw_draw_profile", "hw_optimiser_plan", "away", "away_until", ...HW_LEASES.map((l) => l.key)]
+    return ["bt7_hw_top", "bt6_hw_load", "hw_mode", "hw_planned_action", "hw_draw_profile", "hw_optimiser_plan", "hw_legionella_next_due", "hw_legionella_last_done", "away", "away_until", ...HW_LEASES.map((l) => l.key)]
       .map((k) => ids[k])
       .filter(Boolean);
   }
@@ -700,7 +702,8 @@ class NibePiHotWaterCard extends NibePiCard {
     const usingOpt = oa.in_use || (oa.enabled && optNext);
     const nextCharge = usingOpt && optNext ? `${esc(optNext)} <span class="muted small">optimiser</span>` : vvNext ? `${esc(vvNext)} <span class="muted small">VV-AI</span>` : "–";
 
-    const windows = hotwaterWindows({ vvPlan: aa.plan_24h, blocks: oa.blocks, now, hours: 24 });
+    const leg = legionellaModel(this.st("hw_legionella_next_due"), this.st("hw_legionella_last_done"));
+    const windows = hotwaterWindows({ vvPlan: aa.plan_24h, blocks: oa.blocks, legionella: leg?.window, now, hours: 24 });
     const ticks = [];
     const hour = new Date(now);
     hour.setMinutes(0, 0, 0);
@@ -717,6 +720,8 @@ class NibePiHotWaterCard extends NibePiCard {
         .join("")}</div>
       <div class="ticks"><span style="left:0; transform:none">now</span>${ticks.join("")}</div>
       <div class="legend"><span><i style="background: var(--info-color, var(--primary-color)); opacity:.55; height: 8px"></i>VV-AI window</span><span><i style="background: var(--warning-color, #ffa600); height: 8px"></i>Optimiser charge</span>${
+        windows.some((w) => w.kind === "legionella") ? '<span><i style="background: var(--error-color, #db4437); height: 8px"></i>Legionella</span>' : ""
+      }${
         windows.length ? "" : '<span>nothing planned</span>'
       }</div>
     </div>`;
@@ -728,6 +733,22 @@ class NibePiHotWaterCard extends NibePiCard {
         s.state,
       )}"></i>${esc(l.register)}</span>`;
     }).join("");
+
+    let legionella = "";
+    if (leg) {
+      const last = leg.lastDone !== null ? `${esc(formatAge(leg.lastDone, now, true))}${leg.lastBy ? ` <span class="muted small">${esc(leg.lastBy === "ha" ? "NibePi" : leg.lastBy)}</span>` : ""}` : "–";
+      let next;
+      if (leg.running) next = `<b>running</b>${leg.temperature !== null ? ` <span class="muted small">to ${esc(formatNumber(leg.temperature))} °C</span>` : ""}`;
+      else if (leg.state === "planned" && leg.window) next = `${esc(this.fmtTime(leg.window.start))}–${esc(formatClock(leg.window.end))} <span class="muted small">planned</span>`;
+      else if (leg.state === "off" || leg.state === "disabled") next = `<span class="muted">${esc(leg.state === "off" ? "hot water off" : "guard off")}</span>`;
+      else if (leg.due !== null) next = `${esc(this.fmtTime(leg.due))}${leg.pumpPeriodic ? ' <span class="muted small">if the pump has not</span>' : ""}`;
+      else next = "–";
+      if (leg.state === "aborted" && leg.lastResult) next += ` <span class="muted small">${esc(leg.lastResult)}</span>`;
+      legionella = `<div class="grid">
+        ${this.stat("hw_legionella_last_done", `Legionella${leg.temperature !== null ? ` ${formatNumber(leg.temperature)} °C` : ""}`, last)}
+        ${this.stat("hw_legionella_next_due", "Next legionella", next)}
+      </div>`;
+    }
 
     const alerts = this.alertList(hotwaterAlerts(this._hass, this._ids));
     const awayNote = aa.reasons?.away ? `<div class="reason">${esc(aa.reasons.away)}</div>` : "";
@@ -741,6 +762,7 @@ class NibePiHotWaterCard extends NibePiCard {
         ${this.stat("hw_draw_profile", "Next draw", drawText)}
         ${this.stat(usingOpt ? "hw_optimiser_plan" : "hw_planned_action", "Next charge", nextCharge)}
       </div>
+      ${legionella}
       ${strip}
       ${this.awayChip(now)}
       ${this.chips("hw_mode", "Mode")}
@@ -1037,7 +1059,7 @@ class NibePiCardEditor extends HTMLElement {
 const CARDS = [
   [NibePiClimateCard, "NibePi climate", "Indoor vs target, outdoor, the planned and pump curve offset with its parts, the Away toggle, strategy and mode, and alerts for one climate system."],
   [NibePiPlanCard, "NibePi optimiser plan", "Chart of the optimiser's planned offset and predicted indoor temperature with the comfort band and price levels, plus the expected savings."],
-  [NibePiHotWaterCard, "NibePi hot water", "BT7/BT6, the planned action and its reasons, next draw and charge, the next 24 h of planned charges, the Away toggle, hot water mode and leases."],
+  [NibePiHotWaterCard, "NibePi hot water", "BT7/BT6, the planned action and its reasons, next draw and charge, the legionella guard, the next 24 h of planned charges, the Away toggle, hot water mode and leases."],
   [NibePiGatewayCard, "NibePi gateway", "Gateway status, last data, raw writes, bus errors, every lease with its countdown, and the RMU40 feeds."],
   [NibePiSavingsCard, "NibePi cost and savings", "Heat pump cost and expected savings today, against the plan and yesterday, with 7-day sparklines."],
 ];

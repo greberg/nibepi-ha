@@ -34,6 +34,7 @@ export const LEASES = [
   { key: "hw_comfort_lease_state", label: "Hot water comfort", register: 47041 },
   { key: "hw_period_lease_state", label: "Hot water period", register: 47134 },
   { key: "hw_temp_lux_lease_state", label: "Temporary lux", register: 48132 },
+  { key: "hw_lux_stop_lease_state", label: "Luxury stop temperature", register: 47047 },
 ];
 
 export const HW_LEASES = LEASES.slice(4);
@@ -451,9 +452,10 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
 // --------------------------------------------------------------------------
 
 /** Planned hot water windows in [now, now + hours] as fractions of the
- * strip: VV-AI windows (plan_24h, ISO times) and the optimiser's charge
- * blocks (start_at / end_at). */
-export function hotwaterWindows({ vvPlan, blocks, now, hours = 24 }) {
+ * strip: VV-AI windows (plan_24h, ISO times), the optimiser's charge
+ * blocks (start_at / end_at) and a planned or running legionella cycle
+ * ({start, end, temperature} in ms, from legionellaModel().window). */
+export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24 }) {
   const end = now + hours * 3600000;
   const span = end - now;
   const out = [];
@@ -474,7 +476,41 @@ export function hotwaterWindows({ vvPlan, blocks, now, hours = 24 }) {
     const e = parseTime(b.end_at);
     add(s, e, "charge", `Charge ${b.start}–${b.end}${b.target ? ` to ${b.target} °C` : ""}${b.reason ? `: ${b.reason}` : ""}`);
   }
+  if (legionella && legionella.start !== null && legionella.end !== null) {
+    const t = legionella.temperature !== null && legionella.temperature !== undefined ? ` to ${formatNumber(legionella.temperature)} °C` : "";
+    add(legionella.start, legionella.end, "legionella", `Legionella ${formatClock(legionella.start)}–${formatClock(legionella.end)}${t}`);
+  }
   return out.sort((a, b) => a.start - b.start);
+}
+
+/** The legionella guard from its two sensors (Legionella next due, with
+ * the plan in its attributes, and Legionella last done): null without
+ * them, else {state, running, lastDone, lastBy, due, temperature,
+ * temperatureSource, intervalDays, pumpPeriodic, window, lastResult,
+ * reason}. ``window`` ({start, end, temperature}, ms) only while a cycle
+ * is planned or running. */
+export function legionellaModel(nextDue, lastDone) {
+  if (!nextDue && !lastDone) return null;
+  const a = nextDue?.attributes || {};
+  const state = a.state || null;
+  const start = parseTime(a.planned_start);
+  const end = parseTime(a.planned_end);
+  const temperature = toNumber(a.temperature);
+  const planned = state === "planned" || state === "running";
+  return {
+    state,
+    running: state === "running",
+    lastDone: isMissing(lastDone) ? null : parseTime(lastDone.state),
+    lastBy: lastDone?.attributes?.by || null,
+    due: isMissing(nextDue) ? null : parseTime(nextDue.state),
+    temperature,
+    temperatureSource: a.temperature_source || null,
+    intervalDays: toNumber(a.interval_days),
+    pumpPeriodic: a.pump_periodic === true,
+    window: planned && start !== null && end !== null && end > start ? { start, end, temperature } : null,
+    lastResult: a.last_result || null,
+    reason: a.reason || null,
+  };
 }
 
 // --------------------------------------------------------------------------

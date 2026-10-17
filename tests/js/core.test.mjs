@@ -14,6 +14,7 @@ import {
   hotwaterAlerts,
   hotwaterWindows,
   leaseRows,
+  legionellaModel,
   nibepiEntries,
   planChart,
   planPoints,
@@ -349,4 +350,38 @@ test("away model and alerts", () => {
   assert.equal(awayAlert(hass, ids, "mode_s1", "x"), null);
   assert.equal(awayModel(hass, ids, NOW).until, null);
   assert.equal(awayModel({ states: {} }, {}, NOW), null);
+});
+
+test("hotwaterWindows marks a legionella window", () => {
+  const out = hotwaterWindows({ legionella: { start: NOW + 2 * H, end: NOW + 4 * H, temperature: 60 }, now: NOW, hours: 24 });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, "legionella");
+  assert.equal(out[0].from, 2 / 24);
+  assert.match(out[0].label, /^Legionella .* to 60\.0 °C$/);
+  assert.deepEqual(hotwaterWindows({ legionella: null, now: NOW }), []);
+});
+
+test("legionellaModel reads the two sensors", () => {
+  assert.equal(legionellaModel(undefined, undefined), null);
+  const next = {
+    state: iso(NOW + 30 * H),
+    attributes: {
+      state: "planned", temperature: 60, temperature_source: "pump", interval_days: 14, pump_periodic: true,
+      planned_start: iso(NOW + 2 * H), planned_end: iso(NOW + 4 * H), reason: "due",
+    },
+  };
+  const last = { state: iso(NOW - 100 * H), attributes: { by: "pump" } };
+  const m = legionellaModel(next, last);
+  assert.equal(m.state, "planned");
+  assert.equal(m.running, false);
+  assert.equal(m.lastDone, NOW - 100 * H);
+  assert.equal(m.lastBy, "pump");
+  assert.equal(m.due, NOW + 30 * H);
+  assert.deepEqual(m.window, { start: NOW + 2 * H, end: NOW + 4 * H, temperature: 60 });
+  assert.equal(m.pumpPeriodic, true);
+  const idle = legionellaModel({ state: "unknown", attributes: { state: "idle", planned_start: null } }, { state: "unknown" });
+  assert.equal(idle.window, null);
+  assert.equal(idle.due, null);
+  assert.equal(idle.lastDone, null);
+  assert.equal(legionellaModel({ state: iso(NOW), attributes: { state: "running", planned_start: iso(NOW - H), planned_end: iso(NOW + H) } }).running, true);
 });
