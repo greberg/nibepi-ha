@@ -352,8 +352,10 @@ NibePi controls hot water, and steps in only when it does not.
   (- 0.5 °C) for 10 minutes counts as a cycle, whoever heated it: the
   pump's periodic increase, a luxury charge or the guard itself. That is
   *Legionella last done*. On the first start it is looked up in the
-  recorder's BT7 history (the gateway's discovered sensor); without one
-  the guard counts from the start of that history, or from now.
+  recorder's BT7 history (the integration's own *Hot water top (BT7)*
+  sensor, merged with the gateway's discovered one when its MQTT
+  discovery is on); without one the guard counts from the start of that
+  history, or from now.
 - **Temperature and interval** come from the pump: 47046 and, when the
   periodic increase is on (47050 = 1), 47051. When they cannot be read,
   or the periodic increase is off, the options are used (60 °C, 14 days).
@@ -484,13 +486,18 @@ These registers are added to the gateway's polling.
 
 At the first start (and when the indoor sensor or the meter is changed)
 it imports the last 28 days from Home Assistant's **recorder**, so the
-model can be fitted at once. The gateway's register sensors are found
-through its MQTT discovery: the gateway publishes
+model can be fitted at once. A register's history is read from the
+integration's own sensor for it (BT1, BT6, BT2, BT3, BT50, the priority,
+compressor power and frequency, the pump curve offset; see
+[Entities](#entities)), which records from the moment 0.7.0 is installed.
+The gateway's register sensors, when its MQTT discovery is on
+(`NIBEPI_MQTT_DISCOVERY=true`), fill the bins the own sensor has no value
+for (the time before it existed) and are the only source for brine in,
+the addition, the heat meters and the pump: the gateway publishes
 `homeassistant/device/<id>/config` with `<prefix>status` as availability,
-and each register sensor has the unique id `<id>_<register>`. Without
-discovery (`config.mqtt.discovery` off on the gateway), or with the
-registers not recorded, the import of those columns is skipped (logged
-once, listed in the diagnostics) and the history builds up live.
+and each register sensor has the unique id `<id>_<register>`. A column
+with neither, or not recorded, is skipped (logged once, listed in the
+diagnostics) and its history builds up live.
 
 ### Fitting
 
@@ -821,7 +828,7 @@ type: custom:nibepi-hotwater-card
 ```
 
 **Gateway**: online and version, core state, last data from the pump,
-raw writes (`raw_set`), bus errors per minute (the gateway's *Bus errors*
+raw writes (`raw_set`), bus errors per minute (the *Bus errors*
 sensor), the last message, every lease with its state, value and time
 left (curve offset and RMU40 per system, the hot water registers) and
 errors, and the RMU40 feed per system; at the bottom the gateway's and
@@ -845,8 +852,11 @@ type: custom:nibepi-savings-card
 
 The cards find the entities through the Gateway entity's `entities`
 attribute (see [Entities](#entities)), so renamed entities keep working;
-keep the Gateway entity enabled. The gateway's register sensors (BT1, BT6,
-BT7, BT50, the bus errors) need the gateway's MQTT discovery.
+keep the Gateway entity enabled. Outdoor, BT7, BT6, BT50 and the bus
+errors come from the integration's own pump sensors: the gateway's MQTT
+discovery is not needed (since 0.7.0). With one of them disabled, the
+gateway's discovered sensor for the register is used instead, when there
+is one.
 
 **After an update** the browser may keep the old cards: reload with
 Ctrl+F5 (Cmd+Shift+R), or in the app clear the frontend cache (Settings ->
@@ -919,6 +929,29 @@ The device page (Settings → Devices → NibePi) shows both versions as its
 firmware: "gateway 2.0.0 (20261017-87eb233), integration 0.6.0", updated
 when the gateway reports a new version.
 
+Pump values (read-only, from the register values the integration already
+receives; the registers are added to the gateway's polling):
+
+- `sensor` Outdoor temperature (BT1) 40004, Hot water top (BT7) 40013,
+  Hot water charging (BT6) 40014, Return temperature (BT3) 40012 (°C)
+- per system: `sensor` Supply temperature (BT2) S1 / S2 (40008 / 40007)
+  and Room temperature (BT50) S1 / S2 (40033 / 40032), °C
+- `sensor` Degree minutes 43005 (DM), Compressor frequency 43136 (Hz),
+  Compressor power 43141 (W)
+- `sensor` Priority 43086 (off / hot_water / heating / pool / pool_2 /
+  transfer / cooling; unknown for another value)
+- diagnostic `sensor` Bus errors (errors per minute from the gateway's
+  `<prefix>bus_health`: CHKSUM frames plus reads without a reply;
+  attributes ok, chksum, no_respond)
+
+Each has the attribute `register`. They are **unavailable** until a value
+has arrived and when the last one is more than 60 minutes old: the
+gateway sends every polled register on each poll (and the integration
+asks again for one without a value for 30 minutes), so an old value means
+the gateway or the bus is down, and it is not shown or recorded as
+current. A BT50 without a connected sensor shows whatever the pump
+reports for it; disable the entity.
+
 Hot water:
 
 - `select` Hot water mode
@@ -952,10 +985,11 @@ and a warning is logged once. Its attributes `status_topic`,
 connected to another broker or with another topic prefix. Its `entities`
 attribute (not recorded) maps keys to entity ids for the
 [cards](#cards): the integration's entities by translation key
-(`planned_offset_s1`, `price_level`), the gateway's discovered sensors
+(`planned_offset_s1`, `price_level`), among them the pump sensors
 (`outdoor`, `bt7_hw_top`, `bt6_hw_load`, `bt50_s1`, `supply_s1`,
-`degree_minutes`, `bus_health`, ...) and `indoor_s1` / `indoor_s2`, the
-indoor sensor the integration uses.
+`degree_minutes`, `bus_health`, ...; for one that is disabled, the
+gateway's discovered sensor for the register, if any) and `indoor_s1` /
+`indoor_s2`, the indoor sensor the integration uses.
 
 ## Going live
 
