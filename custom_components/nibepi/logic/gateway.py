@@ -19,6 +19,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Optional, Tuple
 
+from .texts import Msg, msg
+
 STATUS_TIMEOUT = timedelta(seconds=120)
 # gateway/state is published once a minute; allow one missed publish.
 STATE_FRESH = timedelta(seconds=180)
@@ -75,8 +77,5 @@ def device_sw_version(
     return ", ".join(parts) or None
 
 
-def status_hint(topic: str) -> str:
-    return (
-        "No message on %s: is the NibePi gateway running and connected to this "
-        "MQTT broker with the same topic prefix?" % topic
-    )
+def status_hint(topic: str) -> Msg:
+    return msg("gateway.no_status", topic=topic)

@@ -24,7 +24,10 @@ MAX_STEPS = 48
 
 
 def _plain(value: Any) -> Any:
-    """JSON-safe copy: datetimes as ISO text, dataclasses as dicts."""
+    """JSON-safe copy: datetimes as ISO text, dataclasses as dicts, the
+    logic's texts (``Msg``) as plain English text."""
+    if isinstance(value, str):
+        return str(value)
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, timedelta):

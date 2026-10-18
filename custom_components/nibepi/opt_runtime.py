@@ -421,7 +421,7 @@ class OptimizerRuntime:
             return
         state = self.hass.states.get(entity_id)
         if state is None:
-            self.meter_problem = "%s not found" % entity_id
+            self.meter_problem = msg("meter.not_found", entity=entity_id)
             return
         kind = meter_kind(
             state.attributes.get("unit_of_measurement"),
@@ -429,8 +429,8 @@ class OptimizerRuntime:
             state.attributes.get("state_class"),
         )
         if kind is None:
-            self.meter_problem = "%s: unit %r is not a power or energy meter" % (
-                entity_id, state.attributes.get("unit_of_measurement"),
+            self.meter_problem = msg(
+                "meter.bad_unit", entity=entity_id, unit=repr(state.attributes.get("unit_of_measurement"))
             )
             self.meter_config = None
             return

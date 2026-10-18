@@ -310,6 +310,7 @@ class PriceLevelSensor(NibePiEntity, SensorEntity):
         attrs: Dict[str, Any] = {
             "price_source": price_source(dict(runtime.entry.options)),
             "price_status": runtime.price_status,
+            "price_status_code": code_of(runtime.price_status),
         }
         if attrs["price_source"] == PRICE_SOURCE_TIBBER:
             attrs["tibber_home"] = runtime.tibber_home
@@ -324,7 +325,7 @@ class PriceLevelSensor(NibePiEntity, SensorEntity):
                     "levels": level.levels,
                 }
             )
-        return attrs
+        return self.localised(attrs)
 
 
 # --------------------------------------------------------------------------
@@ -815,7 +816,7 @@ class HouseModelSensor(_SystemSensor):
                 },
             }
         )
-        return attrs
+        return self.localised(attrs)
 
 
 class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):

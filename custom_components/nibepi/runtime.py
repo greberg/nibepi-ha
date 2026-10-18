@@ -272,6 +272,7 @@ class NibePiRuntime:
         self.price_level: Optional[PriceLevel] = None
         self.price_level_at: Optional[datetime] = None
         self.price_slots: List[PriceSlot] = []
+        # A text (Msg), or the Tibber normalisation's English warning.
         self.price_status: Optional[str] = None
         self.tibber_slots: List[PriceSlot] = []
         self.tibber_home: Optional[str] = None
@@ -1218,19 +1219,19 @@ class NibePiRuntime:
     def _price_level(self, now: datetime) -> Optional[PriceLevel]:
         source = price_source(dict(self.entry.options))
         if source == PRICE_SOURCE_NONE:
-            self.price_status = "no price source configured"
+            self.price_status = msg("price.no_source")
             return None
         if source == PRICE_SOURCE_TIBBER:
             slots = self.tibber_slots
         else:
             entity_id = self.opt(OPT_PRICE_ENTITY)
             if not entity_id:
-                self.price_status = "no price sensor configured"
+                self.price_status = msg("price.no_sensor")
                 return None
             state = self.hass.states.get(entity_id)
             attributes = dict(state.attributes) if state is not None else {}
             slots = normalize_prices(attributes, _local_tz(), now)
-            self.price_status = "ok" if slots else "no prices in %s" % entity_id
+            self.price_status = msg("price.status_ok") if slots else msg("price.no_prices_in", entity=entity_id)
         slots = self.price_cache.update(slots, now)
         self.price_slots = slots
         return compute_level(
@@ -1299,20 +1300,16 @@ class NibePiRuntime:
             self._tibber_missing += 1
             if self._tibber_missing >= TIBBER_MISSING_ATTEMPTS:
                 self._set_tibber_issue(True)
-            self._tibber_problem(
-                "%s.%s is not available; set up the Tibber integration or choose "
-                "another price source" % (TIBBER_DOMAIN, TIBBER_SERVICE)
-            )
+            self._tibber_problem(msg("price.tibber_missing", service="%s.%s" % (TIBBER_DOMAIN, TIBBER_SERVICE)))
             return
         except asyncio.TimeoutError:
             self._set_tibber_issue(False)
-            self._tibber_problem("%s.%s timed out" % (TIBBER_DOMAIN, TIBBER_SERVICE))
+            self._tibber_problem(msg("price.tibber_timeout", service="%s.%s" % (TIBBER_DOMAIN, TIBBER_SERVICE)))
             return
         except Exception as err:  # noqa: BLE001 - keep the cached prices
             self._set_tibber_issue(False)
-            self._tibber_problem(
-                "%s.%s failed: %s" % (TIBBER_DOMAIN, TIBBER_SERVICE, str(err) or repr(err))
-            )
+            service = "%s.%s" % (TIBBER_DOMAIN, TIBBER_SERVICE)
+            self._tibber_problem(msg("price.tibber_failed", service=service, error=str(err) or repr(err)))
             return
         self._set_tibber_issue(False)
         result = normalize_tibber_response(response, tz, self.opt(OPT_TIBBER_HOME))
@@ -1320,12 +1317,12 @@ class NibePiRuntime:
             _LOGGER.warning("Tibber prices: %s", result.warning)
             self._tibber_logged = result.warning
         if not result.slots:
-            self._tibber_problem(result.warning or "no prices for Tibber home %r" % result.home)
+            self._tibber_problem(result.warning or msg("price.tibber_no_prices", home=repr(result.home)))
             return
         self.tibber_slots = result.slots
         self.tibber_home = result.home
         self.tibber_fetched = dt_util.utcnow()
-        self.price_status = result.warning or "ok"
+        self.price_status = result.warning or msg("price.status_ok")
         if result.warning is None:
             self._tibber_logged = None
         self._notify()

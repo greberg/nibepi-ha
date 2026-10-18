@@ -82,4 +82,4 @@ class GatewayOnline(NibePiEntity, BinarySensorEntity):
         }
         if runtime.status_payload is None:
             attrs["hint"] = status_hint(runtime.status_topic)
-        return attrs
+        return self.localised(attrs)

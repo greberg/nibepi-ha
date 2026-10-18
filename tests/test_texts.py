@@ -288,5 +288,25 @@ class HotWaterTextsTest(unittest.TestCase):
         self.assertIsNone(result_text(None))
 
 
+class GatewayTextsTest(unittest.TestCase):
+    def test_hint(self) -> None:
+        from logic.gateway import status_hint
+
+        self.assertEqual(both(status_hint("nibe/modbus/status")), (
+            "No message on nibe/modbus/status: is the NibePi gateway running and connected to this MQTT broker "
+            "with the same topic prefix?",
+            "Ingen data på nibe/modbus/status: körs NibePi-gatewayen och är den ansluten till samma MQTT-broker "
+            "med samma prefix?",
+        ))
+
+    def test_meter_and_price_status(self) -> None:
+        self.assertEqual(both(msg("meter.bad_unit", entity="sensor.m", unit=repr("°C"))), (
+            "sensor.m: unit '°C' is not a power or energy meter",
+            "sensor.m: enheten '°C' hör inte till en effekt- eller energimätare",
+        ))
+        self.assertEqual(both(msg("price.no_prices_in", entity="sensor.nordpool")),
+                         ("no prices in sensor.nordpool", "Inga priser i sensor.nordpool"))
+
+
 if __name__ == "__main__":
     unittest.main()
