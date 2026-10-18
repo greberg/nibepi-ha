@@ -600,7 +600,7 @@ class NibePiPlanCard extends NibePiCard {
       loc: this.loc,
     });
     if (!plan || chart.empty) {
-      // The problem is the optimiser's (English) text.
+      // The problem is the optimiser's text, in Home Assistant's language.
       const text = a.problem ? this.t("plan.empty_why", { hours, problem: a.problem }) : this.t("plan.empty", { hours });
       return `<div class="content"><div class="empty">${esc(text)}</div></div>`;
     }
@@ -670,7 +670,7 @@ class NibePiPlanCard extends NibePiCard {
     const status = `<div class="stat"><span class="label">${esc(this.t("plan.planned"))}</span><span class="value">${esc(
       a.planned_at ? this.age(a.planned_at, now, true) : "–",
     )}${a.applied ? "" : ` <span class="muted small">${esc(this.t("plan.not_applied"))}</span>`}</span></div>`;
-    // The summary and explanation are the optimiser's (English) texts.
+    // The summary and explanation are the optimiser's texts, in Home Assistant's language.
     const explanation = Array.isArray(a.explanation) && a.explanation.length
       ? `<details><summary>${esc(this.t("plan.why", { count: a.explanation.length }))}</summary><ul>${a.explanation.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
       : "";
@@ -725,7 +725,7 @@ class NibePiHotWaterCard extends NibePiCard {
       </div>
     </div>`;
 
-    // The reasons are the control's (English) texts; their labels are ours.
+    // The reasons are the control's texts (in Home Assistant's language); their labels are ours.
     const reasons = aa.reasons && typeof aa.reasons === "object" ? Object.entries(aa.reasons).filter(([, v]) => v) : [];
     const reasonLabel = (k) => (hasKey(`reason.${k}`) ? this.t(`reason.${k}`) : k.replace(/_/g, " "));
     const reasonList = reasons.length

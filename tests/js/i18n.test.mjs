@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { STRINGS, clockText, hasKey, langOf, localeOf, normLang, registrationLang, t, toLoc } from "../../custom_components/nibepi/frontend/nibepi-i18n.js";
+import { STRINGS, clockText, hasKey, langOf, leaseErrorText, localeOf, normLang, registrationLang, t, toLoc } from "../../custom_components/nibepi/frontend/nibepi-i18n.js";
 import {
   LEASES,
   climateAlerts,
@@ -215,4 +215,29 @@ test("core helpers produce Swedish text", () => {
   assert.match(chart.priceBands[0].label, /väldigt billigt$/);
   assert.ok(chart.tempTicks.some((tick) => tick.label === "20,5"));
   assert.ok(chart.timeTicks.every((tick) => /^\d\d:\d\d$/.test(tick.label)));
+});
+
+test("the gateway's known lease errors are shown in Swedish", () => {
+  const rmu = "RMU40 S1 is not connected: enable RMU40 for climate system 1 in the pump (menu 5.2) and keep system.rmu_emulation on";
+  assert.equal(leaseErrorText("en", rmu), rmu);
+  assert.equal(
+    leaseErrorText("sv", rmu),
+    "RMU40 S1 är inte ansluten: aktivera RMU40 för klimatsystem 1 i pumpen (meny 5.2) och låt system.rmu_emulation vara på",
+  );
+  assert.equal(leaseErrorText("sv", "Heatpump is not ready yet."), "Värmepumpen är inte redo än.");
+  assert.equal(
+    leaseErrorText("sv", "RMU40 S2 is read-only (another RMU40 answers on the bus or rmu_emulation=false)"),
+    "RMU40 S2 är skrivskyddad (en annan RMU40 svarar på bussen eller rmu_emulation=false)",
+  );
+  assert.equal(leaseErrorText("sv", "Value 4.9 outside lease limits 5..35"), "Värdet 4.9 ligger utanför leasens gränser 5..35");
+  assert.equal(leaseErrorText("sv", "Register dont exist"), "Register dont exist");
+  assert.equal(leaseErrorText("sv", undefined), "");
+
+  const hass = { states: { a: { state: "error", attributes: { error: "Heatpump is not ready yet." } } } };
+  assert.equal(leaseRows(hass, { lease_state_s1: "a" }, NOW, LEASES, "sv")[0].error, "Värmepumpen är inte redo än.");
+  assert.equal(leaseRows(hass, { lease_state_s1: "a" }, NOW)[0].error, "Heatpump is not ready yet.");
+  assert.equal(
+    climateAlerts(hass, { lease_state_s1: "a" }, "s1", "sv")[0].text,
+    "Fel i lease för kurvjustering: Värmepumpen är inte redo än.",
+  );
 });

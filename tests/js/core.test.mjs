@@ -419,6 +419,10 @@ test("legionellaModel reads the two sensors", () => {
   assert.equal(idle.due, null);
   assert.equal(idle.lastDone, null);
   assert.equal(legionellaModel({ state: iso(NOW), attributes: { state: "running", planned_start: iso(NOW - H), planned_end: iso(NOW + H) } }).running, true);
+  // last_result is the localised text; the card keys on its code.
+  const aborted = { state: iso(NOW), attributes: { state: "aborted", last_result: "Avbruten: tidsgräns", last_result_code: "aborted: timeout" } };
+  assert.equal(legionellaModel(aborted).lastResult, "aborted: timeout");
+  assert.equal(legionellaModel({ state: iso(NOW), attributes: { state: "aborted", last_result: "done" } }).lastResult, "done");
 });
 
 test("versionLine shows the gateway and integration versions", () => {

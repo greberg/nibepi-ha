@@ -6,7 +6,7 @@
 // module is by the cards, so all three update together.
 
 const i18n = await import(new URL(`./nibepi-i18n.js${new URL(import.meta.url).search}`, import.meta.url).href);
-const { clockText, hasKey, numberText, t: tr, toLoc } = i18n;
+const { clockText, hasKey, leaseErrorText, numberText, t: tr, toLoc } = i18n;
 
 /** The text of ``key`` in the language of ``loc``. */
 function t(loc, key, vars) {
@@ -517,7 +517,7 @@ export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24, l
     const e = parseTime(b.end_at);
     const vars = { from: clock(s), to: clock(e), temperature: formatNumber(b.target, Number.isInteger(toNumber(b.target)) ? 0 : 1, loc) };
     const text = t(loc, b.target ? "hw.window_charge_to" : "hw.window_charge", vars);
-    // The reason is the optimiser's (English) text.
+    // The reason is the optimiser's text, in Home Assistant's language.
     add(s, e, "charge", `${text}${b.reason ? `: ${b.reason}` : ""}`);
   }
   if (legionella && legionella.start !== null && legionella.end !== null) {
@@ -553,7 +553,8 @@ export function legionellaModel(nextDue, lastDone) {
     intervalDays: toNumber(a.interval_days),
     pumpPeriodic: a.pump_periodic === true,
     window: planned && start !== null && end !== null && end > start ? { start, end, temperature } : null,
-    lastResult: a.last_result || null,
+    // The code ("done", "aborted: timeout"); last_result is its text.
+    lastResult: a.last_result_code || a.last_result || null,
     reason: a.reason || null,
   };
 }
@@ -603,7 +604,7 @@ export function climateAlerts(hass, ids, system, loc) {
   }
   const lease = st(sysKey("lease_state", system));
   if (lease?.state === "error") {
-    const err = lease.attributes?.error;
+    const err = lease.attributes?.error ? leaseErrorText(toLoc(loc).lang, lease.attributes.error) : null;
     alerts.push({ level: "error", text: err ? t(loc, "alert.lease_error_detail", { error: err }) : t(loc, "alert.lease_error"), key: sysKey("lease_state", system) });
   }
   const strategy = st(sysKey("strategy", system));
@@ -706,7 +707,7 @@ export function leaseRows(hass, ids, now, leases = LEASES, loc) {
       register: a.register ?? lease.register,
       state: s.state,
       countdown: s.state === "active" || s.state === "grace" ? countdown(a.expires, now, loc) : null,
-      error: a.error || null,
+      error: a.error ? leaseErrorText(toLoc(loc).lang, a.error) : null,
       value: a.value ?? a.ha_value ?? null,
     });
   }

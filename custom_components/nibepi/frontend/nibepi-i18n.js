@@ -57,6 +57,11 @@ const en = {
   "lease.state.restoring": "restoring",
   "lease.state.inactive": "inactive",
   "lease.state.error": "error",
+  // The gateway's lease refusals (its own English texts, see leaseErrorText)
+  "lease.err.not_ready": "Heatpump is not ready yet.",
+  "lease.err.rmu_not_connected": "RMU40 S{system} is not connected: enable RMU40 for climate system {system} in the pump (menu 5.2) and keep system.rmu_emulation on",
+  "lease.err.rmu_read_only": "RMU40 S{system} is read-only (another RMU40 answers on the bus or rmu_emulation=false)",
+  "lease.err.limits": "Value {value} outside lease limits {min}..{max}",
   "on": "on",
   "off": "off",
 
@@ -279,6 +284,10 @@ const sv = {
   "lease.state.restoring": "återställer",
   "lease.state.inactive": "inaktiv",
   "lease.state.error": "fel",
+  "lease.err.not_ready": "Värmepumpen är inte redo än.",
+  "lease.err.rmu_not_connected": "RMU40 S{system} är inte ansluten: aktivera RMU40 för klimatsystem {system} i pumpen (meny 5.2) och låt system.rmu_emulation vara på",
+  "lease.err.rmu_read_only": "RMU40 S{system} är skrivskyddad (en annan RMU40 svarar på bussen eller rmu_emulation=false)",
+  "lease.err.limits": "Värdet {value} ligger utanför leasens gränser {min}..{max}",
   "on": "på",
   "off": "av",
 
@@ -476,6 +485,26 @@ export function t(lang, key, vars) {
   let text = dict[key] ?? en[key] ?? key;
   if (vars) {
     text = text.replace(/\{(\w+)\}/g, (whole, name) => (vars[name] === undefined || vars[name] === null ? whole : String(vars[name])));
+  }
+  return text;
+}
+
+// The gateway's lease errors are English; the ones the cards know are
+// shown in the language (with their values), any other one as it is.
+const LEASE_ERRORS = [
+  [/^Heatpump is not ready yet\.?$/, "lease.err.not_ready", () => ({})],
+  [/^RMU40 S(\d+) is not connected\b/, "lease.err.rmu_not_connected", (m) => ({ system: m[1] })],
+  [/^RMU40 S(\d+) is read-only\b/, "lease.err.rmu_read_only", (m) => ({ system: m[1] })],
+  [/^Value (\S+) outside lease limits (\S+?)\.\.(\S+)$/, "lease.err.limits", (m) => ({ value: m[1], min: m[2], max: m[3] })],
+];
+
+/** A lease ``error`` from the gateway in ``lang``: English unchanged. */
+export function leaseErrorText(lang, error) {
+  const text = String(error ?? "");
+  if (normLang(lang) === "en") return text;
+  for (const [pattern, key, vars] of LEASE_ERRORS) {
+    const m = pattern.exec(text.trim());
+    if (m) return t(lang, key, vars(m));
   }
   return text;
 }
