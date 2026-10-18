@@ -6,7 +6,11 @@
 // in both to the key itself. Strings take {placeholders}; they hold no
 // HTML, so a card can escape them or put escaped values into them.
 // The Swedish terms are the integration's (translations/sv.json), so the
-// cards match the entity names and select options.
+// cards match the entity names and select options. The integration's own
+// texts (reasons, plan problems) render with renderText below.
+
+// The logic's texts (generated), imported with this module's own ?v= query.
+const { TEXTS, TEXT_LANGS } = await import(new URL(`./nibepi-texts.js${new URL(import.meta.url).search}`, import.meta.url).href);
 
 export const LANGS = ["en", "sv"];
 
@@ -507,6 +511,241 @@ export function leaseErrorText(lang, error) {
     if (m) return t(lang, key, vars(m));
   }
   return text;
+}
+
+// --------------------------------------------------------------------------
+// The integration's texts (reasons, plan problem, explanation)
+// --------------------------------------------------------------------------
+//
+// The entities carry their texts under the ``i18n`` attribute as
+// {c: code, p: params} (logic/texts.py ``structured``); nibepi-texts.js is
+// the catalogue, generated from logic/texts.py. renderText mirrors Python's
+// ``render``, so a card shows the text in the viewer's language exactly as
+// Home Assistant would in that language:
+// - {name} and {name:spec} placeholders, specs [+]d, [+]g and [+].Nf
+//   (round half to even on the exact value, like Python's format);
+// - in Swedish a decimal comma and the minus sign U+2212;
+// - a parameter that is itself a text renders in the same language, lower
+//   case; a Swedish text standing alone starts with a capital letter
+//   unless it starts with a value (an entity id, a time);
+// - a template that does not format falls back to English; an unknown code
+//   (an older or newer integration) to the attribute's own text.
+
+const MINUS = "−";
+
+/** True for a text in its structured form ({c: code, p: params}). */
+export function isText(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.c === "string";
+}
+
+class FormatError extends Error {}
+
+// Python's string.Formatter().parse: [[literal, name | null, spec]].
+function parseTemplate(template) {
+  const out = [];
+  let literal = "";
+  let i = 0;
+  while (i < template.length) {
+    const ch = template[i];
+    if (ch === "{" && template[i + 1] === "{") {
+      literal += "{";
+      i += 2;
+    } else if (ch === "}" && template[i + 1] === "}") {
+      literal += "}";
+      i += 2;
+    } else if (ch === "{") {
+      const end = template.indexOf("}", i);
+      if (end < 0) throw new FormatError("unclosed field");
+      const field = template.slice(i + 1, end);
+      const colon = field.indexOf(":");
+      const name = colon < 0 ? field : field.slice(0, colon);
+      if (name.includes("!")) throw new FormatError("conversion");
+      out.push([literal, name, colon < 0 ? "" : field.slice(colon + 1)]);
+      literal = "";
+      i = end + 1;
+    } else if (ch === "}") {
+      throw new FormatError("single }");
+    } else {
+      literal += ch;
+      i += 1;
+    }
+  }
+  if (literal || !out.length) out.push([literal, null, ""]);
+  return out;
+}
+
+// The exact decimal digits of |x| (a finite double): {digits, point}, the
+// value being 0.digits * 10^point.
+function exactDigits(x) {
+  const a = Math.abs(x);
+  if (a >= 1e21) {
+    const digits = BigInt(a).toString();
+    return { digits, point: digits.length };
+  }
+  const [int, frac] = a.toFixed(100).split(".");
+  const digits = (int === "0" ? "" : int) + frac;
+  return { digits, point: int === "0" ? 0 : int.length };
+}
+
+// ``digits``/``point`` rounded half to even to ``keep`` digits after the
+// decimal point (``keep`` may be negative): the same shape, with exactly
+// point + keep digits (at least one).
+function roundEven({ digits, point }, keep) {
+  let cut = point + keep;
+  if (cut < 0) return { digits: "0", point: 1 - keep };
+  let head = digits.slice(0, cut).padEnd(cut, "0");
+  const rest = digits.slice(cut);
+  const first = rest[0] || "0";
+  let up = first > "5";
+  if (first === "5") {
+    const exact = !/[1-9]/.test(rest.slice(1));
+    up = !exact || Number(head[head.length - 1] || "0") % 2 === 1;
+  }
+  if (up) {
+    const arr = head.split("");
+    let j = arr.length - 1;
+    while (j >= 0 && arr[j] === "9") arr[j--] = "0";
+    if (j >= 0) arr[j] = String(Number(arr[j]) + 1);
+    else {
+      arr.unshift("1");
+      point += 1;
+      cut += 1;
+    }
+    head = arr.join("");
+  }
+  if (!head) return { digits: "0", point: 1 - keep };
+  return { digits: head, point };
+}
+
+// Fixed notation of rounded digits with ``keep`` decimals.
+function fixedText({ digits, point }, keep) {
+  let int = point > 0 ? digits.slice(0, point) : "";
+  let frac = point >= 0 ? digits.slice(point) : "0".repeat(-point) + digits;
+  int = int.replace(/^0+(?=\d)/, "") || "0";
+  frac = frac.padEnd(keep, "0").slice(0, keep);
+  return keep > 0 ? `${int}.${frac}` : int;
+}
+
+function fixed(x, precision) {
+  return fixedText(roundEven(exactDigits(x), precision), precision);
+}
+
+// Python's "g": ``precision`` significant digits, fixed notation for
+// exponents -4 <= exp < precision, else scientific; trailing zeros dropped.
+function general(x, precision) {
+  const p = precision === 0 ? 1 : precision;
+  if (x === 0) return "0";
+  const exact = exactDigits(x);
+  const lead = exact.digits.search(/[1-9]/);
+  const exp0 = exact.point - lead - 1;
+  const rounded = roundEven(exact, p - 1 - exp0);
+  const firstDigit = rounded.digits.search(/[1-9]/);
+  const exp = rounded.point - firstDigit - 1;
+  const strip = (text) => (text.includes(".") ? text.replace(/0+$/, "").replace(/\.$/, "") : text);
+  if (exp >= -4 && exp < p) return strip(fixedText(rounded, Math.max(0, p - 1 - exp)));
+  const sig = rounded.digits.slice(firstDigit, firstDigit + p).padEnd(p, "0");
+  const mantissa = strip(sig.length > 1 ? `${sig[0]}.${sig.slice(1)}` : sig);
+  return `${mantissa}e${exp < 0 ? "-" : "+"}${String(Math.abs(exp)).padStart(2, "0")}`;
+}
+
+// Python's format(number, spec) for the specs the catalogue uses.
+function formatNumberSpec(value, spec) {
+  const m = /^([+\- ]?)(?:\.(\d+))?([dfg]?)$/.exec(spec);
+  if (!m) throw new FormatError(`unsupported spec ${spec}`);
+  const [, sign, prec, type] = m;
+  let body;
+  let negative;
+  if (type === "d") {
+    if (prec !== undefined) throw new FormatError("precision with d");
+    const n = Math.trunc(value);
+    negative = n < 0;
+    body = fixed(n, 0);
+  } else {
+    negative = value < 0 || Object.is(value, -0);
+    if (type === "f") body = fixed(value, prec === undefined ? 6 : Number(prec));
+    else if (type === "g" || prec !== undefined) body = general(value, prec === undefined ? 6 : Number(prec));
+    else body = Number.isInteger(value) ? fixed(value, 0) : String(Math.abs(value)); // no spec: Python's str()
+  }
+  if (negative) return `-${body}`;
+  return sign === "+" ? `+${body}` : sign === " " ? ` ${body}` : body;
+}
+
+function formatField(value, spec, lang) {
+  if (isText(value)) return renderCode(value.c, value.p, lang, true, true);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const text = formatNumberSpec(value, spec);
+    return lang === "sv" ? text.replace(/\./g, ",").replace(/-/g, MINUS) : text;
+  }
+  if (spec) throw new FormatError("spec on a non-number"); // Python: ValueError, or TypeError for None
+  if (value === null) return "None";
+  if (typeof value === "boolean") return value ? "True" : "False";
+  return String(value);
+}
+
+function template(code, lang) {
+  const entry = Object.prototype.hasOwnProperty.call(TEXTS, code) ? TEXTS[code] : null;
+  if (!entry) return null;
+  return entry[TEXT_LANGS.indexOf(lang)] || entry[0];
+}
+
+function startsWithWords(parts, params) {
+  const [literal, name] = parts[0];
+  if (literal) return true;
+  if (name !== null) return isText(params[name]);
+  return true;
+}
+
+// The text of ``code`` in ``lang``, or null when it does not render (an
+// unknown code, a missing parameter). ``strict``: a nested text that does
+// not render fails the whole text, like Python's exception.
+function renderCode(code, params, lang, nested, strict = false) {
+  const vars = params && typeof params === "object" ? params : {};
+  for (const attempt of lang === "en" ? ["en"] : [lang, "en"]) {
+    const tpl = template(code, attempt);
+    if (tpl === null) break;
+    try {
+      const parts = parseTemplate(tpl);
+      let text = "";
+      for (const [literal, name, spec] of parts) {
+        text += literal;
+        if (name === null) continue;
+        if (!Object.prototype.hasOwnProperty.call(vars, name)) throw new FormatError(`missing ${name}`);
+        text += formatField(vars[name], spec, attempt);
+      }
+      if (attempt === "sv" && !nested && startsWithWords(parts, vars)) text = text.charAt(0).toUpperCase() + text.slice(1);
+      return text;
+    } catch (err) {
+      if (!(err instanceof FormatError)) throw err;
+    }
+  }
+  // Python renders the code itself; inside another text that is the
+  // nested text's value, not a failure.
+  return strict ? code : null;
+}
+
+/** An integration text in ``lang``: ``value`` in its structured form
+ * ({c, p}) rendered like Home Assistant renders it in that language, else
+ * ``fallback`` (the attribute's own text, in Home Assistant's language).
+ * ``nested``: the text sits inside a sentence (lower case in Swedish). */
+export function renderText(lang, value, fallback, nested = false) {
+  if (isText(value)) {
+    const text = renderCode(value.c, value.p, normLang(lang), nested);
+    if (text !== null) return text;
+  }
+  if (fallback !== undefined && fallback !== null && fallback !== "") return String(fallback);
+  if (typeof value === "string") return value;
+  return isText(value) ? value.c : "";
+}
+
+/** The text at ``path`` in an entity's attributes, in ``lang``: rendered
+ * from the ``i18n`` attribute when it has it there, else the attribute's
+ * own text ("" when there is none). ``path`` is a key or a list of keys
+ * and indexes ("problem", ["reasons", "indoor"], ["blocks", 2, "reason"]). */
+export function attrText(lang, attrs, path, nested = false) {
+  const keys = Array.isArray(path) ? path : [path];
+  const walk = (root) => keys.reduce((node, key) => (node !== null && typeof node === "object" ? node[key] ?? null : null), root ?? null);
+  const plain = walk(attrs);
+  return renderText(lang, walk(attrs?.i18n), typeof plain === "string" ? plain : plain === null ? null : String(plain), nested);
 }
 
 // --------------------------------------------------------------------------
