@@ -709,7 +709,8 @@ class NibePiHotWaterCard extends NibePiCard {
     const hour = new Date(now);
     hour.setMinutes(0, 0, 0);
     for (let t = hour.getTime() + 3600000; t < now + 24 * 3600000 - 1800000; t += 3600000) {
-      if (new Date(t).getHours() % 6 === 0) ticks.push(`<span style="left:${(((t - now) / (24 * 3600000)) * 100).toFixed(2)}%">${esc(formatClock(t))}</span>`);
+      // Skip a tick that would sit on top of the "now" label.
+      if (new Date(t).getHours() % 6 === 0 && t - now >= 1.5 * 3600000) ticks.push(`<span style="left:${(((t - now) / (24 * 3600000)) * 100).toFixed(2)}%">${esc(formatClock(t))}</span>`);
     }
     const strip = `<div>
       <div class="label">Next 24 h</div>
