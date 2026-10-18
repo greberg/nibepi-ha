@@ -321,6 +321,7 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
     "leg.how.price": ("price", "pris"),
     "leg.how.default hour": ("default hour", "standardtimme"),
     "leg.how.now": ("now", "nu"),
+    "leg.how.deadline": ("deadline", "sista tidpunkt"),
     "leg.done": ("legionella cycle done: BT7 held {temp:.1f} °C", "legionellacykeln klar: BT7 höll {temp:.1f} °C"),
     "leg.aborted_bt7": (
         "BT7 missing or stale: legionella cycle aborted",

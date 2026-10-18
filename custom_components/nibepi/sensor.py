@@ -21,7 +21,7 @@ from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source, s
 from .entity import NibePiEntity
 from .logic.gateway import gateway_version
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
-from .logic.legionella import REG_LUX_STOP
+from .logic.legionella import REG_LUX_STOP, result_text
 from .logic.lease import MODE_ACTIVE, LeaseManager
 from .logic.optcost import summary as cost_summary
 from .logic.optrun import models_summary
@@ -379,7 +379,7 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
             "last_tick": _iso(hw.last_tick),
         }
         if decision is None:
-            return attrs
+            return self.localised(attrs)
         tz = _local_tz()
         now = hw.last_tick or dt_util.utcnow()
         horizon = now + timedelta(hours=24)
@@ -388,6 +388,7 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
         attrs.update(
             {
                 "reasons": decision.reasons,
+                "reason_codes": codes(decision.reasons),
                 "targets": {str(reg): value for reg, value in decision.targets.items()},
                 "inputs_ok": decision.inputs_ok,
                 "next_heat_start": _iso(decision.next_heat),
@@ -399,7 +400,7 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
                 "last_actions": {str(reg): text for reg, text in hw.last_actions.items()},
             }
         )
-        return attrs
+        return self.localised(attrs)
 
 
 class LegionellaLastDoneSensor(NibePiEntity, SensorEntity):
@@ -443,12 +444,15 @@ class LegionellaNextDueSensor(NibePiEntity, SensorEntity):
         status = self.runtime.hotwater.controller.legionella.status
         if status is None:
             return {"state": None}
-        attrs: Dict[str, Any] = {"state": status.state, "reason": status.reason}
+        attrs: Dict[str, Any] = {"state": status.state, "reason": status.reason, "reason_code": code_of(status.reason)}
         for key, value in status.info.items():
             if key == "due":
                 continue
             attrs[key] = _iso(value) if isinstance(value, datetime) else value
-        return attrs
+        # last_result is a code ("done", "aborted: timeout"); shown as text.
+        attrs["last_result_code"] = attrs.get("last_result")
+        attrs["last_result"] = result_text(attrs.get("last_result"))
+        return self.localised(attrs)
 
 
 class DrawProfileSensor(NibePiEntity, SensorEntity):

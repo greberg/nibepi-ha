@@ -109,6 +109,7 @@ from .legionella import (
 from .away import HW_ECONOMY as AWAY_ECONOMY
 from .away import HW_MINIMUM as AWAY_MINIMUM
 from .lease import MODE_ACTIVE, MODE_OFF, LeaseAction, LeaseManager
+from .texts import Msg, msg, term
 from .vvlearn import DrawDetector, DrawEvent, VvProfile, is_charging, learning_alpha, min_drop, week_slot
 from .vvplan import (
     HeatWindow,
@@ -152,6 +153,10 @@ FEATURE_DEFAULTS = {
 }
 
 STATES = ("off", "fault", "idle", "heat_now", "block", "economy", "normal", "luxury", "legionella")
+
+# A feature that is switched off.
+OFF = msg("common.off")
+
 DEFAULT_FLOOR_TEMP = 35.0
 
 
@@ -273,7 +278,7 @@ class HotWaterController:
         legionella = self._legionella(mode, inputs, settings)
         if mode == MODE_OFF:
             self.reset_control()
-            decision = HotWaterDecision.idle("off", "hot water mode off")
+            decision = HotWaterDecision.idle("off", msg("hw.mode_off"))
             decision.legionella = legionella
             return decision
         lux_held = bool(inputs.held.get(REG_LUX_STOP))
@@ -309,27 +314,27 @@ class HotWaterController:
         # or boosts; the min-temp floor stays.
         reduced = inputs.away in (AWAY_ECONOMY, AWAY_MINIMUM)
         if reduced:
-            reasons["away"] = "away (%s): economy mode, no planned charges or boosts" % inputs.away
+            reasons["away"] = msg("hw.away_reduced", away=term("away_hw", inputs.away))
         elif inputs.away is not None:
-            reasons["away"] = "away (%s): hot water unchanged" % inputs.away
+            reasons["away"] = msg("hw.away_unchanged", away=term("away_hw", inputs.away))
 
         # Price comfort mode -> 47041.
         if reduced:
             targets[REG_COMFORT] = 0
-            reasons["price_comfort"] = "away: economy"
+            reasons["price_comfort"] = msg("hw.away_economy")
         elif on("price_comfort"):
             targets[REG_COMFORT], reasons["price_comfort"] = comfort_mode(inputs.price_level, settings.comfort)
             if inputs.price_level is None:
                 faults.append("price_comfort")
         else:
-            reasons["price_comfort"] = "off"
+            reasons["price_comfort"] = OFF
 
         # Automatic luxury and hot water priority -> 48132.
         if reduced:
             self.autolux.reset()
             self.priority.reset()
-            reasons["autoluxury"] = "away: off" if on("autoluxury") else "off"
-            reasons["priority"] = "away: off" if on("priority") else "off"
+            reasons["autoluxury"] = msg("hw.away_off") if on("autoluxury") else OFF
+            reasons["priority"] = msg("hw.away_off") if on("priority") else OFF
         elif on("autoluxury"):
             result = self.autolux.step(
                 bt6, stop_now, pump_lux, held_lux, now, settings.autolux_diff, settings.autolux_time, sample
@@ -341,7 +346,7 @@ class HotWaterController:
                 faults.append("autoluxury")
         else:
             self.autolux.reset()
-            reasons["autoluxury"] = "off"
+            reasons["autoluxury"] = OFF
         if reduced:
             pass
         elif on("priority"):
@@ -355,7 +360,7 @@ class HotWaterController:
                 faults.append("priority")
         else:
             self.priority.reset()
-            reasons["priority"] = "off"
+            reasons["priority"] = OFF
 
         # VV-AI control -> 47134 and 48132, with the VV-AI plan's windows or
         # the cost optimiser's charge blocks.
@@ -365,71 +370,66 @@ class HotWaterController:
         if reduced:
             windows = []
             learned_plan = False
-            reasons["optimiser"] = "away: no planned charges" if on("optimiser") else "off"
+            reasons["optimiser"] = msg("away.no_charges") if on("optimiser") else OFF
         elif optimised:
             windows = list(inputs.optimiser_windows or ())
             learned_plan = True
-            reasons["optimiser"] = "drives the charges"
+            reasons["optimiser"] = msg("hw.opt_drives")
         else:
             windows = build_plan(self.profile.profile, now, inputs.tz, plan_settings, stops, inputs.price_slots)
             learned_plan = any(day_mode(total, plan_settings) > 0 for total in day_sums(self.profile.profile))
             if not on("optimiser"):
-                reasons["optimiser"] = "off"
+                reasons["optimiser"] = OFF
             else:
-                reasons["optimiser"] = "no plan (%s)%s" % (
-                    inputs.optimiser_problem or "unknown",
-                    ": VV-AI plan used" if on("vv_control") else "",
+                reasons["optimiser"] = msg(
+                    "hw.opt_no_plan_vv" if on("vv_control") else "hw.opt_no_plan",
+                    why=inputs.optimiser_problem or msg("common.unknown"),
                 )
         floor_temp = to_float(settings.floor_temp)
         floor = bool(settings.floor_enabled) and floor_temp is not None
         # (reason, is a missing input) when VV-AI control must not drive.
-        blocked: Optional[Tuple[str, bool]] = None
+        blocked: Optional[Tuple[Msg, bool]] = None
         # Away economy (or minimum that cannot hold 47134): the pump heats
         # hot water itself in economy mode, the floor via a one-time increase.
         pump_heats = False
         if inputs.away == AWAY_ECONOMY:
             pump_heats = True
-            blocked = ("away (economy): the pump heats hot water itself in economy mode", False)
+            blocked = (msg("hw.away_economy_pump"), False)
         elif inputs.away == AWAY_MINIMUM and not on("vv_control") and not on("optimiser"):
             pump_heats = True
-            blocked = (
-                "away (minimum): VV-AI control is off, so the pump heats hot water itself in economy mode",
-                False,
-            )
+            blocked = (msg("hw.away_minimum_vv_off"), False)
         if blocked is not None:
             pass
         elif not on("vv_control") and not on("optimiser"):
-            blocked = ("off", False)
+            blocked = (OFF, False)
         elif not on("vv_control") and not optimised and not reduced:
-            blocked = ("no optimiser plan: hot water left to the pump", False)
+            blocked = (msg("hw.no_opt_plan"), False)
         elif not reduced and (on("autoluxury") or on("priority")):
-            blocked = ("automatic luxury or hot water priority is on and takes precedence", False)
+            blocked = (msg("hw.precedence"), False)
         elif bt7 is None:
-            blocked = ("BT7 missing or stale: hot water left to the pump", True)
+            blocked = (msg("hw.no_bt7"), True)
         elif not stops.complete():
-            blocked = ("stop temperatures unknown: hot water left to the pump", True)
+            blocked = (msg("hw.no_stops"), True)
         elif period is None and not held_period:
-            blocked = ("hot water period (47134) unknown: hot water left to the pump", True)
+            blocked = (msg("hw.no_period"), True)
         elif period == 0 and not held_period:
-            blocked = (
-                "the pump's hot water period (47134) is 0; the gateway would restore 0, "
-                "so set it in the pump first",
-                False,
-            )
+            blocked = (msg("hw.period_zero"), False)
         elif reduced and not floor:
-            blocked = ("away (minimum) needs the min-temp floor: the pump heats hot water itself", False)
+            blocked = (msg("hw.minimum_needs_floor"), False)
         elif not learned_plan and not floor:
-            blocked = ("nothing learned yet and no min-temp floor: hot water left to the pump", False)
+            blocked = (msg("hw.nothing_learned"), False)
         if blocked is not None and reduced and not pump_heats:
             # Away minimum that may not hold 47134: as economy.
             pump_heats = True
-            blocked = ("%s (away minimum falls back to economy)" % blocked[0], blocked[1])
+            blocked = (msg("hw.minimum_fallback", reason=blocked[0]), blocked[1])
         if blocked is not None and pump_heats:
             reasons["vv_control"] = blocked[0]
             if floor and bt7 is not None:
                 result = self.vv.decide(bt7, now, inputs.tz, [], stops, True, floor_temp, False)
-                reasons["vv_control"] += "; " + (
-                    result.reason if result.heat else "BT7 %.1f, min-temp floor %.1f" % (bt7, floor_temp)
+                reasons["vv_control"] = msg(
+                    "common.join",
+                    first=blocked[0],
+                    second=result.reason if result.heat else msg("hw.floor_status", bt7=bt7, floor=floor_temp),
                 )
                 if result.heat:
                     sources.append("away_floor")
@@ -446,7 +446,7 @@ class HotWaterController:
                 bt7, now, inputs.tz, windows, stops, bool(settings.floor_enabled), floor_temp, use_price
             )
             reasons["vv_control"] = (
-                "away (minimum): only the min-temp floor; %s" % result.reason if reduced else result.reason
+                msg("hw.minimum_floor_only", reason=result.reason) if reduced else result.reason
             )
             if result.heat:
                 sources.append("vv_control")

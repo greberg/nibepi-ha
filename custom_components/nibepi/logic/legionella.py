@@ -55,6 +55,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from .inputs import PriceSlot, to_float
+from .texts import Msg, msg, term
 from .vvplan import PriceLine
 
 REG_PERIODIC_STOP = 47046  # stop temperature periodic HW, °C
@@ -87,6 +88,20 @@ RESULT_DONE = "done"
 RESULT_TIMEOUT = "aborted: timeout"
 RESULT_BT7 = "aborted: BT7 missing or stale"
 RESULT_CANCELLED = "cancelled"
+# The persisted results (codes) -> their texts.
+RESULT_TEXTS = {
+    RESULT_DONE: "leg.result.done",
+    RESULT_TIMEOUT: "leg.result.timeout",
+    RESULT_BT7: "leg.result.bt7",
+    RESULT_CANCELLED: "leg.result.cancelled",
+    "aborted": "leg.result.aborted",
+}
+
+
+def result_text(result: Optional[str]) -> Any:
+    """A ``last_result`` as a text (Msg); an unknown one unchanged."""
+    code = RESULT_TEXTS.get(result) if result is not None else None
+    return msg(code) if code is not None else result
 
 
 def _clamp(value: Any, default: float, low: float, high: float) -> float:
@@ -433,7 +448,7 @@ class LegionellaGuard:
             "timeout_at": None,
         }
 
-        def status(name: str, reason: str, run: bool = False, temp: Optional[float] = None) -> LegionellaStatus:
+        def status(name: str, reason: Msg, run: bool = False, temp: Optional[float] = None) -> LegionellaStatus:
             info["running_since"] = state.running_since
             info["last_result"] = state.last_result
             info["last_result_at"] = state.ended_at
@@ -451,43 +466,38 @@ class LegionellaGuard:
             elif state.last_done is not None and state.last_done >= state.running_since:
                 temp = state.run_temperature or params.temperature
                 self._end(now, RESULT_DONE)
-                return status("done", "legionella cycle done: BT7 held %.1f °C" % temp)
+                return status("done", msg("leg.done", temp=temp))
             elif bt7 is None:
                 self._end(now, RESULT_BT7)
-                return status("aborted", "BT7 missing or stale: legionella cycle aborted")
+                return status("aborted", msg("leg.aborted_bt7"))
             elif now - state.running_since >= timedelta(hours=settings.max_hours):
                 self._end(now, RESULT_TIMEOUT)
                 return status(
                     "aborted",
-                    "BT7 did not hold %.1f °C within %g h: legionella cycle aborted"
-                    % (state.run_temperature or params.temperature, settings.max_hours),
+                    msg("leg.aborted_timeout", temp=state.run_temperature or params.temperature,
+                        hours=settings.max_hours),
                 )
             else:
                 temp = state.run_temperature or params.temperature
-                held = (
-                    " (held %d min)" % ((now - self.hold_since).total_seconds() // 60)
-                    if self.hold_since is not None
-                    else ""
-                )
+                if self.hold_since is not None:
+                    held_min = int((now - self.hold_since).total_seconds() // 60)
+                    reason = msg("leg.running_held", temp=temp, bt7=bt7, minutes=held_min)
+                else:
+                    reason = msg("leg.running", temp=temp, bt7=bt7)
                 info["planned_start"] = state.running_since
                 info["planned_end"] = max(now, state.running_since + timedelta(hours=settings.window_hours))
                 info["timeout_at"] = state.running_since + timedelta(hours=settings.max_hours)
-                return status(
-                    "running",
-                    "legionella cycle: heat to %.1f °C, BT7 %s%s" % (temp, "%.1f" % bt7, held),
-                    True,
-                    temp,
-                )
+                return status("running", reason, True, temp)
 
         if mode == "off":
             self.requested = False
-            return status("off", "hot water mode off")
+            return status("off", msg("hw.mode_off"))
         if not settings.enabled:
             self.requested = False
-            return status("disabled", "legionella guard off")
+            return status("disabled", msg("leg.guard_off"))
 
         if self.requested and active:
-            return self._start(now, params, settings, lux_reading, info, status, "run now (requested)")
+            return self._start(now, params, settings, lux_reading, info, status, msg("leg.why_requested"))
         self.requested = False
 
         first = due
@@ -499,8 +509,8 @@ class LegionellaGuard:
                 name = "done" if state.last_result == RESULT_DONE else (
                     "aborted" if state.last_result.startswith("aborted") else "idle"
                 )
-            who = "the pump's periodic increase" if params.pump_periodic else "the legionella guard"
-            return status(name, "next due %s (%s)" % (_hm(due, tz), who))
+            who = msg("leg.who_pump") if params.pump_periodic else msg("leg.who_guard")
+            return status(name, msg("leg.next_due", due=_hm(due, tz), who=who))
 
         length = timedelta(hours=settings.window_hours)
         start, how = plan_window(now, first, max(deadline, first + length), length, prices, tz, settings.start_hour)
@@ -510,13 +520,14 @@ class LegionellaGuard:
         if state.retry_after is not None and now < state.retry_after:
             return status(
                 "aborted",
-                "%s; retry from %s" % (state.last_result or "aborted", _hm(state.retry_after, tz)),
+                msg("leg.retry", result=result_text(state.last_result or "aborted"), at=_hm(state.retry_after, tz)),
             )
+        placed = term("leg.how", how)
         if now < start:
-            return status("planned", "due: planned %s-%s (%s)" % (_hm(start, tz), _hm(start + length, tz), how))
+            return status("planned", msg("leg.planned", start=_hm(start, tz), end=_hm(start + length, tz), how=placed))
         if not active:
-            return status("planned", "due: would run now (hot water mode %s)" % mode)
-        return self._start(now, params, settings, lux_reading, info, status, "due (%s)" % how)
+            return status("planned", msg("leg.would_run", mode=term("mode", mode)))
+        return self._start(now, params, settings, lux_reading, info, status, msg("leg.why_due", how=placed))
 
     def _start(self, now, params, settings, lux_reading, info, status, why) -> LegionellaStatus:
         state = self.state
@@ -531,7 +542,7 @@ class LegionellaGuard:
         info["planned_end"] = now + timedelta(hours=settings.window_hours)
         info["timeout_at"] = now + timedelta(hours=settings.max_hours)
         return status(
-            "running", "legionella cycle started, %s: heat to %.1f °C" % (why, params.temperature), True,
+            "running", msg("leg.started", why=why, temp=params.temperature), True,
             params.temperature,
         )
 

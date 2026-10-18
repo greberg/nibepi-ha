@@ -229,5 +229,64 @@ class OptimiserTextsTest(unittest.TestCase):
         self.assertEqual(both(msg("tank.waiting")), ("waiting for cheaper slots", "Väntar på billigare timmar"))
 
 
+class HotWaterTextsTest(unittest.TestCase):
+    def test_controller_reasons(self) -> None:
+        from dataclasses import replace
+
+        from logic.hwcontrol import MODE_ACTIVE
+        from test_hwcontrol import Rig, local
+
+        rig = Rig(local(2026, 10, 13, 12))
+        rig.values[47050] = 1.0
+        rig.controller.legionella.state.last_done = rig.now - timedelta(days=1)
+        rig.price_level = "CHEAP"
+        decision = rig.decide(priority=True, price_comfort=True)
+        reasons = localise(decision.reasons, "sv")
+        self.assertEqual(reasons["priority"], "BT7 45,0 °C vid starttemperaturen 45,0 °C")
+        self.assertEqual(reasons["price_comfort"], "Billigt: normal")
+        self.assertEqual(reasons["autoluxury"], "Av")
+        self.assertEqual(reasons["vv_control"], "Av")
+        self.assertTrue(reasons["legionella"].startswith("Nästa gång "))
+        self.assertEqual(codes(decision.reasons)["priority"], "priority.start")
+        self.assertEqual(decision.reasons["priority"], "BT7 45.0 at the start temperature 45.0")
+
+        inputs = replace(rig.inputs(), away="economy")
+        decision = rig.controller.decide(MODE_ACTIVE, {"vv_control": True, "optimiser": True}, inputs, rig.settings)
+        self.assertEqual(both(decision.reasons["away"]), (
+            "away (economy): economy mode, no planned charges or boosts",
+            "Borta (ekonomi): ekonomiläge, inga planerade laddningar eller lyft",
+        ))
+        self.assertEqual(both(decision.reasons["optimiser"]),
+                         ("away: no planned charges", "Borta: inga planerade laddningar"))
+        self.assertTrue(decision.reasons["vv_control"].render("sv").startswith(
+            "Borta (ekonomi): pumpen värmer varmvattnet själv i ekonomiläge"))
+
+    def test_legionella(self) -> None:
+        from logic.legionella import RESULT_TIMEOUT, result_text
+        from test_legionella import Rig
+
+        rig = Rig(utc(2026, 10, 14, 10))
+        rig.guard.state.last_done = rig.now - timedelta(days=15)
+        status = rig.tick(mode="shadow")
+        self.assertEqual(both(status.reason), (
+            "due: would run now (hot water mode shadow)", "Dags: skulle köra nu (varmvattenläge skugga)",
+        ))
+        status = rig.tick()
+        self.assertEqual(both(status.reason), (
+            "legionella cycle started, due (deadline): heat to 60.0 °C",
+            "Legionellacykel startad, dags (sista tidpunkt): värmer till 60,0 °C",
+        ))
+        status = rig.tick(minutes=4 * 60)
+        self.assertEqual(both(status.reason), (
+            "BT7 did not hold 60.0 °C within 4 h: legionella cycle aborted",
+            "BT7 höll inte 60,0 °C inom 4 h: legionellacykeln avbruten",
+        ))
+        status = rig.tick(minutes=60)
+        self.assertEqual(status.reason.render("sv"), "Avbruten: tidsgräns; nytt försök från 2026-10-15 04:00")
+        self.assertEqual(both(result_text(RESULT_TIMEOUT)), ("aborted: timeout", "Avbruten: tidsgräns"))
+        self.assertEqual(result_text("something else"), "something else")
+        self.assertIsNone(result_text(None))
+
+
 if __name__ == "__main__":
     unittest.main()

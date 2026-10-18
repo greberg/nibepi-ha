@@ -41,6 +41,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .inputs import to_fixed, to_float
+from .texts import msg, term
 
 TEMP_LUX_START = 4  # 48132: one-time increase
 FEATURE_LIMIT = timedelta(hours=3)
@@ -74,13 +75,13 @@ class FeatureResult:
 def comfort_mode(level: Optional[str], settings: Mapping[str, Any]) -> Tuple[Optional[int], str]:
     """47041 for the price level, or None to leave it to the pump."""
     if level is None:
-        return None, "no price for the current hour"
+        return None, msg("price.no_price")
     choice = settings.get(level, COMFORT_DEFAULTS.get(level, COMFORT_UNCHANGED))
     choice = str(choice).strip() if choice is not None else COMFORT_UNCHANGED
     if choice not in COMFORT_CHOICES or choice == COMFORT_UNCHANGED:
-        return None, "%s: unchanged" % level
+        return None, msg("hw.comfort_unchanged", level=term("price_level", level))
     value = int(choice)
-    return value, "%s: %s" % (level, COMFORT_NAMES[value])
+    return value, msg("hw.comfort_mode", level=term("price_level", level), mode=term("hwmode", COMFORT_NAMES[value]))
 
 
 def _running_elsewhere(pump_lux: Optional[float], held: bool) -> bool:
@@ -120,7 +121,7 @@ class AutoLuxury:
         """``sample`` False re-evaluates without storing BT6 (between ticks)."""
         if bt6 is None or stop_temp is None:
             self.reset()
-            return FeatureResult(False, "BT6 missing" if bt6 is None else "stop temperature unknown")
+            return FeatureResult(False, msg("autolux.no_bt6") if bt6 is None else msg("autolux.no_stop"))
         delta = to_float(diff)
         if delta is None or delta <= 0:
             delta = DEFAULT_AUTOLUX_DIFF
@@ -136,30 +137,30 @@ class AutoLuxury:
         elif self.history:
             reference = self.history[-1]
         else:
-            return FeatureResult(False, "no BT6 samples yet")
+            return FeatureResult(False, msg("autolux.no_samples"))
         self.trigger = to_fixed(reference - delta, 2)
         limit = stop_temp - 1
         details = {"trigger": self.trigger, "target": self.target, "stop": limit}
         if not self.active:
             if _running_elsewhere(pump_lux, held):
-                return FeatureResult(False, "temporary lux already running", details)
+                return FeatureResult(False, msg("common.lux_running"), details)
             if bt6 <= self.trigger:
                 self.active = True
                 self.target = to_fixed(self.trigger + delta - 5, 2)
                 self.since = now
                 details["target"] = self.target
                 return FeatureResult(
-                    True, "BT6 %.1f fell to the trigger %.1f: heat to %.1f" % (bt6, self.trigger, self.target), details
+                    True, msg("autolux.trigger", bt6=bt6, trigger=self.trigger, target=self.target), details
                 )
-            return FeatureResult(False, "BT6 %.1f, trigger %.1f" % (bt6, self.trigger), details)
+            return FeatureResult(False, msg("autolux.waiting", bt6=bt6, trigger=self.trigger), details)
         assert self.target is not None
         if bt6 >= self.target or bt6 >= limit:
             self._stop()
-            return FeatureResult(False, "BT6 %.1f reached the target" % bt6, details)
+            return FeatureResult(False, msg("autolux.reached", bt6=bt6), details)
         if self.since is not None and now - self.since >= FEATURE_LIMIT:
             self._stop()
-            return FeatureResult(False, "time limit reached", details)
-        return FeatureResult(True, "BT6 %.1f, heat to %.1f" % (bt6, self.target), details)
+            return FeatureResult(False, msg("common.time_limit"), details)
+        return FeatureResult(True, msg("autolux.heating", bt6=bt6, target=self.target), details)
 
 
 class HwPriority:
@@ -184,21 +185,21 @@ class HwPriority:
     ) -> FeatureResult:
         if bt7 is None or start_temp is None or stop_temp is None:
             self.reset()
-            return FeatureResult(False, "BT7 missing" if bt7 is None else "start/stop temperature unknown")
+            return FeatureResult(False, msg("priority.no_bt7") if bt7 is None else msg("priority.no_temps"))
         limit = stop_temp - 1
         details = {"start": start_temp, "stop": limit}
         if not self.active:
             if _running_elsewhere(pump_lux, held):
-                return FeatureResult(False, "temporary lux already running", details)
+                return FeatureResult(False, msg("common.lux_running"), details)
             if bt7 <= start_temp:
                 self.active = True
                 self.since = now
-                return FeatureResult(True, "BT7 %.1f at the start temperature %.1f" % (bt7, start_temp), details)
-            return FeatureResult(False, "BT7 %.1f over the start temperature %.1f" % (bt7, start_temp), details)
+                return FeatureResult(True, msg("priority.start", bt7=bt7, start=start_temp), details)
+            return FeatureResult(False, msg("priority.over", bt7=bt7, start=start_temp), details)
         if bt7 >= limit and not autolux_active:
             self.reset()
-            return FeatureResult(False, "BT7 %.1f reached %.1f" % (bt7, limit), details)
+            return FeatureResult(False, msg("priority.reached", bt7=bt7, limit=limit), details)
         if self.since is not None and now - self.since >= FEATURE_LIMIT:
             self.reset()
-            return FeatureResult(False, "time limit reached", details)
-        return FeatureResult(True, "BT7 %.1f, heat to %.1f" % (bt7, limit), details)
+            return FeatureResult(False, msg("common.time_limit"), details)
+        return FeatureResult(True, msg("priority.heating", bt7=bt7, limit=limit), details)

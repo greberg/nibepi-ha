@@ -168,7 +168,7 @@ from .logic.price import (
     tibber_request,
 )
 from .logic.rmu import RoomTemperature, rmu_decide, rmu_lease_manager
-from .logic.texts import msg
+from .logic.texts import Msg, lang_of, msg
 from .logic.vvimport import convert_nodered_store, read_json_file
 from .logic.legionella import (
     RESULT_CANCELLED,
@@ -176,6 +176,7 @@ from .logic.legionella import (
     LegionellaSettings,
     LegionellaState,
     last_done_from_history,
+    result_text,
 )
 from .logic.legionella import TOLERANCE as LEGIONELLA_TOLERANCE
 from .logic.opthistory import parse_states
@@ -840,6 +841,11 @@ class NibePiRuntime:
         hw.controller.legionella.requested = True
         self._hw_step_soon()
 
+    def _result_text(self, result: str) -> str:
+        """A legionella result in Home Assistant's language, inside a sentence."""
+        text = result_text(result)
+        return text.render(lang_of(self.hass.config.language), nested=True) if isinstance(text, Msg) else str(text)
+
     def _legionella_after_step(self, now: datetime) -> None:
         """Save, log and raise or clear the repair issue after a step."""
         guard = self.hotwater.controller.legionella
@@ -859,7 +865,7 @@ class NibePiRuntime:
                 is_fixable=False,
                 severity=ir.IssueSeverity.WARNING,
                 translation_key=ISSUE_LEGIONELLA_FAILED,
-                translation_placeholders={"result": ended},
+                translation_placeholders={"result": self._result_text(ended)},
             )
         elif guard.state.last_done is not None and guard.state.last_done == now:
             _LOGGER.info("NibePi: legionella temperature held (%s)", guard.state.last_done_by)

@@ -50,6 +50,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, List, Optional, Sequence, Tuple
 
 from .inputs import PriceSlot, to_float
+from .texts import msg, term
 from .vvlearn import SLOTS
 
 UTC = timezone.utc
@@ -450,7 +451,7 @@ class VvControl:
                         True,
                         self.floor_target,
                         "floor",
-                        "BT7 %.1f under the floor: heat to %.1f" % (bt7, self.floor_target),
+                        msg("vv.floor", bt7=bt7, target=self.floor_target),
                     )
                 self.floor_active = False
                 self.floor_target = None
@@ -462,33 +463,36 @@ class VvControl:
         if window is None:
             following = next((w for w in windows if w.start > now), None)
             if following is None:
-                return ControlResult(False, None, None, "no heating window planned")
+                return ControlResult(False, None, None, msg("vv.no_window"))
             return ControlResult(
-                False, None, None, "no window now, next %s" % _hm(following.start, tz)
+                False, None, None, msg("vv.next_window", at=_hm(following.start, tz))
             )
         if window.target is None:
-            return ControlResult(False, None, None, "stop temperature for the window unknown")
-        span = "window %s-%s for %s (%s, %.1f °C)" % (
-            _hm(window.start, tz),
-            _hm(window.end, tz),
-            _hm(window.peak, tz),
-            MODE_NAMES.get(window.day_mode),
-            window.target,
+            return ControlResult(False, None, None, msg("vv.no_target"))
+        span = msg(
+            "vv.span",
+            start=_hm(window.start, tz),
+            end=_hm(window.end, tz),
+            peak=_hm(window.peak, tz),
+            mode=term("hwmode", MODE_NAMES.get(window.day_mode)),
+            target=window.target,
         )
         if use_price and not heat_allowed(windows, now):
-            cheap = (
-                " (cheapest %s-%s)" % (_hm(window.cheap_start, tz), _hm(window.cheap_end, tz))
-                if window.cheap_start is not None and window.cheap_end is not None
-                else ""
-            )
-            return ControlResult(False, window.target, "plan", "%s: waiting for the cheap hours%s" % (span, cheap))
+            if window.cheap_start is not None and window.cheap_end is not None:
+                why = msg(
+                    "vv.waiting_cheapest", span=span,
+                    cheap_start=_hm(window.cheap_start, tz), cheap_end=_hm(window.cheap_end, tz),
+                )
+            else:
+                why = msg("vv.waiting", span=span)
+            return ControlResult(False, window.target, "plan", why)
         if self.closed_until is not None and now < self.closed_until:
             return ControlResult(
-                False, window.target, "plan", "%s: done, closed until %s" % (span, _hm(self.closed_until, tz))
+                False, window.target, "plan", msg("vv.closed", span=span, until=_hm(self.closed_until, tz))
             )
         if bt7 < window.target:
-            return ControlResult(True, window.target, "plan", "%s: BT7 %.1f, heat" % (span, bt7))
+            return ControlResult(True, window.target, "plan", msg("vv.heat", span=span, bt7=bt7))
         self.closed_until = run_end(windows, now)
         return ControlResult(
-            False, window.target, "plan", "%s: BT7 %.1f reached, closed until %s" % (span, bt7, _hm(self.closed_until, tz))
+            False, window.target, "plan", msg("vv.reached", span=span, bt7=bt7, until=_hm(self.closed_until, tz))
         )
