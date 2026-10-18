@@ -554,6 +554,13 @@ plans in the background:
   the hot water learning expects, keeping BT6 above the optimiser's hot
   water floor (default 45 °C).
 
+Without a plan the `problem` attribute says why, e.g. *"indoor sensor
+sensor.netatmo is unavailable"*, *"indoor temperature from BT50 is 75
+min old (limit 60 min)"* or *"prices end at 23:00"*. A plan that failed
+on a missing input (indoor temperature, prices, BT6, stop temperatures)
+is made again within a minute of the input coming back; after a restart
+it is retried every minute until the first plan succeeds.
+
 ### Heating strategy, the gate and shadow comparison
 
 Each system has a **Heating strategy** select:
@@ -776,10 +783,12 @@ The integration ships five custom cards for your own dashboards; nothing
 to install besides the integration. Edit a dashboard -> **Add card** ->
 search for **NibePi**: each card shows a preview, and its editor has the
 options below (or switch it to YAML). The cards follow your theme, light
-or dark, and Home Assistant's language: Swedish or English (any other
-language shows English), with your profile's number and time format
-(decimal comma, 12/24 h). The reasons and explanations come from the
-integration's attributes, which follow Home Assistant's language too (see
+or dark, and each viewer's language (the profile's): Swedish or English
+(any other language shows English), with the profile's number and time
+format (decimal comma, 12/24 h). The reasons, the plan's problem, summary
+and explanation and the Gateway hint follow the viewer's language too:
+the cards render them from the entities' `i18n` attribute, so a Swedish
+profile shows Swedish texts on a server set to English (see
 [Entities](#entities)).
 
 Options common to all cards:
@@ -895,9 +904,13 @@ reporting a problem.
 
 The texts in the attributes (reasons, the plan's explanation, summary
 and problem, the legionella state, the Gateway hint) follow Home
-Assistant's language (Settings → System → General): Swedish for `sv`,
-English otherwise, with a decimal comma in Swedish. A changed language
-shows from the next update (within a minute). For automations, match the
+Assistant's server language (Settings → System → General): Swedish for
+`sv`, English otherwise, with a decimal comma in Swedish. A changed
+language shows from the next update (within a minute). The same texts
+are also in an `i18n` attribute as codes and parameters (`{"problem":
+{"c": "opt.indoor_unavailable", "p": {"source": "sensor.netatmo"}}}`,
+not recorded): the cards render them in each viewer's own language. For
+automations, match the
 codes rather than the texts: `strategy_reason_code`, `reason_codes`
 (per component or hot water feature), `reason_code`, `problem_code`,
 `price_status_code` and `last_result_code`; the codes are listed in
@@ -1055,7 +1068,11 @@ and the locale formatting (a key missing in Swedish shows the English
 text), `nibepi-cards.js` the elements.
 The texts the integration writes in its attributes are in
 `logic/texts.py`, English and Swedish per code; a test checks that both
-have every code with the same placeholders.
+have every code with the same placeholders. The cards render them with a
+copy, `frontend/nibepi-texts.js`, generated with
+`python3 tools/gen_texts_js.py` (also `tests/js/texts-parity.json`,
+Python's rendering of every code, which the JS tests compare with);
+rerun it after changing a text, a test fails until you do.
 
 ## License
 
