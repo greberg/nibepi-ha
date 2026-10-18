@@ -27,6 +27,7 @@ from .logic.optcost import summary as cost_summary
 from .logic.optrun import models_summary
 from .logic.optstrategy import SOURCE_RULES, offset_at
 from .logic.price import LEVELS
+from .logic.texts import code_of, codes
 from .logic.pump import (
     BUS_HEALTH,
     PRIORITY_STATES,
@@ -108,15 +109,18 @@ class PlannedOffsetSensor(_SystemSensor):
         rules = sys.rules_plan
         optimizer = self.runtime.optimizer
         choice = optimizer.choices.get(sys.system)
-        return {
+        reasons = plan.reasons if plan else {}
+        return self.localised({
             "mode": sys.mode,
             "strategy": optimizer.strategy.get(sys.system),
             "source": choice.source if choice is not None else None,
             "strategy_reason": choice.reason if choice is not None else None,
+            "strategy_reason_code": code_of(choice.reason) if choice is not None else None,
             "rules_total": round(rules.total, 2) if rules else None,
             "total": round(plan.total, 2) if plan else None,
             "components": plan.components if plan else {},
-            "reasons": plan.reasons if plan else {},
+            "reasons": reasons,
+            "reason_codes": codes(reasons),
             "inputs_ok": plan.inputs_ok if plan else {},
             "base_adjust": self.runtime.base_adjust.get(sys.system, 0.0),
             "away": "away" in (plan.components if plan else {}),
@@ -125,7 +129,7 @@ class PlannedOffsetSensor(_SystemSensor):
             "error": sys.error,
             "last_tick": _iso(sys.last_tick),
             "last_action": sys.last_action,
-        }
+        })
 
 
 class ComponentOffsetSensor(_SystemSensor):
@@ -146,9 +150,13 @@ class ComponentOffsetSensor(_SystemSensor):
         decision = self.sys.decisions.get(self.component)
         if decision is None:
             return {}
-        attrs: Dict[str, Any] = {"reason": decision.reason, "inputs_ok": decision.inputs_ok}
+        attrs: Dict[str, Any] = {
+            "reason": decision.reason,
+            "reason_code": code_of(decision.reason),
+            "inputs_ok": decision.inputs_ok,
+        }
         attrs.update(decision.details)
-        return attrs
+        return self.localised(attrs)
 
 
 class PumpOffsetSensor(_SystemSensor):
@@ -253,10 +261,11 @@ class RmuLeaseStateSensor(LeaseStateSensor):
                 "source_entity": sys.rmu_entity,
                 "room_temperature": room.value if room is not None else None,
                 "reason": room.reason if room is not None else None,
+                "reason_code": code_of(room.reason) if room is not None else None,
                 "last_action": sys.rmu_last_action,
             }
         )
-        return attrs
+        return self.localised(attrs)
 
 
 class GatewayVersionSensor(NibePiEntity, SensorEntity):

@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Optional
 
 from .inputs import Decision, Reading, to_fixed, to_float, usable
+from .texts import msg
 
 # Pump defaults for menu 1.9.4 (registers 47398 / 47402).
 DEFAULT_SETPOINT = 20.0
@@ -45,21 +46,21 @@ def compute_indoor(
 ) -> Decision:
     problem = usable(indoor, now, sensor_timeout_min)
     if problem is not None:
-        return Decision.zero("indoor sensor %s" % problem)
+        return Decision.zero(msg("indoor.sensor_%s" % problem))
     assert indoor is not None
     value = float(indoor.value)
     if value < MIN_VALID_INDOOR:
-        return Decision.zero("indoor sensor implausible (%.1f)" % value, indoor=value)
+        return Decision.zero(msg("indoor.implausible", value=value), indoor=value)
     set_value = to_float(setpoint)
     if set_value is None:
-        return Decision.zero("setpoint missing", indoor=value)
+        return Decision.zero(msg("indoor.setpoint_missing"), indoor=value)
     factor_value = to_float(factor)
     if factor_value is None:
-        return Decision.zero("factor missing", indoor=value, setpoint=set_value)
+        return Decision.zero(msg("indoor.factor_missing"), indoor=value, setpoint=set_value)
     offset = to_fixed((set_value - value) * factor_value, 2)
     return Decision(
         offset,
-        "setpoint %.1f, indoor %.1f, factor %g" % (set_value, value, factor_value),
+        msg("indoor.ok", setpoint=set_value, indoor=value, factor=factor_value),
         True,
         {"indoor": value, "setpoint": set_value, "factor": factor_value},
     )

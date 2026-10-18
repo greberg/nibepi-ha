@@ -39,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Mapping, Optional
 
 from .inputs import Decision, to_float
+from .texts import msg
 from .optimizer.planner import ComfortSettings
 
 HW_ECONOMY = "economy"
@@ -190,11 +191,11 @@ def away_component(indoor_active: bool, curve_offset: float) -> Decision:
     """
     if indoor_active:
         return Decision(
-            0.0, "away: indoor control works on the lowered setpoint", True, {"indoor_active": True}
+            0.0, msg("away.indoor"), True, {"indoor_active": True}
         )
     return Decision(
         float(curve_offset),
-        "away: fixed curve offset %+g (indoor control not active)" % curve_offset,
+        msg("away.fixed", offset=float(curve_offset)),
         True,
         {"indoor_active": False, "curve_offset": float(curve_offset)},
     )

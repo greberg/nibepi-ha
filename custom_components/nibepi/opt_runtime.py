@@ -87,6 +87,7 @@ from .logic.opthistory import (
     retention_start,
 )
 from .logic import optcost
+from .logic.texts import code_of, msg
 from .logic.pump import PRIORITY_VALUES, history_sources, own_unique_id, register_owner
 from .logic.optimizer.gate import GateDecision, gate
 from .logic.optimizer.meter import MeterConfig, MeterReading
@@ -780,9 +781,9 @@ class OptimizerRuntime:
             indoor_problem=problem,
             min_level=str(self.rt.opt(OPT_OPT_MIN_LEVEL) or "high"),
         )
-        if decision.reason == "no plan" and result is not None:
-            why = result.problem or ("plan older than %d min" % (PLAN_MAX_AGE.total_seconds() // 60))
-            decision = GateDecision(False, None, "no plan (%s)" % why)
+        if code_of(decision.reason) == "opt.no_plan" and result is not None:
+            why = result.problem or _plan_too_old()
+            decision = GateDecision(False, None, msg("opt.no_plan_why", why=why))
         return decision
 
     def decide(self, system: str, now: datetime, rules: CurvePlan, current: Optional[float]) -> CurvePlan:
@@ -988,6 +989,10 @@ class OptimizerRuntime:
         elif hw_banked:
             today["hot_water"] = hw_banked
         self.savings_today = today
+
+
+def _plan_too_old():
+    return msg("opt.plan_old", minutes=int(PLAN_MAX_AGE.total_seconds() // 60))
 
 
 def _run_plans(inputs: List[HeatingInputs], tank: Optional[TankInputs]):

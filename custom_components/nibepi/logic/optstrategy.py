@@ -27,6 +27,7 @@ from typing import List, Optional, Sequence
 
 from .curve import TOTAL_LIMIT, CurvePlan, clamp, target_value
 from .optimizer.gate import GateDecision
+from .texts import msg
 from .vvplan import HeatWindow
 
 STRATEGY_RULES = "rules"
@@ -49,14 +50,14 @@ class StrategyChoice:
 def choose_total(strategy: str, rules_total: float, gate: Optional[GateDecision]) -> StrategyChoice:
     """The total curve offset for this tick, and why."""
     if strategy != STRATEGY_OPTIMISER:
-        return StrategyChoice(STRATEGY_RULES, SOURCE_RULES, rules_total, "rules")
+        return StrategyChoice(STRATEGY_RULES, SOURCE_RULES, rules_total, msg("strategy.rules"))
     if gate is None:
-        return StrategyChoice(strategy, SOURCE_RULES, rules_total, "optimiser not ready: no plan yet")
+        return StrategyChoice(strategy, SOURCE_RULES, rules_total, msg("strategy.not_ready"))
     if gate.use_optimizer and gate.offset is not None:
         source = SOURCE_OPTIMISER if gate.reason == "optimiser" else SOURCE_FLOOR
         total = clamp(float(gate.offset), -TOTAL_LIMIT, TOTAL_LIMIT)
         return StrategyChoice(strategy, source, total, gate.reason)
-    return StrategyChoice(strategy, SOURCE_RULES, rules_total, "optimiser not used: %s" % gate.reason)
+    return StrategyChoice(strategy, SOURCE_RULES, rules_total, msg("strategy.not_used", reason=gate.reason))
 
 
 def apply_choice(rules: CurvePlan, choice: StrategyChoice, current: Optional[float]) -> CurvePlan:

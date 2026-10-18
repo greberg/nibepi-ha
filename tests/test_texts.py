@@ -3,9 +3,20 @@ from __future__ import annotations
 import copy
 import pickle
 import unittest
+from datetime import timedelta
 
 import context  # noqa: F401
+from context import utc
+from logic.away import away_component
+from logic.indoor import compute_indoor
+from logic.inputs import ForecastPoint, Reading
+from logic.optimizer.gate import gate
+from logic.optimizer.house import HouseFit
+from logic.optstrategy import choose_total
+from logic.price import PriceLevel, compute_price
+from logic.rmu import room_temperature
 from logic.texts import CATALOGUE, LANGS, Msg, code_of, codes, lang_of, localise, msg, placeholders, render, term
+from logic.weather import WeatherSettings, compute_weather
 
 
 class CatalogueTest(unittest.TestCase):
@@ -92,6 +103,86 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(clone, text)
             self.assertEqual(clone.code, "gate.floor")
             self.assertEqual(clone.render("sv"), "Under komfortgolvet 19,5 °C: värmer")
+
+
+def both(text):
+    """(English, Swedish) of a logic text."""
+    return text.render("en"), text.render("sv")
+
+
+class ClimateTextsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = utc(2026, 1, 10, 12, 0)
+
+    def test_indoor(self) -> None:
+        d = compute_indoor(Reading(21.5, self.now), 21.0, 2.0, self.now)
+        self.assertEqual(both(d.reason), (
+            "setpoint 21.0, indoor 21.5, factor 2",
+            "Börvärde 21,0 °C, inomhus 21,5 °C, faktor 2",
+        ))
+        self.assertEqual(d.reason.code, "indoor.ok")
+        d = compute_indoor(None, 21.0, 2.0, self.now)
+        self.assertEqual(both(d.reason), ("indoor sensor missing", "Inomhustemperatur saknas"))
+        old = Reading(21.0, self.now - timedelta(hours=2))
+        self.assertEqual(compute_indoor(old, 21.0, 2.0, self.now).reason.render("sv"), "Inomhustemperaturen är inaktuell")
+
+    def test_price(self) -> None:
+        level = PriceLevel("CHEAP", 50.0, self.now, {}, "optimiser")
+        d = compute_price(level, {"CHEAP": 2}, self.now)
+        self.assertEqual(both(d.reason), ("CHEAP (optimiser)", "Billigt (prisoptimering)"))
+        self.assertEqual(both(compute_price(None, {}, self.now).reason),
+                         ("no price for the current hour", "Inget pris för den här timmen"))
+        level = PriceLevel("VERY_EXPENSIVE", 300.0, self.now, {}, "own thresholds")
+        d = compute_price(level, {"VERY_EXPENSIVE": -2}, self.now, True, 0.5, Reading(20.2, self.now), 20.0)
+        self.assertEqual(both(d.reason), (
+            "VERY_EXPENSIVE, indoor 20.2 not above 20.5",
+            "Väldigt dyrt, inomhus 20,2 °C är inte över 20,5 °C",
+        ))
+        d = compute_price(level, {"VERY_EXPENSIVE": -2}, self.now, True, 0.5, None, 20.0)
+        self.assertEqual(d.reason.render("sv"), "Väldigt dyrt, spärren kan inte avgöra: inomhustemperatur saknas")
+
+    def test_weather(self) -> None:
+        forecast = [ForecastPoint(self.now + timedelta(hours=h), temperature=-5.0 - h) for h in range(8)]
+        d = compute_weather(Reading(-5.0, self.now), 9.0, forecast, self.now, self.now, WeatherSettings(hours=6))
+        self.assertEqual(both(d.reason), (
+            "outdoor -5.0, forecast -11.0 in 6 h",
+            "Ute \u22125,0 °C, prognos \u221211,0 °C om 6 h",
+        ))
+        d = compute_weather(Reading(-5.0, self.now), 9.0, None, None, self.now)
+        self.assertEqual(both(d.reason), ("no forecast", "Ingen prognos"))
+
+    def test_away(self) -> None:
+        self.assertEqual(both(away_component(False, -3).reason), (
+            "away: fixed curve offset -3 (indoor control not active)",
+            "Borta: fast kurvjustering \u22123 (inomhusreglering inte aktiv)",
+        ))
+
+    def test_gate_and_strategy(self) -> None:
+        fit = HouseFit(None, True, "ok", 400, 0.9, 0.02, 0.05, 0.05, 0.52, "low")
+        args = dict(horizon_h=24, t_in=21.0, floor=19.5, base_offset=0, max_up=3)
+        decision = gate(fit, 2, **args)
+        choice = choose_total("optimiser", 1.0, decision)
+        self.assertEqual(choice.reason.code, "strategy.not_used")
+        self.assertEqual(both(choice.reason), (
+            "optimiser not used: model confidence low (0.52) below high",
+            "Optimeraren används inte: modellens säkerhet är låg (0,52), lägre än hög",
+        ))
+        cold = gate(fit, 2, **dict(args, t_in=19.0))
+        self.assertEqual(both(choose_total("optimiser", 1.0, cold).reason), (
+            "below comfort floor 19.5 °C: heating", "Under komfortgolvet 19,5 °C: värmer",
+        ))
+        self.assertEqual(choose_total("optimiser", 1.0, cold).source, "comfort_floor")
+        ok = gate(HouseFit(None, True, "ok", 400, 0.9, 0.02, 0.05, 0.05, 0.9, "high"), 2, **args)
+        self.assertEqual(choose_total("optimiser", 1.0, ok).source, "optimiser")
+        self.assertEqual(both(choose_total("optimiser", 1.0, ok).reason), ("optimiser", "Optimeraren styr"))
+        self.assertEqual(both(choose_total("rules", 1.0, None).reason), ("rules", "Regler"))
+        missing = gate(fit, 2, **dict(args, t_in=None))
+        self.assertEqual(missing.reason.render("sv"), "Inomhustemperatur saknas")
+
+    def test_rmu(self) -> None:
+        self.assertEqual(both(room_temperature(Reading(21.44, self.now), self.now).reason),
+                         ("room temperature 21.4", "Rumstemperatur 21,4 °C"))
+        self.assertEqual(both(room_temperature(None, self.now).reason), ("room temperature missing", "Rumstemperatur saknas"))
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, Sequence
 
 from .inputs import Decision, ForecastPoint, Reading, to_fixed, to_float, usable
+from .texts import msg
 
 DEFAULT_HOURS = 6
 FORECAST_STALE = timedelta(hours=3)
@@ -133,18 +134,18 @@ def compute_weather(
     settings = settings or WeatherSettings()
     problem = usable(outdoor, now, sensor_timeout_min)
     if problem is not None:
-        return Decision.zero("outdoor sensor %s" % problem)
+        return Decision.zero(msg("weather.outdoor_%s" % problem))
     assert outdoor is not None
     outside = float(outdoor.value)
     curve = to_float(heat_curve)
     if curve is None:
-        return Decision.zero("heat curve unknown")
+        return Decision.zero(msg("weather.curve_unknown"))
     if curve == 0:
-        return Decision.zero("own heat curve (0) is not supported", inputs_ok=True)
+        return Decision.zero(msg("weather.own_curve"), inputs_ok=True)
     if not forecast or fetched_at is None:
-        return Decision.zero("no forecast")
+        return Decision.zero(msg("weather.no_forecast"))
     if now - fetched_at > FORECAST_STALE:
-        return Decision.zero("forecast stale (fetched %s)" % fetched_at.isoformat())
+        return Decision.zero(msg("weather.forecast_stale", fetched=fetched_at.isoformat()))
 
     hours = to_float(settings.hours)
     if hours is None or hours < 0:
@@ -156,7 +157,7 @@ def compute_weather(
     if point_later is None and points and points[-1].time > now and points[-1].time < target:
         point_later = points[-1]
     if point_now is None or point_later is None:
-        return Decision.zero("forecast does not cover now and %g h ahead" % hours)
+        return Decision.zero(msg("weather.not_covered", hours=hours))
     temp_now = float(point_now.temperature)  # type: ignore[arg-type]
     temp_later = float(point_later.temperature)  # type: ignore[arg-type]
 
@@ -188,7 +189,7 @@ def compute_weather(
     }
     if settings.wind_enable:
         if wind_set is None:
-            return Decision.zero("wind control on but forecast lacks wind", **details)
+            return Decision.zero(msg("weather.no_wind"), **details)
         details["feel"] = wind_set
         basis = wind_set
     else:
@@ -196,12 +197,12 @@ def compute_weather(
 
     offset = to_fixed((outside - basis - sun) * (curve * 1.2 / 10) / ((curve / 10) + 1), 2)
     if offset > 0 and not settings.enable_up:
-        return Decision.zero("raising blocked (%+.2f)" % offset, inputs_ok=True, **details)
+        return Decision.zero(msg("weather.raise_blocked", offset=offset), inputs_ok=True, **details)
     if offset <= 0 and not settings.enable_down:
-        return Decision.zero("lowering blocked (%+.2f)" % offset, inputs_ok=True, **details)
+        return Decision.zero(msg("weather.lower_blocked", offset=offset), inputs_ok=True, **details)
     return Decision(
         offset,
-        "outdoor %.1f, %s %.1f in %g h" % (outside, "feel" if settings.wind_enable else "forecast", basis, hours),
+        msg("weather.feel" if settings.wind_enable else "weather.forecast", outdoor=outside, basis=basis, hours=hours),
         True,
         details,
     )

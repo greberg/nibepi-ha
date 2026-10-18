@@ -61,6 +61,7 @@ from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .inputs import Decision, PriceSlot, Reading, js_round, to_float, usable
+from .texts import msg, term
 
 LEVELS = ("VERY_CHEAP", "CHEAP", "NORMAL", "EXPENSIVE", "VERY_EXPENSIVE")
 GUARDED_LEVELS = ("EXPENSIVE", "VERY_EXPENSIVE")
@@ -625,7 +626,7 @@ def compute_price(
     sensor_timeout_min: Optional[float] = None,
 ) -> Decision:
     if level is None:
-        return Decision.zero("no price for the current hour")
+        return Decision.zero(msg("price.no_price"))
     offset = to_float(offsets.get(level.level))
     if offset is None:
         offset = 0.0
@@ -634,18 +635,20 @@ def compute_price(
         problem = usable(indoor, now, sensor_timeout_min)
         set_value = to_float(setpoint)
         if problem is not None or set_value is None:
-            why = "indoor sensor %s" % problem if problem else "setpoint missing"
-            return Decision.zero("%s, guard needs %s" % (level.level, why), **details)
+            why = msg("indoor.sensor_%s" % problem) if problem else msg("indoor.setpoint_missing")
+            return Decision.zero(msg("price.guard_needs", level=term("price_level", level.level), why=why), **details)
         assert indoor is not None
         limit = set_value + (to_float(temp_low) or 0.0)
         details.update({"indoor": float(indoor.value), "guard_limit": limit})
         if not float(indoor.value) > limit:
             return Decision.zero(
-                "%s, indoor %.1f not above %.1f" % (level.level, float(indoor.value), limit),
+                msg("price.guard_blocked", level=term("price_level", level.level), indoor=float(indoor.value),
+                    limit=limit),
                 inputs_ok=True,
                 **details,
             )
-    return Decision(offset, "%s (%s)" % (level.level, level.reason), True, details)
+    reason = msg("price.level", level=term("price_level", level.level), source=term("price_source", level.reason))
+    return Decision(offset, reason, True, details)
 
 
 class PriceCache:

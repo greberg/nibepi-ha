@@ -34,6 +34,7 @@ from typing import Callable, Optional, Tuple
 
 from .inputs import Reading, usable
 from .lease import MODE_ACTIVE, MODE_OFF, LeaseAction, LeaseManager
+from .texts import msg
 
 RMU_LOW = 5.0
 RMU_HIGH = 35.0
@@ -59,12 +60,12 @@ def room_temperature(
 ) -> RoomTemperature:
     problem = usable(reading, now, sensor_timeout_min)
     if problem is not None:
-        return RoomTemperature(None, "room temperature %s" % problem)
+        return RoomTemperature(None, msg("rmu.room_%s" % problem))
     assert reading is not None
     value = float(reading.value)
     if not VALID_LOW <= value <= VALID_HIGH:
-        return RoomTemperature(None, "room temperature implausible (%.1f)" % value)
-    return RoomTemperature(value, "room temperature %.1f" % value)
+        return RoomTemperature(None, msg("rmu.implausible", value=value))
+    return RoomTemperature(value, msg("rmu.room", value=value))
 
 
 def rmu_decide(
@@ -76,7 +77,7 @@ def rmu_decide(
 ) -> Tuple[Optional[LeaseAction], RoomTemperature]:
     """The lease action for this tick (None: nothing to send), and why."""
     if not enabled:
-        room = RoomTemperature(None, "feed off")
+        room = RoomTemperature(None, msg("rmu.feed_off"))
     else:
         room = room_temperature(reading, now, sensor_timeout_min)
     mode = MODE_ACTIVE if room.value is not None else MODE_OFF

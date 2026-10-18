@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
 from .const import signal_update
+from .logic.texts import lang_of, localise
 from .runtime import NibePiRuntime
 
 
@@ -26,6 +27,19 @@ class NibePiEntity(Entity):
             self._attr_translation_placeholders = {"system": system.upper()}
         self._attr_device_info = runtime.device_info
         self._card_key = "%s_%s" % (key, system) if system else key
+
+    @property
+    def lang(self) -> str:
+        """The language of the texts: Home Assistant's ("en" or "sv").
+
+        Read on every state write, so a changed language shows on the
+        next update."""
+        config = getattr(self.hass, "config", None)
+        return lang_of(getattr(config, "language", None))
+
+    def localised(self, value: Any) -> Any:
+        """``value`` with the logic's texts (``Msg``) in that language."""
+        return localise(value, self.lang)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

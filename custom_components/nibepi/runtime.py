@@ -168,6 +168,7 @@ from .logic.price import (
     tibber_request,
 )
 from .logic.rmu import RoomTemperature, rmu_decide, rmu_lease_manager
+from .logic.texts import msg
 from .logic.vvimport import convert_nodered_store, read_json_file
 from .logic.legionella import (
     RESULT_CANCELLED,
@@ -1052,11 +1053,11 @@ class NibePiRuntime:
                     sys.rmu_lease, sys.rmu_enabled, reading, now, self.opt(OPT_SENSOR_TIMEOUT)
                 )
                 if sys.rmu_enabled and not entity_id:
-                    room = RoomTemperature(None, "no room temperature entity configured")
+                    room = RoomTemperature(None, msg("rmu.no_entity"))
                 sys.rmu_room = room
             except Exception as err:  # noqa: BLE001 - send nothing, the lease runs out
                 _LOGGER.exception("NibePi %s RMU40 feed failed", sys.system)
-                sys.rmu_room = RoomTemperature(None, "error: %r" % err)
+                sys.rmu_room = RoomTemperature(None, msg("common.error", error=repr(err)))
                 return
             if action is not None:
                 await self._async_send(sys, action, sys.rmu_lease)
