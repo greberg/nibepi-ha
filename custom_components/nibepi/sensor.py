@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
 from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source, signal_reading
-from .entity import NibePiEntity
+from .entity import I18N, NibePiEntity
 from .logic.gateway import gateway_version
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
 from .logic.legionella import REG_LUX_STOP, result_text
@@ -294,7 +294,7 @@ class GatewayVersionSensor(NibePiEntity, SensorEntity):
 class PriceLevelSensor(NibePiEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [level.lower() for level in LEVELS]
-    _unrecorded_attributes = frozenset({"levels"})
+    _unrecorded_attributes = frozenset({"levels", I18N})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "price_level")
@@ -356,7 +356,7 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = list(STATES)
-    _unrecorded_attributes = frozenset({"plan_24h", "reasons", "inputs"})
+    _unrecorded_attributes = frozenset({"plan_24h", "reasons", "inputs", I18N})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "hw_planned_action")
@@ -460,7 +460,7 @@ class DrawProfileSensor(NibePiEntity, SensorEntity):
     """The learned hot water draw profile: when the next draw is expected."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _unrecorded_attributes = frozenset({"profile", "day_sums", "top_slots"})
+    _unrecorded_attributes = frozenset({"profile", "day_sums", "top_slots", I18N})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "hw_draw_profile")
@@ -561,7 +561,7 @@ class OptimiserPlanSensor(_SystemSensor):
     """
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _unrecorded_attributes = frozenset({"plan_24h", "explanation", "summary"})
+    _unrecorded_attributes = frozenset({"plan_24h", "explanation", "summary", I18N})
 
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
         super().__init__(runtime, "optimiser_plan", system)
@@ -728,7 +728,7 @@ class HeatPumpCostTodaySensor(NibePiEntity, SensorEntity):
     # the long-term statistics.
     _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
-    _unrecorded_attributes = frozenset({"yesterday"})
+    _unrecorded_attributes = frozenset({"yesterday", I18N})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "heat_pump_cost_today")
@@ -767,7 +767,7 @@ class HouseModelSensor(_SystemSensor):
     _attr_options = ["prior", "low", "medium", "high"]
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _unrecorded_attributes = frozenset(
-        {"curve", "prior", "emitter_fit", "eta_fit", "meter_share", "history", "bt3_fit", "loop_fit"}
+        {"curve", "prior", "emitter_fit", "eta_fit", "meter_share", "history", "bt3_fit", "loop_fit", I18N}
     )
 
     def __init__(self, runtime: NibePiRuntime, system: str) -> None:
@@ -823,7 +823,7 @@ class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
     """The optimiser's hot water plan: when the next charge starts."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _unrecorded_attributes = frozenset({"blocks"})
+    _unrecorded_attributes = frozenset({"blocks", I18N})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "hw_optimiser_plan")

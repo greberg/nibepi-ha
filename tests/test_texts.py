@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 import pickle
+import re
 import unittest
 from datetime import timedelta
 
@@ -15,7 +18,23 @@ from logic.optimizer.house import HouseFit
 from logic.optstrategy import choose_total
 from logic.price import PriceLevel, compute_price
 from logic.rmu import room_temperature
-from logic.texts import CATALOGUE, LANGS, Msg, code_of, codes, lang_of, localise, msg, placeholders, render, term
+from logic.texts import (
+    CATALOGUE,
+    I18N,
+    LANGS,
+    Msg,
+    attributes,
+    code_of,
+    codes,
+    i18n,
+    lang_of,
+    localise,
+    msg,
+    placeholders,
+    render,
+    structured,
+    term,
+)
 from logic.weather import WeatherSettings, compute_weather
 
 
@@ -103,6 +122,130 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(clone, text)
             self.assertEqual(clone.code, "gate.floor")
             self.assertEqual(clone.render("sv"), "Under komfortgolvet 19,5 °C: värmer")
+
+
+def from_structured(value):
+    """A Msg back from its structured form (what the cards render)."""
+    if isinstance(value, dict) and "c" in value:
+        return Msg(value["c"], {k: from_structured(v) for k, v in (value.get("p") or {}).items()})
+    return value
+
+
+class StructuredTest(unittest.TestCase):
+    """The ``i18n`` attribute: the texts as codes and parameters."""
+
+    def test_structured_text(self) -> None:
+        reason = msg("strategy.not_used", reason=msg("gate.low_confidence", level=term("model_level", "low"),
+                                                     confidence=0.52, min_level=term("model_level", "high")))
+        self.assertEqual(structured(reason), {
+            "c": "strategy.not_used",
+            "p": {"reason": {"c": "gate.low_confidence", "p": {
+                "level": {"c": "model_level.low"}, "confidence": 0.52, "min_level": {"c": "model_level.high"},
+            }}},
+        })
+        self.assertEqual(structured(msg("opt.no_plan")), {"c": "opt.no_plan"})
+        # JSON-safe parameters: plain str, no NaN, other objects as text.
+        odd = structured(Msg("common.error", {"error": float("nan")}))
+        self.assertEqual(odd, {"c": "common.error", "p": {"error": None}})
+        self.assertIs(type(structured(msg("meter.not_found", entity=msg("common.off")))["p"]["entity"]), dict)
+        self.assertEqual(structured(Msg("x", {"when": utc(2026, 1, 1)}))["p"]["when"], "2026-01-01 00:00:00+00:00")
+
+    def test_i18n_keeps_only_the_texts(self) -> None:
+        value = {"a": msg("opt.no_plan"), "b": "plain", "n": 1, "d": {"x": msg("common.off"), "y": 2},
+                 "l": [msg("common.off"), "plain"], "e": {"z": 1}, "t": (1, 2)}
+        self.assertEqual(i18n(value), {"a": {"c": "opt.no_plan"}, "d": {"x": {"c": "common.off"}},
+                                       "l": [{"c": "common.off"}, None]})
+        self.assertIsNone(i18n({"a": 1, "b": ["x"]}))
+        self.assertIsNone(i18n("plain"))
+
+    def assert_round_trip(self, attrs, lang="en") -> dict:
+        out = attributes(attrs, lang)
+        json.dumps(out)  # a state attribute must serialise
+        texts = out[I18N]
+
+        def check(orig, rendered, struct):
+            if isinstance(orig, Msg):
+                rebuilt = from_structured(struct)
+                for lang_ in LANGS:
+                    self.assertEqual(rebuilt.render(lang_), orig.render(lang_))
+                self.assertEqual(rendered, orig.render(lang))
+            elif isinstance(orig, dict):
+                for key, item in orig.items():
+                    if struct is not None and key in struct:
+                        check(item, rendered[key], struct[key])
+            elif isinstance(orig, (list, tuple)):
+                for i, item in enumerate(orig):
+                    check(item, rendered[i], struct[i] if struct else None)
+
+        for key, value in attrs.items():
+            if key in texts:
+                check(value, out[key], texts[key])
+            else:
+                self.assertEqual(i18n(value), None, key)
+        return out
+
+    def test_optimiser_plan_sensor(self) -> None:
+        fit = HouseFit(None, True, "ok", 400, 0.9, 0.02, 0.05, 0.05, 0.52, "low")
+        decision = gate(fit, 2, horizon_h=24, t_in=21.0, floor=19.5, base_offset=0, max_up=3)
+        attrs = {
+            "strategy": "optimiser",
+            "gate": {"use": decision.use_optimizer, "offset": decision.offset, "reason": decision.reason,
+                     "reason_code": code_of(decision.reason)},
+            "problem": msg("opt.no_plan_why", why=msg("opt.no_indoor")),
+            "summary": msg("explain.summary", kwh=12.34, cost=5.6, unit="SEK", base=-1, base_kwh=13.0,
+                           base_cost=6.1, savings=0.5, t_min=20.6, t_max=21.4, changes=3),
+            "explanation": [msg("explain.line", span="06:00-08:00", offset=-2,
+                                why=msg("explain.expensive", price=msg("explain.price", price=1.5, unit="SEK/kWh",
+                                                                       avg=1.0)),
+                                t_end=20.9, at="08:00")],
+            "plan_24h": [["06:00", -2, 20.9]],
+        }
+        out = self.assert_round_trip(attrs, "sv")
+        self.assertEqual(out["problem"], "Ingen plan (inomhustemperatur saknas)")
+        self.assertEqual(set(out[I18N]), {"gate", "problem", "summary", "explanation"})
+        self.assertEqual(out[I18N]["gate"], {"reason": structured(decision.reason)})
+        self.assertNotIn("plan_24h", out[I18N])
+
+    def test_planned_offset_and_component_sensors(self) -> None:
+        now = utc(2026, 1, 10, 12, 0)
+        indoor = compute_indoor(Reading(21.5, now), 21.0, 2.0, now)
+        level = PriceLevel("CHEAP", 50.0, now, {}, "optimiser")
+        price = compute_price(level, {"CHEAP": 2}, now)
+        choice = choose_total("rules", 1.0, None)
+        reasons = {"indoor": indoor.reason, "price": price.reason, "weather": "disabled"}
+        out = self.assert_round_trip({"strategy_reason": choice.reason, "reasons": reasons,
+                                      "reason_codes": codes(reasons), "components": {"indoor": -1.0}})
+        self.assertEqual(out[I18N]["reasons"], {"indoor": structured(indoor.reason),
+                                                "price": structured(price.reason)})
+        self.assertEqual(out[I18N]["reasons"]["price"]["p"]["level"], {"c": "price_level.CHEAP"})
+        component = self.assert_round_trip({"reason": indoor.reason, "inputs_ok": True, "indoor": 21.5})
+        self.assertEqual(set(component[I18N]), {"reason"})
+
+    def test_hot_water_and_gateway_sensors(self) -> None:
+        from logic.gateway import status_hint
+
+        blocks = [{"start": "06:00", "action": "charge", "reason": msg("tank.price", price=1.0, avg=1.5)},
+                  {"start": "08:00", "action": "idle", "reason": ""}]
+        out = self.assert_round_trip({"problem": None, "blocks": blocks}, "sv")
+        self.assertEqual(out[I18N], {"blocks": [{"reason": structured(blocks[0]["reason"])}, None]})
+        out = self.assert_round_trip({"hint": status_hint("nibe/status"), "entities": {"a": "b"}})
+        self.assertEqual(out[I18N]["hint"], {"c": "gateway.no_status", "p": {"topic": "nibe/status"}})
+
+    def test_no_texts_no_attribute(self) -> None:
+        self.assertEqual(attributes({"a": 1}, "sv"), {"a": 1})
+
+    def test_platforms_leave_the_i18n_attribute_unrecorded(self) -> None:
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "custom_components", "nibepi")
+        found = 0
+        for name in sorted(os.listdir(root)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(root, name), encoding="utf-8") as handle:
+                source = handle.read()
+            for match in re.finditer(r"_unrecorded_attributes = frozenset\((.*?)\)\n", source, re.S):
+                found += 1
+                self.assertIn("I18N", match.group(1), name)
+        self.assertGreater(found, 5)
 
 
 def both(text):

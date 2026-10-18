@@ -16,7 +16,7 @@ from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
 from .const import OPT_INDOOR_ENTITY
-from .entity import NibePiEntity
+from .entity import I18N, NibePiEntity
 from .logic.cards import card_entities
 from .logic.gateway import status_hint
 
@@ -29,7 +29,7 @@ async def async_setup_entry(
 
 class GatewayOnline(NibePiEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
-    _unrecorded_attributes = frozenset({"entities", "systems"})
+    _unrecorded_attributes = frozenset({"entities", "systems", I18N})
     # The gateway's sensors are looked up in the entity registry at most
     # this often (seconds); the integration's own entities are always live.
     GATEWAY_LOOKUP_EVERY = 60

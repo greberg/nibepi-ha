@@ -15,12 +15,15 @@ Home Assistant's language (``localise``) and can expose the code.
   stay lower case inside another text.
 - A code missing in a language falls back to English, an unknown code to
   the code itself. Log messages stay English (``str(msg)``).
+- ``i18n`` gives the texts in an attribute as codes and parameters, so
+  the cards can render them in the viewer's own language.
 
 No Home Assistant imports; Python 3.9 compatible.
 """
 
 from __future__ import annotations
 
+import math
 import re
 import string
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -478,6 +481,62 @@ def localise(value: Any, lang: str) -> Any:
     if isinstance(value, tuple):
         return tuple(localise(item, lang) for item in value)
     return value
+
+
+def _param(value: Any) -> Any:
+    if isinstance(value, Msg):
+        return structured(value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(value)
+
+
+def structured(value: Msg) -> Dict[str, Any]:
+    """A text as the cards render it: ``{"c": code, "p": params}``.
+
+    Parameters that are texts are structured the same way; ``p`` is left
+    out when there are none. The cards render it in the viewer's language
+    (frontend/nibepi-texts.js is generated from the catalogue)."""
+    out: Dict[str, Any] = {"c": value.code}
+    if value.params:
+        out["p"] = {key: _param(item) for key, item in value.params.items()}
+    return out
+
+
+def i18n(value: Any) -> Any:
+    """The texts inside ``value`` in their structured form, None when it
+    holds none: a Msg as ``structured``; of a dict the keys that hold
+    texts; of a list or tuple every item (None for one without texts)."""
+    if isinstance(value, Msg):
+        return structured(value)
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            found = i18n(item)
+            if found is not None:
+                out[key] = found
+        return out or None
+    if isinstance(value, (list, tuple)):
+        items = [i18n(item) for item in value]
+        return items if any(item is not None for item in items) else None
+    return None
+
+
+# The attribute with the texts as codes and parameters (``attributes``).
+I18N = "i18n"
+
+
+def attributes(attrs: Mapping[str, Any], lang: str) -> Dict[str, Any]:
+    """Entity attributes with their texts rendered in ``lang`` and, under
+    ``i18n``, as codes and parameters (``{"problem": {"c": ..., "p": ...}}``),
+    for the cards to render in the viewer's language."""
+    out = localise(dict(attrs), lang)
+    texts = i18n(dict(attrs))
+    if texts:
+        out[I18N] = texts
+    return out
 
 
 def placeholders(template: str) -> set:

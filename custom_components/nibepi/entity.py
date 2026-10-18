@@ -9,13 +9,16 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
 from .const import signal_update
-from .logic.texts import lang_of, localise
+from .logic.texts import I18N, attributes, lang_of, localise
 from .runtime import NibePiRuntime
 
 
 class NibePiEntity(Entity):
     _attr_has_entity_name = True
     _attr_should_poll = False
+    # The texts as codes and parameters (``localised``) repeat the
+    # rendered texts: not recorded. A subclass with its own set adds I18N.
+    _unrecorded_attributes = frozenset({I18N})
 
     def __init__(self, runtime: NibePiRuntime, key: str, system: Optional[str] = None) -> None:
         self.runtime = runtime
@@ -38,7 +41,14 @@ class NibePiEntity(Entity):
         return lang_of(getattr(config, "language", None))
 
     def localised(self, value: Any) -> Any:
-        """``value`` with the logic's texts (``Msg``) in that language."""
+        """``value`` with the logic's texts (``Msg``) in that language.
+
+        For a dict of attributes, the texts are also put under ``i18n``
+        as codes and parameters (``{"problem": {"c": ..., "p": ...}}``):
+        the cards render them in the viewer's language, which can differ
+        from Home Assistant's."""
+        if isinstance(value, dict):
+            return attributes(value, self.lang)
         return localise(value, self.lang)
 
     async def async_added_to_hass(self) -> None:
