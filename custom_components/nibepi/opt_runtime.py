@@ -108,11 +108,14 @@ from .logic.optrun import (
     comfort_settings,
     fit_all,
     indoor_problem,
+    input_problem,
     models_for,
     plan_system,
     plan_tank,
+    problem_input,
     profile_confidence,
     scale_prices,
+    should_replan,
 )
 from .logic.optstrategy import (
     STRATEGY_RULES,
@@ -254,6 +257,9 @@ class OptimizerRuntime:
         self.plan_running = False
         self.plan_error: Optional[str] = None
         self.last_plan_at: Optional[datetime] = None
+        # A plan without a missing input since start: until then a failed
+        # plan is retried every minute (``on_tick``).
+        self.planned_ok = False
         self._plan_again = False
         self._price_key: Any = None
         # Expected savings today: {"day", "heating": {system: banked}, ...}.
@@ -806,7 +812,8 @@ class OptimizerRuntime:
         return apply_choice(rules, choice, current)
 
     def on_tick(self, now: datetime) -> None:
-        """Replan when the prices changed, and the first time after start."""
+        """Replan when the prices changed, the first time after start, and
+        when a plan that failed on a missing input can succeed."""
         started = self.rt.started
         if started is None or now - started < FIRST_PLAN_AFTER:
             return
@@ -815,6 +822,32 @@ class OptimizerRuntime:
         if self.last_plan_at is None or key != self._price_key:
             self._price_key = key
             self.request_plan()
+        elif not self.plan_running and should_replan(now, self.last_plan_at, self._inputs_back(now), self.planned_ok):
+            self.request_plan()
+
+    def _inputs_back(self, now: datetime) -> List[bool]:
+        """For each current plan that failed on an input: is it usable now?"""
+        out: List[bool] = []
+        tank_inputs: Any = False
+        failed = [(system, r.problem) for system, r in self.heating.items() if input_problem(r.problem)]
+        if self.tank is not None and input_problem(self.tank.problem):
+            failed.append((None, self.tank.problem))
+        for system, problem in failed:
+            kind = problem_input(problem)
+            if kind == "indoor":
+                out.append(system in self.rt.systems and self._indoor(system, now)[0] is not None)
+            elif kind == "prices":
+                out.append(any(slot.start <= now < slot.end for slot in self.rt.price_slots))
+            else:
+                if tank_inputs is False:
+                    tank_inputs = self._tank_inputs(now)
+                if tank_inputs is None:
+                    out.append(False)
+                elif kind == "bt6":
+                    out.append(tank_inputs.bt6 is not None)
+                else:
+                    out.append(None not in (tank_inputs.economy_stop, tank_inputs.normal_stop, tank_inputs.lux_stop))
+        return out
 
     # -- planning ----------------------------------------------------------------
 
@@ -955,6 +988,8 @@ class OptimizerRuntime:
                 del self.heating[system]
         for result in results:
             self.heating[result.system] = result
+        if not any(input_problem(r.problem) for r in results) and not (tank is not None and input_problem(tank.problem)):
+            self.planned_ok = True
         self.save_soon()
 
     # -- expected savings today ------------------------------------------------

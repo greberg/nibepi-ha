@@ -1,6 +1,7 @@
 """The optimiser's missing inputs: why the indoor temperature or the
-prices cannot be used (texts in both languages) and the indoor reading
-over time (an entity unavailable at start, a restored value)."""
+prices cannot be used (texts in both languages), the indoor reading over
+time (an entity unavailable at start, a restored value) and when a plan
+that failed on an input is retried."""
 
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from logic.inputs import (
 from logic.optimizer.gate import gate
 from logic.optimizer.house import HouseFit
 from logic.optrun import (
+    INPUT_PROBLEMS,
+    RETRY_MIN_GAP,
     TankInputs,
     indoor_problem,
     input_problem,
@@ -30,8 +33,9 @@ from logic.optrun import (
     plan_tank,
     prices_problem,
     problem_input,
+    should_replan,
 )
-from logic.texts import msg
+from logic.texts import CATALOGUE, msg
 from test_opt_strategy import inputs, prices
 
 NOW = utc(2026, 1, 14, 23)
@@ -201,6 +205,36 @@ class PricesProblemTest(unittest.TestCase):
                                     price_status=status))
         self.assertEqual(tank.problem.code, "opt.no_prices_why")
         self.assertEqual(problem_input(tank.problem), "prices")
+
+
+class RetryTest(unittest.TestCase):
+    def test_input_problems(self) -> None:
+        for code in INPUT_PROBLEMS:
+            self.assertIn(code, CATALOGUE)
+        self.assertTrue(input_problem(msg("opt.no_bt6")))
+        self.assertEqual(problem_input(msg("opt.no_bt6")), "bt6")
+        self.assertEqual(problem_input(msg("opt.no_stops")), "stops")
+        self.assertFalse(input_problem(msg("common.error", error="boom")))
+        self.assertFalse(input_problem(None))
+        self.assertFalse(input_problem("indoor temperature missing"))  # no code
+        self.assertIsNone(problem_input(msg("away.no_charges")))
+
+    def test_should_replan(self) -> None:
+        last = NOW
+        tick = NOW + timedelta(seconds=58)  # the next tick, a plan's run time later
+        # Nothing failed on an input: no extra plan.
+        self.assertFalse(should_replan(tick, last, [], False))
+        self.assertFalse(should_replan(tick, last, [], True))
+        # The input is back: plan now.
+        self.assertTrue(should_replan(tick, last, [True], True))
+        self.assertTrue(should_replan(tick, last, [False, True], True))
+        # Still missing: after a successful plan wait for the quarter hour,
+        # before the first one since start retry every tick.
+        self.assertFalse(should_replan(tick, last, [False], True))
+        self.assertTrue(should_replan(tick, last, [False], False))
+        # Never right after a plan, nor before the first one.
+        self.assertFalse(should_replan(NOW + RETRY_MIN_GAP - timedelta(seconds=1), last, [True], False))
+        self.assertFalse(should_replan(tick, None, [True], False))
 
 
 if __name__ == "__main__":

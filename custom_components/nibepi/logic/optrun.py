@@ -649,7 +649,8 @@ def base_offset(models: Models, t_out: float, target: float) -> int:
     return neutral_offset(models.house, models.curve, t_out, target)
 
 
-# Problems from a missing or unusable input (``problem_input`` says which).
+# Problems from a missing or unusable input (``problem_input`` says which):
+# opt_runtime replans as soon as the input is back, not on the quarter hour.
 INPUT_PROBLEMS = frozenset({
     "opt.no_indoor", "opt.indoor_not_found", "opt.indoor_unavailable", "opt.indoor_unknown",
     "opt.indoor_not_numeric", "opt.indoor_bad_unit", "opt.indoor_missing", "opt.indoor_stale",
@@ -657,6 +658,11 @@ INPUT_PROBLEMS = frozenset({
     "opt.no_prices_why", "opt.no_bt6", "opt.no_stops",
 })
 INDOOR_REASONS = ("not_found", "unavailable", "unknown", "not_numeric", "bad_unit", "missing", "stale", "implausible")
+
+
+# Between a plan and a retry for a missing input; the runtime ticks once
+# a minute, so this is at most one retry per tick.
+RETRY_MIN_GAP = timedelta(seconds=30)
 
 
 def input_problem(problem: Any) -> bool:
@@ -677,6 +683,25 @@ def problem_input(problem: Any) -> Optional[str]:
     if code == "opt.no_stops":
         return "stops"
     return "prices"
+
+
+def should_replan(
+    now: datetime,
+    last_plan_at: Optional[datetime],
+    cleared: Sequence[bool],
+    planned_ok: bool,
+    min_gap: timedelta = RETRY_MIN_GAP,
+) -> bool:
+    """Whether to plan now, off the quarter-hour schedule.
+
+    ``cleared`` has one item per current plan that failed on an input:
+    whether that input is usable again. Retry when one is; until the first
+    plan without such a problem since start (``planned_ok``), retry on
+    every tick anyway. Never sooner than ``min_gap`` after the last plan.
+    """
+    if not cleared or last_plan_at is None or now - last_plan_at < min_gap:
+        return False
+    return any(cleared) or not planned_ok
 
 
 def indoor_problem(source: str, reason: str, details: Optional[Mapping[str, Any]] = None) -> Msg:
