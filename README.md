@@ -628,8 +628,9 @@ Per system:
   hour; `time` is local "HH:MM", `start` the ISO timestamp), `comfort`
   (`target`, `lower`, `upper`, `floor`: the band the plan keeps indoor in),
   `explanation`, `summary`, `expected_cost`, `baseline_cost`, `savings`,
-  `savings_pct`, `gate` (use, offset, reason), `applied`, `strategy`,
-  `model_confidence`, `base_offset`, `planned_at`, `problem`,
+  `savings_pct`, `gate` (use, offset, reason, reason_code), `applied`,
+  `strategy`, `model_confidence`, `base_offset`, `planned_at`, `problem`,
+  `problem_code`,
   `slab_temp` (floor heating: the slab temperature the plan starts from,
   comparable with BT3), `slab_state` (the planner's slab state, which
   settles at the supply) and `slab_source` (`bt3`, `bt2`, or `settled`
@@ -667,7 +668,7 @@ Shared:
 - `sensor` Hot water optimiser plan: when the next planned charge starts;
   attributes `blocks` (next 24 h; `start`/`end` local "HH:MM",
   `start_at`/`end_at` ISO timestamps), `next_target`, `savings`, `min_temp`,
-  `enabled`, `in_use`, `problem`
+  `enabled`, `in_use`, `problem`, `problem_code`
 - `switch` Optimise hot water charges
 
 Long attributes (plans, explanations, fits) are not recorded in the
@@ -777,8 +778,9 @@ search for **NibePi**: each card shows a preview, and its editor has the
 options below (or switch it to YAML). The cards follow your theme, light
 or dark, and Home Assistant's language: Swedish or English (any other
 language shows English), with your profile's number and time format
-(decimal comma, 12/24 h). The reasons and explanations the integration
-writes in its attributes are still English.
+(decimal comma, 12/24 h). The reasons and explanations come from the
+integration's attributes, which follow Home Assistant's language too (see
+[Entities](#entities)).
 
 Options common to all cards:
 
@@ -891,6 +893,17 @@ reporting a problem.
 
 ## Entities
 
+The texts in the attributes (reasons, the plan's explanation, summary
+and problem, the legionella state, the Gateway hint) follow Home
+Assistant's language (Settings → System → General): Swedish for `sv`,
+English otherwise, with a decimal comma in Swedish. A changed language
+shows from the next update (within a minute). For automations, match the
+codes rather than the texts: `strategy_reason_code`, `reason_codes`
+(per component or hot water feature), `reason_code`, `problem_code`,
+`price_status_code` and `last_result_code`; the codes are listed in
+`custom_components/nibepi/logic/texts.py`. Diagnostics and the log stay
+English.
+
 Per system (`S1`, `S2`):
 
 - `select` Mode
@@ -898,10 +911,11 @@ Per system (`S1`, `S2`):
 - `switch` Indoor control, Price control, Forecast control
 - `switch` Send room temperature to pump (RMU40), off by default
 - `sensor` Planned curve offset (attributes: strategy, source, strategy_reason,
-  rules_total, total, components, reasons, inputs_ok, base_adjust, away,
-  last_tick, healthy, last_action)
-- `sensor` Indoor offset, Price offset, Forecast offset (attributes: reason
-  and inputs)
+  strategy_reason_code, rules_total, total, components, reasons,
+  reason_codes, inputs_ok, base_adjust, away, last_tick, healthy,
+  last_action)
+- `sensor` Indoor offset, Price offset, Forecast offset (attributes: reason,
+  reason_code and inputs)
 - `sensor` Pump curve offset (47011/47010 as last read)
 - `sensor` Lease (active / grace / restoring / inactive / error; attributes:
   expires, owner, written, baseline, error, last_state_received). It shows
@@ -909,7 +923,8 @@ Per system (`S1`, `S2`):
   published a state for the register, which happens only after the first
   lease was taken (never in shadow mode).
 - `sensor` RMU40 room temperature lease (same states and attributes, plus
-  feed_enabled, source_entity, room_temperature, reason, last_action)
+  feed_enabled, source_entity, room_temperature, reason, reason_code,
+  last_action)
 - `sensor` Optimiser plan, House model (see [Optimiser
   entities](#optimiser-entities))
 
@@ -920,7 +935,7 @@ hw_mode), `sensor` Away until (timestamp), action `nibepi.set_away`
 mode](#away-mode).
 
 Shared: `sensor` Price level (attributes: price_ore, hour_start, levels,
-price_source, price_status, and for Tibber tibber_home and
+price_source, price_status, price_status_code, and for Tibber tibber_home and
 prices_fetched), `binary_sensor` Gateway (online/offline, see below),
 `sensor` Expected savings today, Heat pump cost today and Hot water optimiser plan (see
 [Optimiser entities](#optimiser-entities)), and the diagnostic `sensor`
@@ -962,7 +977,7 @@ Hot water:
   comfort mode by price, optimise hot water charges
 - `sensor` Hot water planned action (off / fault / idle / heat_now /
   block / economy / normal / luxury / legionella; attributes: reasons per feature,
-  targets per register, next_heat_start, closed_until, plan_24h, inputs,
+  reason_codes, targets per register, next_heat_start, closed_until, plan_24h, inputs,
   last_actions)
 - `sensor` Hot water next expected draw (timestamp; attributes:
   confidence (the hour's learned value relative to the largest), slot,
@@ -973,10 +988,11 @@ Hot water:
   (47047), as the lease sensors above
 - `sensor` Legionella last done (timestamp; attributes: by (`pump`, `ha`,
   `history`), temperature, hold_since) and Legionella next due (timestamp;
-  attributes: state, reason, temperature, temperature_source,
+  attributes: state, reason, reason_code, temperature, temperature_source,
   interval_days, interval_source, pump_periodic, deadline, planned_start,
-  planned_end, placed_by, running_since, timeout_at, last_result,
-  last_result_at, retry_after); see [Legionella guard](#legionella-guard)
+  planned_end, placed_by, running_since, timeout_at, last_result (text),
+  last_result_code (`done`, `cancelled`, `aborted: timeout`, `aborted: BT7
+  missing or stale`), last_result_at, retry_after); see [Legionella guard](#legionella-guard)
 - `button` Run legionella cycle now
 
 The Gateway sensor is on when `<prefix>status` says `online` or a live
@@ -1037,6 +1053,9 @@ with no build step: `nibepi-core.js` holds the entity resolution and data
 shaping (unit tested), `nibepi-i18n.js` the English and Swedish texts
 and the locale formatting (a key missing in Swedish shows the English
 text), `nibepi-cards.js` the elements.
+The texts the integration writes in its attributes are in
+`logic/texts.py`, English and Swedish per code; a test checks that both
+have every code with the same placeholders.
 
 ## License
 
