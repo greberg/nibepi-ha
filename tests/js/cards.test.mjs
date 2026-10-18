@@ -359,6 +359,47 @@ test("plan, hot water, gateway and savings cards in Swedish", async () => {
   assert.match(card.shadowRoot.innerHTML, /Kostnad per dag, 2 dagar/);
 });
 
+test("the integration's texts follow the viewer's language", () => {
+  // An English server: the attributes are English, i18n has the codes.
+  const hass = swedish();
+  const plan = hass.states["sensor.plan_s1"].attributes;
+  plan.summary = "Planned 1.0 kWh";
+  plan.explanation = ["06:00-08:00 offset -2: normal operation, indoor 20.9 °C at 08:00", "a text from a newer version"];
+  plan.i18n = {
+    summary: { c: "explain.summary", p: { kwh: 1, cost: 2, unit: "SEK", base: 0, base_kwh: 1.5, base_cost: 3, savings: 1, t_min: 20.5, t_max: 21.5, changes: 2 } },
+    explanation: [{ c: "explain.line", p: { span: "06:00-08:00", offset: -2, why: { c: "explain.neutral" }, t_end: 20.9, at: "08:00" } }, { c: "explain.from_the_future" }],
+  };
+  let html = render("nibepi-plan-card", { system: "s1" }, hass).html;
+  assert.match(html, /Planerat 1,0 kWh för 2,00 SEK/);
+  assert.match(html, /<li>06:00-08:00 kurvjustering −2: normal drift, inomhus 20,9 °C kl\. 08:00<\/li>/);
+  assert.match(html, /<li>a text from a newer version<\/li>/);
+
+  hass.states["sensor.plan_s1"] = {
+    state: "unknown",
+    attributes: { problem: "no plan (indoor temperature missing)", i18n: { problem: { c: "opt.no_plan_why", p: { why: { c: "opt.no_indoor" } } } } },
+  };
+  html = render("nibepi-plan-card", { system: "s1" }, hass).html;
+  assert.match(html, /Ingen plan från optimeraren för de närmaste 24 h än: ingen plan \(inomhustemperatur saknas\)\./);
+  const en = makeHass();
+  en.states["sensor.plan_s1"] = hass.states["sensor.plan_s1"];
+  assert.match(render("nibepi-plan-card", { system: "s1" }, en).html, /24 h yet: no plan \(indoor temperature missing\)\./);
+
+  const sv = swedish();
+  sv.states["sensor.planned_s1"].attributes.i18n = { strategy_reason: { c: "strategy.rules" } };
+  assert.match(render("nibepi-climate-card", { system: "s1" }, sv).html, /<div class="reason">Regler<\/div>/);
+  sv.states["sensor.hw_action"].attributes.reasons = { away: "away: economy", vv_control: "no draw expected" };
+  sv.states["sensor.hw_action"].attributes.i18n = { reasons: { away: { c: "hw.away_economy" }, vv_control: { c: "vv.no_window" } } };
+  const hw = render("nibepi-hotwater-card", {}, sv).html;
+  assert.match(hw, /<div class="reason">Borta: ekonomi<\/div>/);
+  assert.match(hw, /VV-styrning:<\/span> Inget värmefönster planerat/);
+  const gw = swedish();
+  Object.assign(gw.states["binary_sensor.nibe_gateway"].attributes, {
+    hint: "No message on nibe/status: is the NibePi gateway running?",
+    i18n: { hint: { c: "gateway.no_status", p: { topic: "nibe/status" } } },
+  });
+  assert.match(render("nibepi-gateway-card", {}, gw).html, /Ingen data på nibe\/status: körs NibePi-gatewayen/);
+});
+
 test("a language change re-renders the card", () => {
   const hass = makeHass();
   const { card } = render("nibepi-hotwater-card", {}, hass);

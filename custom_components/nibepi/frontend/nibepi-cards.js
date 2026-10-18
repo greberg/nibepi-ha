@@ -5,7 +5,9 @@
 // Entity resolution and data shaping are in nibepi-core.js (unit tested),
 // texts and locale formatting in nibepi-i18n.js; both are imported with
 // this module's own ?v= query so all update together. The cards follow
-// Home Assistant's language (Swedish or English) and number/time format.
+// the viewer's profile language (Swedish or English) and number/time
+// format, the integration's own texts too (rendered from the entities'
+// i18n attribute; the plain attributes are in the server's language).
 
 const moduleUrl = (name) => new URL(`./${name}${new URL(import.meta.url).search}`, import.meta.url).href;
 const core = await import(moduleUrl("nibepi-core.js"));
@@ -14,6 +16,7 @@ const {
   HW_LEASES,
   LEASES,
   PRICE_COLORS,
+  attrText,
   awayModel,
   climateAlerts,
   contributions,
@@ -249,9 +252,15 @@ class NibePiCard extends HTMLElement {
     return sysKey(key, this.system);
   }
 
-  // Texts and numbers in Home Assistant's language and formats.
+  // Texts and numbers in the viewer's language and formats.
   t(key, vars) {
     return translate(this.lang, key, vars);
+  }
+
+  // The integration's text at ``path`` in an entity's attributes, in the
+  // viewer's language (from the i18n attribute; else the attribute's own).
+  text(attrs, path, nested = false) {
+    return attrText(this.loc, attrs, path, nested);
   }
 
   n(value, digits = 1) {
@@ -504,7 +513,8 @@ class NibePiClimateCard extends NibePiCard {
           : ""
       }
     </div>`;
-    const reason = pa.strategy_reason ? `<div class="reason">${esc(pa.strategy_reason)}</div>` : "";
+    const strategyReason = this.text(pa, "strategy_reason");
+    const reason = strategyReason ? `<div class="reason">${esc(strategyReason)}</div>` : "";
 
     const bars = contributions(planned, num(plan), this.loc)
       .map((c) => {
@@ -600,8 +610,9 @@ class NibePiPlanCard extends NibePiCard {
       loc: this.loc,
     });
     if (!plan || chart.empty) {
-      // The problem is the optimiser's text, in Home Assistant's language.
-      const text = a.problem ? this.t("plan.empty_why", { hours, problem: a.problem }) : this.t("plan.empty", { hours });
+      // The optimiser's problem, inside the sentence.
+      const problem = this.text(a, "problem", true);
+      const text = problem ? this.t("plan.empty_why", { hours, problem }) : this.t("plan.empty", { hours });
       return `<div class="content"><div class="empty">${esc(text)}</div></div>`;
     }
     const p = chart.plot;
@@ -670,13 +681,16 @@ class NibePiPlanCard extends NibePiCard {
     const status = `<div class="stat"><span class="label">${esc(this.t("plan.planned"))}</span><span class="value">${esc(
       a.planned_at ? this.age(a.planned_at, now, true) : "–",
     )}${a.applied ? "" : ` <span class="muted small">${esc(this.t("plan.not_applied"))}</span>`}</span></div>`;
-    // The summary and explanation are the optimiser's texts, in Home Assistant's language.
+    // The summary and explanation are the optimiser's texts, in the viewer's language.
     const explanation = Array.isArray(a.explanation) && a.explanation.length
-      ? `<details><summary>${esc(this.t("plan.why", { count: a.explanation.length }))}</summary><ul>${a.explanation.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
+      ? `<details><summary>${esc(this.t("plan.why", { count: a.explanation.length }))}</summary><ul>${a.explanation
+          .map((_l, i) => `<li>${esc(this.text(a, ["explanation", i]))}</li>`)
+          .join("")}</ul></details>`
       : "";
+    const summary = this.text(a, "summary");
     return `<div class="content">
       ${svg}${legend}
-      ${a.summary ? `<div class="small">${esc(a.summary)}</div>` : ""}
+      ${summary ? `<div class="small">${esc(summary)}</div>` : ""}
       <div class="grid">${savings}${cost}${status}</div>
       ${explanation}
     </div>`;
@@ -725,8 +739,9 @@ class NibePiHotWaterCard extends NibePiCard {
       </div>
     </div>`;
 
-    // The reasons are the control's texts (in Home Assistant's language); their labels are ours.
-    const reasons = aa.reasons && typeof aa.reasons === "object" ? Object.entries(aa.reasons).filter(([, v]) => v) : [];
+    // The reasons are the control's texts (in the viewer's language); their labels are ours.
+    const reasons =
+      aa.reasons && typeof aa.reasons === "object" ? Object.keys(aa.reasons).map((k) => [k, this.text(aa, ["reasons", k])]).filter(([, v]) => v) : [];
     const reasonLabel = (k) => (hasKey(`reason.${k}`) ? this.t(`reason.${k}`) : k.replace(/_/g, " "));
     const reasonList = reasons.length
       ? `<details><summary>${esc(this.t("hw.reasons", { count: reasons.length }))}</summary><ul>${reasons
@@ -745,8 +760,8 @@ class NibePiHotWaterCard extends NibePiCard {
     if (usingOpt && optNext) nextCharge = `${esc(optNext)} <span class="muted small">${esc(this.t("hw.by_optimiser"))}</span>`;
     else if (vvNext) nextCharge = `${esc(vvNext)} <span class="muted small">${esc(this.t("hw.by_vvai"))}</span>`;
 
-    const leg = legionellaModel(this.st("hw_legionella_next_due"), this.st("hw_legionella_last_done"));
-    const windows = hotwaterWindows({ vvPlan: aa.plan_24h, blocks: oa.blocks, legionella: leg?.window, now, hours: 24, loc: this.loc });
+    const leg = legionellaModel(this.st("hw_legionella_next_due"), this.st("hw_legionella_last_done"), this.loc);
+    const windows = hotwaterWindows({ vvPlan: aa.plan_24h, blocks: oa.blocks, blockTexts: oa.i18n?.blocks, legionella: leg?.window, now, hours: 24, loc: this.loc });
     const ticks = [];
     const hour = new Date(now);
     hour.setMinutes(0, 0, 0);
@@ -799,7 +814,8 @@ class NibePiHotWaterCard extends NibePiCard {
     }
 
     const alerts = this.alertList(hotwaterAlerts(this._hass, this._ids, this.loc));
-    const awayNote = aa.reasons?.away ? `<div class="reason">${esc(aa.reasons.away)}</div>` : "";
+    const awayReason = this.text(aa, ["reasons", "away"]);
+    const awayNote = awayReason ? `<div class="reason">${esc(awayReason)}</div>` : "";
 
     return `<div class="content">
       ${alerts ? `<div class="alerts">${alerts}</div>` : ""}
@@ -865,7 +881,8 @@ class NibePiGatewayCard extends NibePiCard {
       ${bus ? this.stat("bus_health", this.t("gw.bus_errors"), esc(this.fmt(bus))) : ""}
       <div class="stat"><span class="label">${esc(this.t("gw.last_message"))}</span><span class="value">${esc(this.age(ga.last_message_at, now) || "–")}</span></div>
     </div>`;
-    const hint = ga.hint ? `<div class="alert warning" data-more="gateway_online"><ha-icon icon="mdi:alert"></ha-icon><span>${esc(ga.hint)}</span></div>` : "";
+    const hintText = this.text(ga, "hint");
+    const hint = hintText ? `<div class="alert warning" data-more="gateway_online"><ha-icon icon="mdi:alert"></ha-icon><span>${esc(hintText)}</span></div>` : "";
 
     const rows = leaseRows(
       this._hass,

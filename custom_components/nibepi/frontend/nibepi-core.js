@@ -6,11 +6,17 @@
 // module is by the cards, so all three update together.
 
 const i18n = await import(new URL(`./nibepi-i18n.js${new URL(import.meta.url).search}`, import.meta.url).href);
-const { clockText, hasKey, leaseErrorText, numberText, t: tr, toLoc } = i18n;
+const { attrText: textAt, clockText, hasKey, leaseErrorText, numberText, renderText, t: tr, toLoc } = i18n;
 
 /** The text of ``key`` in the language of ``loc``. */
 function t(loc, key, vars) {
   return tr(toLoc(loc).lang, key, vars);
+}
+
+/** The integration's text at ``path`` in ``attrs`` (see i18n attrText) in
+ * the language of ``loc``: the viewer's, not Home Assistant's. */
+export function attrText(loc, attrs, path, nested = false) {
+  return textAt(toLoc(loc).lang, attrs, path, nested);
 }
 
 /** The text of ``key``, or ``fallback`` for a key without a text (a state
@@ -492,9 +498,10 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
 
 /** Planned hot water windows in [now, now + hours] as fractions of the
  * strip: VV-AI windows (plan_24h, ISO times), the optimiser's charge
- * blocks (start_at / end_at) and a planned or running legionella cycle
+ * blocks (start_at / end_at; ``blockTexts`` is the sensor's i18n.blocks,
+ * for their reasons) and a planned or running legionella cycle
  * ({start, end, temperature} in ms, from legionellaModel().window). */
-export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24, loc }) {
+export function hotwaterWindows({ vvPlan, blocks, blockTexts, legionella, now, hours = 24, loc }) {
   const clock = (time) => (time === null ? "" : formatClock(time, loc));
   const end = now + hours * 3600000;
   const span = end - now;
@@ -511,14 +518,16 @@ export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24, l
     const mode = w?.mode ? tOr(loc, `hwmode.${w.mode}`, w.mode) : "";
     add(s, e, "vv", t(loc, "hw.window_vv", { mode, from: clock(s), to: clock(e) }).replace(/\s+/g, " ").trim());
   }
-  for (const b of Array.isArray(blocks) ? blocks : []) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  for (const [i, b] of list.entries()) {
     if (b?.action !== "charge") continue;
     const s = parseTime(b.start_at);
     const e = parseTime(b.end_at);
     const vars = { from: clock(s), to: clock(e), temperature: formatNumber(b.target, Number.isInteger(toNumber(b.target)) ? 0 : 1, loc) };
     const text = t(loc, b.target ? "hw.window_charge_to" : "hw.window_charge", vars);
-    // The reason is the optimiser's text, in Home Assistant's language.
-    add(s, e, "charge", `${text}${b.reason ? `: ${b.reason}` : ""}`);
+    // The optimiser's reason, in the viewer's language.
+    const reason = renderText(toLoc(loc).lang, Array.isArray(blockTexts) ? blockTexts[i]?.reason : null, b.reason, true);
+    add(s, e, "charge", `${text}${reason ? `: ${reason}` : ""}`);
   }
   if (legionella && legionella.start !== null && legionella.end !== null) {
     const known = legionella.temperature !== null && legionella.temperature !== undefined;
@@ -533,8 +542,8 @@ export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24, l
  * them, else {state, running, lastDone, lastBy, due, temperature,
  * temperatureSource, intervalDays, pumpPeriodic, window, lastResult,
  * reason}. ``window`` ({start, end, temperature}, ms) only while a cycle
- * is planned or running. */
-export function legionellaModel(nextDue, lastDone) {
+ * is planned or running; ``reason`` in the language of ``loc``. */
+export function legionellaModel(nextDue, lastDone, loc) {
   if (!nextDue && !lastDone) return null;
   const a = nextDue?.attributes || {};
   const state = a.state || null;
@@ -555,7 +564,7 @@ export function legionellaModel(nextDue, lastDone) {
     window: planned && start !== null && end !== null && end > start ? { start, end, temperature } : null,
     // The code ("done", "aborted: timeout"); last_result is its text.
     lastResult: a.last_result_code || a.last_result || null,
-    reason: a.reason || null,
+    reason: attrText(loc, a, "reason") || null,
   };
 }
 
@@ -575,19 +584,18 @@ export function contributions(planned, optimiserOffset, loc) {
         key: "optimiser",
         label: t(loc, source === "comfort_floor" ? "part.comfort_floor" : "part.optimiser"),
         value: toNumber(optimiserOffset ?? attrs.total),
-        reason: attrs.strategy_reason || "",
+        reason: attrText(loc, attrs, "strategy_reason"),
       },
       { key: "rules", label: t(loc, "part.rules"), value: toNumber(attrs.rules_total), reason: "" },
     ];
   } else {
     const components = attrs.components || {};
-    const reasons = attrs.reasons || {};
     const keys = "away" in components ? [...COMPONENTS, "away"] : COMPONENTS;
     items = keys.map((c) => ({
       key: c,
       label: t(loc, `part.${c}`),
       value: toNumber(components[c]),
-      reason: reasons[c] || "",
+      reason: attrText(loc, attrs, ["reasons", c]),
     }));
   }
   const maxAbs = Math.max(3, ...items.map((i) => Math.abs(i.value ?? 0)));

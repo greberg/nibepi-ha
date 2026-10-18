@@ -241,3 +241,37 @@ test("the gateway's known lease errors are shown in Swedish", () => {
     "Fel i lease för kurvjustering: Värmepumpen är inte redo än.",
   );
 });
+
+test("the integration's texts follow the viewer's language, not the server's", () => {
+  // Attributes rendered on an English server, with their i18n form.
+  const planned = {
+    attributes: {
+      source: "optimiser",
+      rules_total: 1,
+      strategy_reason: "optimiser not used: below comfort floor 19.5 °C: heating",
+      components: { indoor: 1, price: 0, weather: 0 },
+      reasons: { indoor: "setpoint missing", price: "plain", weather: "disabled" },
+      i18n: {
+        strategy_reason: { c: "strategy.not_used", p: { reason: { c: "gate.floor", p: { floor: 19.5 } } } },
+        reasons: { indoor: { c: "indoor.setpoint_missing" } },
+      },
+    },
+  };
+  const opt = contributions(planned, 2, "sv");
+  assert.equal(opt[0].reason, "Optimeraren används inte: under komfortgolvet 19,5 °C: värmer");
+  assert.equal(contributions(planned, 2, "en")[0].reason, "optimiser not used: below comfort floor 19.5 °C: heating");
+  planned.attributes.source = "rules";
+  const rules = contributions(planned, null, "sv");
+  assert.deepEqual(rules.map((c) => c.reason), ["Börvärde saknas", "plain", "disabled"]);
+
+  const windows = hotwaterWindows({
+    blocks: [
+      { action: "idle", start_at: iso(NOW + H), end_at: iso(NOW + 2 * H), reason: "waiting for cheaper slots" },
+      { action: "charge", start_at: iso(NOW + 4 * H), end_at: iso(NOW + 5 * H), target: 50, reason: "price 1.00 vs 1.50 average" },
+    ],
+    blockTexts: [{ reason: { c: "tank.waiting" } }, { reason: { c: "tank.price", p: { price: 1, avg: 1.5 } } }],
+    now: NOW,
+    loc: "sv",
+  });
+  assert.match(windows[0].label, /^Laddning \d\d:\d\d–\d\d:\d\d till 50 °C: pris 1,00 mot snittet 1,50$/);
+});

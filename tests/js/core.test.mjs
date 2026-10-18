@@ -431,3 +431,13 @@ test("versionLine shows the gateway and integration versions", () => {
   assert.equal(versionLine({ state: "unknown", attributes: { integration_version: "0.6.0" } }, { attributes: { version: "1.9.0" } }), "Gateway v1.9.0 · Integration v0.6.0");
   assert.equal(versionLine(undefined, undefined), "");
 });
+
+test("legionellaModel gives the guard's reason in the viewer's language", () => {
+  const nextDue = {
+    state: iso(NOW),
+    attributes: { state: "due", reason: "due: would run now (hot water mode shadow)", i18n: { reason: { c: "leg.would_run", p: { mode: { c: "mode.shadow" } } } } },
+  };
+  assert.equal(legionellaModel(nextDue, null, "sv").reason, "Dags: skulle köra nu (varmvattenläge skugga)");
+  assert.equal(legionellaModel(nextDue, null).reason, "due: would run now (hot water mode shadow)");
+  assert.equal(legionellaModel({ state: iso(NOW), attributes: {} }, null, "sv").reason, null);
+});
