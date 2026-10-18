@@ -121,9 +121,9 @@ class PlanSystemTest(unittest.TestCase):
 
     def test_problems(self) -> None:
         self.assertEqual(plan_system(inputs(t_in=None)).problem, "indoor temperature missing")
-        self.assertEqual(plan_system(inputs(prices=[])).problem, "no prices cover now")
-        self.assertEqual(plan_system(inputs(prices=prices(start=NOW + timedelta(hours=1)))).problem,
-                         "no prices cover now")
+        self.assertEqual(plan_system(inputs(prices=[])).problem, "no prices")
+        later = plan_system(inputs(prices=prices(start=NOW + timedelta(hours=1)))).problem
+        self.assertEqual(later.code, "opt.prices_from")
 
     def test_savings_split(self) -> None:
         plan = plan_system(inputs()).plan

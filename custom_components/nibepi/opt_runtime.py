@@ -68,7 +68,8 @@ from .logic.hotwater import START_REGISTERS, STOP_REGISTERS
 from .logic.hwcontrol import REG_BT6, REG_PRIO
 from .logic.legionella import REG_LUX_STOP, legionella_pin
 from .logic.lease import MODE_OFF
-from .logic.inputs import Reading, state_timestamp, state_value, to_float, usable
+from .logic.indoor import MIN_VALID_INDOOR
+from .logic.inputs import Reading, state_timestamp, state_value, to_float, unusable, usable
 from .logic.opthistory import (
     BOOTSTRAP_DAYS,
     PRIO_HEAT,
@@ -106,6 +107,7 @@ from .logic.optrun import (
     base_offset,
     comfort_settings,
     fit_all,
+    indoor_problem,
     models_for,
     plan_system,
     plan_tank,
@@ -747,9 +749,17 @@ class OptimizerRuntime:
         return comfort_at(now_band, after, change, when, ramp)
 
     def _indoor(self, system: str, now: datetime):
-        reading = self.rt._indoor_reading(self.rt.systems[system])
-        problem = usable(reading, now, self.rt.opt(OPT_SENSOR_TIMEOUT))
-        return (float(reading.value) if problem is None and reading is not None else None), problem
+        """(t_in, problem, reason): the indoor temperature for the plans and
+        the gate, else None with "missing"/"stale" and the text saying
+        which sensor and why (unavailable, stale for how long, ...)."""
+        reading, absent, source = self.rt._indoor_check(self.rt.systems[system])
+        why = absent if reading is None and absent is not None else unusable(
+            reading, now, self.rt.opt(OPT_SENSOR_TIMEOUT), minimum=MIN_VALID_INDOOR
+        )
+        if why is None:
+            assert reading is not None
+            return float(reading.value), None, None
+        return None, ("stale" if why[0] == "stale" else "missing"), indoor_problem(source, *why)
 
     def live_gate(self, system: str, now: datetime) -> Optional[GateDecision]:
         """The gate with this minute's indoor temperature and the last plan."""
@@ -757,7 +767,7 @@ class OptimizerRuntime:
         if models is None:
             return None
         comfort = self.comfort(system, now)
-        t_in, problem = self._indoor(system, now)
+        t_in, problem, reason = self._indoor(system, now)
         result = self.heating.get(system)
         planned = None
         horizon = 0.0
@@ -780,6 +790,7 @@ class OptimizerRuntime:
             PLAN_MAX_UP,
             indoor_problem=problem,
             min_level=str(self.rt.opt(OPT_OPT_MIN_LEVEL) or "high"),
+            indoor_reason=reason,
         )
         if code_of(decision.reason) == "opt.no_plan" and result is not None:
             why = result.problem or _plan_too_old()
@@ -854,7 +865,7 @@ class OptimizerRuntime:
         for system, sys in rt.systems.items():
             if sys.mode == MODE_OFF or system not in self.models:
                 continue
-            t_in, _problem = self._indoor(system, now)
+            t_in, _problem, t_in_problem = self._indoor(system, now)
             current = rt._value(sys.registers["offset"])
             band, after, change, ramp = self.comfort_plan(system, now)
             out.append(
@@ -877,6 +888,8 @@ class OptimizerRuntime:
                     comfort_after=after,
                     comfort_change=change,
                     comfort_ramp_h=ramp,
+                    t_in_problem=t_in_problem,
+                    price_status=rt.price_status,
                 )
             )
         return out
@@ -912,6 +925,7 @@ class OptimizerRuntime:
             confidence=profile_confidence(profile.learned, bool(profile.imported_from)),
             t_brine=self._fresh(readings.get(REG_BRINE_IN), now),
             legionella=legionella_pin(guard.status),
+            price_status=rt.price_status,
         )
 
     def hw_plan_windows(self, now: datetime):

@@ -187,7 +187,7 @@ class PlanTankTest(unittest.TestCase):
     def test_problems(self) -> None:
         self.assertEqual(plan_tank(self.inputs(bt6=None)).problem, "BT6 missing or stale")
         self.assertEqual(plan_tank(self.inputs(lux_stop=None)).problem, "stop temperatures unknown")
-        self.assertEqual(plan_tank(self.inputs(prices=[])).problem, "no prices cover now")
+        self.assertEqual(plan_tank(self.inputs(prices=[])).problem, "no prices")
 
 
 if __name__ == "__main__":

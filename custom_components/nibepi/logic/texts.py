@@ -158,7 +158,32 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
     "opt.plan_old": ("plan older than {minutes:d} min", "planen är äldre än {minutes:d} min"),
     "opt.not_planned": ("not planned yet", "inte planerad än"),
     "opt.no_indoor": ("indoor temperature missing", "inomhustemperatur saknas"),
+    # Why the indoor temperature cannot be used ({source}: entity id or BT50)
+    "opt.indoor_not_found": ("indoor sensor {source} not found", "inomhusgivaren {source} hittades inte"),
+    "opt.indoor_unavailable": ("indoor sensor {source} is unavailable", "inomhusgivaren {source} är inte tillgänglig"),
+    "opt.indoor_unknown": ("indoor sensor {source} has no value", "inomhusgivaren {source} har inget värde"),
+    "opt.indoor_not_numeric": (
+        "indoor sensor {source} is not a number ({state})",
+        "inomhusgivaren {source} är inte ett tal ({state})",
+    ),
+    "opt.indoor_bad_unit": (
+        "indoor sensor {source}: unit {unit} is not a temperature",
+        "inomhusgivaren {source}: enheten {unit} är ingen temperatur",
+    ),
+    "opt.indoor_missing": ("no indoor temperature from {source} yet", "ingen inomhustemperatur från {source} än"),
+    "opt.indoor_stale": (
+        "indoor temperature from {source} is {minutes:d} min old (limit {timeout:g} min)",
+        "inomhustemperaturen från {source} är {minutes:d} min gammal (gräns {timeout:g} min)",
+    ),
+    "opt.indoor_implausible": (
+        "implausible indoor temperature from {source} ({value:.1f} °C)",
+        "orimlig inomhustemperatur från {source} ({value:.1f} °C)",
+    ),
     "opt.no_prices": ("no prices cover now", "inga priser för nu"),
+    "opt.prices_none": ("no prices", "inga priser"),
+    "opt.prices_end": ("prices end at {end}", "priserna tar slut kl. {end}"),
+    "opt.prices_from": ("prices start at {start}", "priserna börjar kl. {start}"),
+    "opt.no_prices_why": ("no prices: {why}", "inga priser: {why}"),
     "opt.no_bt6": ("BT6 missing or stale", "BT6 saknas eller är inaktuell"),
     "opt.no_stops": ("stop temperatures unknown", "stopptemperaturerna är okända"),
     # Electricity meter (opt_runtime.py)

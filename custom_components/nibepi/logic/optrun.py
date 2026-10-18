@@ -78,7 +78,7 @@ from .optimizer.tank import (
     draws_from_week_profile,
     plan_hot_water,
 )
-from .texts import msg
+from .texts import Msg, code_of, msg
 
 HEATING_SHARE = 0.5  # an hour counts as heating when prio was 30 this much
 HW_SHARE = 0.1  # ... and as free of hot water charging below this
@@ -613,6 +613,10 @@ class HeatingInputs:
     comfort_after: Optional[ComfortSettings] = None
     comfort_change: Optional[datetime] = None
     comfort_ramp_h: float = 0.0
+    # Why ``t_in`` is None (``indoor_problem``), and the price source's
+    # status (for the problem when no prices cover now).
+    t_in_problem: Optional[str] = None
+    price_status: Optional[str] = None
 
 
 @dataclass
@@ -645,6 +649,74 @@ def base_offset(models: Models, t_out: float, target: float) -> int:
     return neutral_offset(models.house, models.curve, t_out, target)
 
 
+# Problems from a missing or unusable input (``problem_input`` says which).
+INPUT_PROBLEMS = frozenset({
+    "opt.no_indoor", "opt.indoor_not_found", "opt.indoor_unavailable", "opt.indoor_unknown",
+    "opt.indoor_not_numeric", "opt.indoor_bad_unit", "opt.indoor_missing", "opt.indoor_stale",
+    "opt.indoor_implausible", "opt.no_prices", "opt.prices_none", "opt.prices_end", "opt.prices_from",
+    "opt.no_prices_why", "opt.no_bt6", "opt.no_stops",
+})
+INDOOR_REASONS = ("not_found", "unavailable", "unknown", "not_numeric", "bad_unit", "missing", "stale", "implausible")
+
+
+def input_problem(problem: Any) -> bool:
+    """True when a plan's ``problem`` is a missing or unusable input."""
+    return code_of(problem) in INPUT_PROBLEMS
+
+
+def problem_input(problem: Any) -> Optional[str]:
+    """The input a plan's problem is about: "indoor", "prices", "bt6",
+    "stops", or None for another problem."""
+    code = code_of(problem)
+    if code not in INPUT_PROBLEMS:
+        return None
+    if code == "opt.no_indoor" or code.startswith("opt.indoor_"):
+        return "indoor"
+    if code == "opt.no_bt6":
+        return "bt6"
+    if code == "opt.no_stops":
+        return "stops"
+    return "prices"
+
+
+def indoor_problem(source: str, reason: str, details: Optional[Mapping[str, Any]] = None) -> Msg:
+    """Why the indoor temperature from ``source`` (an entity id, BT50)
+    cannot be used: a reason of ``inputs.unusable`` or
+    ``inputs.entity_absence`` (or "bad_unit") with its details."""
+    params: Dict[str, Any] = dict(details or {})
+    params["source"] = source
+    if reason not in INDOOR_REASONS:
+        return msg("opt.no_indoor")
+    if reason == "stale" and (params.get("minutes") is None or params.get("timeout") is None):
+        reason = "missing"
+    if reason == "stale":
+        params["minutes"] = int(params["minutes"])
+    return msg("opt.indoor_%s" % reason, **params)
+
+
+def prices_problem(
+    prices: Sequence[PriceSlot], now: datetime, tz: tzinfo, status: Optional[str] = None
+) -> Msg:
+    """Why no prices cover ``now``: the price source's problem when it has
+    one (``status``, a text other than "ok"), none at all, prices that end
+    before now or start after it, or a gap at now."""
+    if isinstance(status, Msg) and status.code != "price.status_ok":
+        return msg("opt.no_prices_why", why=status)
+    if not prices:
+        return msg("opt.prices_none")
+
+    def hm(when: datetime) -> str:
+        return when.astimezone(tz).strftime("%H:%M")
+
+    last_end = max(slot.end for slot in prices)
+    if last_end <= now:
+        return msg("opt.prices_end", end=hm(last_end))
+    first_start = min(slot.start for slot in prices if slot.end > now)
+    if first_start > now:
+        return msg("opt.prices_from", start=hm(first_start))
+    return msg("opt.no_prices")
+
+
 def plan_system(inputs: HeatingInputs) -> HeatingResult:
     """The heating plan for one system, or the reason there is none."""
     models = inputs.models
@@ -652,7 +724,7 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
     t_out_now = inputs.t_out if inputs.t_out is not None else 0.0
     result = HeatingResult(inputs.system, inputs.now, base_offset(models, t_out_now, target))
     if inputs.t_in is None:
-        result.problem = msg("opt.no_indoor")
+        result.problem = inputs.t_in_problem or msg("opt.no_indoor")
         return result
     lagged = models.lag_planner
     slots = build_horizon(
@@ -666,7 +738,7 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
         t_brine=inputs.t_brine,
     )
     if not slots:
-        result.problem = msg("opt.no_prices")
+        result.problem = prices_problem(inputs.prices, inputs.now, inputs.tz, inputs.price_status)
         return result
     hours = sum(s.hours for s in slots)
     mean_out = sum(s.t_out * s.hours for s in slots) / hours
@@ -725,6 +797,8 @@ class TankInputs:
     pump_starts_itself: bool = False
     # A planned (or running) legionella cycle: (start, end, temperature).
     legionella: Optional[Tuple[datetime, datetime, float]] = None
+    # The price source's status (for the problem when no prices cover now).
+    price_status: Optional[str] = None
 
 
 @dataclass
@@ -752,7 +826,7 @@ def plan_tank(inputs: TankInputs) -> TankResult:
         return result
     slots = build_horizon(inputs.prices, inputs.now, None, None, t_brine=inputs.t_brine)
     if not slots:
-        result.problem = msg("opt.no_prices")
+        result.problem = prices_problem(inputs.prices, inputs.now, inputs.tz, inputs.price_status)
         return result
     normal_stop = float(inputs.normal_stop)  # type: ignore[arg-type]
     normal_start = inputs.normal_start if inputs.normal_start is not None else normal_stop - 5.0

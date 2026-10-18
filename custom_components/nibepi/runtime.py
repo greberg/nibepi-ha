@@ -12,7 +12,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
@@ -150,6 +150,8 @@ from .logic.inputs import (
     ForecastPoint,
     PriceSlot,
     Reading,
+    Unusable,
+    entity_absence,
     state_timestamp,
     state_value,
     to_float,
@@ -1183,29 +1185,44 @@ class NibePiRuntime:
         return reading.value if reading is not None else None
 
     def _indoor_reading(self, sys: SystemRuntime) -> Optional[Reading]:
+        return self._indoor_check(sys)[0]
+
+    def _indoor_check(self, sys: SystemRuntime) -> Tuple[Optional[Reading], Optional[Unusable], str]:
+        """The indoor reading, why there is none (None: no reading yet, or
+        BT50), and its source for the texts (the entity id, else BT50)."""
         entity_id = self.opt(OPT_INDOOR_ENTITY, sys.system)
         if not entity_id:
-            return self.readings.get(sys.registers["indoor"])
-        return self._entity_reading(entity_id)
+            return self.readings.get(sys.registers["indoor"]), None, "BT50"
+        reading, absent = self._entity_check(entity_id)
+        return reading, absent, entity_id
 
     def _entity_reading(self, entity_id: str) -> Optional[Reading]:
-        """A temperature entity in °C, timestamped by its last report."""
+        return self._entity_check(entity_id)[0]
+
+    def _entity_check(self, entity_id: str) -> Tuple[Optional[Reading], Optional[Unusable]]:
+        """A temperature entity in °C, timestamped by its last report; or
+        None and why (``inputs.entity_absence``, "bad_unit", "missing").
+
+        Read from the state machine on every call, so an entity that was
+        unavailable at start counts from its first value."""
         state = self.hass.states.get(entity_id)
         if state is None:
-            return None
+            return None, entity_absence(None)
         value = state_value(state.state)
         if value is None:
-            return None
+            return None, entity_absence(state.state)
         unit = state.attributes.get("unit_of_measurement")
         if unit and unit != UnitOfTemperature.CELSIUS:
             try:
                 value = TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
             except Exception:  # noqa: BLE001 - unknown unit
-                return None
+                return None, ("bad_unit", {"unit": str(unit)})
         # last_reported: Netatmo often reports an unchanged value, which
         # does not move last_updated.
         ts = state_timestamp(getattr(state, "last_reported", None), state.last_updated)
-        return Reading(value, ts) if ts is not None else None
+        if ts is None:
+            return None, ("missing", {})
+        return Reading(value, ts), None
 
     def _setpoint(self, sys: SystemRuntime) -> Optional[float]:
         entity_id = self.opt(OPT_SETPOINT_ENTITY, sys.system)

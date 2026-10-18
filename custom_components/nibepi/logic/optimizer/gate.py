@@ -41,9 +41,13 @@ def gate(
     indoor_problem: Optional[str] = None,
     min_level: str = "high",
     min_horizon_h: float = 6.0,
+    indoor_reason: Optional[str] = None,
 ) -> GateDecision:
+    """``indoor_reason``: the runtime's own text for an unusable indoor
+    temperature (which sensor, why); else one from ``indoor_problem``."""
     if indoor_problem is not None or t_in is None:
-        return GateDecision(False, None, msg("indoor.sensor_%s" % (indoor_problem or "missing")))
+        reason = indoor_reason or msg("indoor.sensor_%s" % (indoor_problem or "missing"))
+        return GateDecision(False, None, reason)
     if t_in < floor:
         return GateDecision(True, base_offset + max_up, msg("gate.floor", floor=floor))
     if fit is None or not fit.ok:

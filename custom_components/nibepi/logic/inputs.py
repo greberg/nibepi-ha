@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 DEFAULT_SENSOR_TIMEOUT_MIN = 60.0
 
@@ -77,6 +77,17 @@ class Reading:
         return now - self.ts
 
 
+def timeout_minutes(timeout_min: Any = DEFAULT_SENSOR_TIMEOUT_MIN) -> Optional[float]:
+    """The staleness limit in minutes: None or an invalid value is the 60
+    minute default, 0 disables the check (None returned)."""
+    if timeout_min is None:
+        return DEFAULT_SENSOR_TIMEOUT_MIN
+    value = to_float(timeout_min)
+    if value == 0:
+        return None
+    return value if value is not None and value > 0 else DEFAULT_SENSOR_TIMEOUT_MIN
+
+
 def is_stale(
     reading: Optional[Reading],
     now: datetime,
@@ -89,16 +100,40 @@ def is_stale(
     """
     if reading is None:
         return True
-    minutes = DEFAULT_SENSOR_TIMEOUT_MIN
-    if timeout_min is not None:
-        value = to_float(timeout_min)
-        if value == 0:
-            return False
-        if value is not None and value > 0:
-            minutes = value
+    minutes = timeout_minutes(timeout_min)
+    if minutes is None:
+        return False
     if reading.ts is None:
         return True
     return now > reading.ts + timedelta(minutes=minutes)
+
+
+# Why a reading cannot be used: (reason, details).
+Unusable = Tuple[str, Dict[str, Any]]
+
+
+def unusable(
+    reading: Optional[Reading],
+    now: datetime,
+    timeout_min: Optional[float] = DEFAULT_SENSOR_TIMEOUT_MIN,
+    minimum: Optional[float] = None,
+) -> Optional[Unusable]:
+    """None when the reading can be used, otherwise why not, with details:
+
+    - ``("missing", {})``: no reading, the 9999 marker or not finite;
+    - ``("stale", {"minutes": age, "timeout": limit})``, whole minutes;
+    - ``("implausible", {"value": v})``: below ``minimum``.
+    """
+    if reading is None or is_missing(reading.value):
+        return "missing", {}
+    if is_stale(reading, now, timeout_min):
+        details: Dict[str, Any] = {"timeout": timeout_minutes(timeout_min)}
+        if isinstance(reading.ts, datetime):
+            details["minutes"] = int((now - reading.ts).total_seconds() // 60)
+        return "stale", details
+    if minimum is not None and float(reading.value) < minimum:
+        return "implausible", {"value": float(reading.value)}
+    return None
 
 
 def usable(
@@ -106,12 +141,23 @@ def usable(
     now: datetime,
     timeout_min: Optional[float] = DEFAULT_SENSOR_TIMEOUT_MIN,
 ) -> Optional[str]:
-    """None when the reading can be used, otherwise why not."""
-    if reading is None or is_missing(reading.value):
-        return "missing"
-    if is_stale(reading, now, timeout_min):
-        return "stale"
-    return None
+    """None when the reading can be used, otherwise why not ("missing",
+    "stale"; ``unusable`` has the details)."""
+    why = unusable(reading, now, timeout_min)
+    return why[0] if why is not None else None
+
+
+def entity_absence(state: Optional[str]) -> Unusable:
+    """Why a Home Assistant entity gives no number: ``state`` is its state
+    string, None when the entity does not exist."""
+    if state is None:
+        return "not_found", {}
+    text = str(state).strip().lower()
+    if text == "unavailable":
+        return "unavailable", {}
+    if text in NO_VALUE_STATES:
+        return "unknown", {}
+    return "not_numeric", {"state": str(state)}
 
 
 @dataclass(frozen=True)
