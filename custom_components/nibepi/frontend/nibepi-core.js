@@ -1,5 +1,23 @@
 // NibePi cards: entity resolution and data shaping. Pure functions, no DOM,
 // so they run under node:test (tests/js). nibepi-cards.js renders them.
+// Helpers that produce text take ``loc``: a language code ("sv", "en") or
+// a locale context from localeOf(hass); without it, English and 24 h.
+// nibepi-i18n.js is imported with this module's own ?v= query, like this
+// module is by the cards, so all three update together.
+
+const i18n = await import(new URL(`./nibepi-i18n.js${new URL(import.meta.url).search}`, import.meta.url).href);
+const { clockText, hasKey, numberText, t: tr, toLoc } = i18n;
+
+/** The text of ``key`` in the language of ``loc``. */
+function t(loc, key, vars) {
+  return tr(toLoc(loc).lang, key, vars);
+}
+
+/** The text of ``key``, or ``fallback`` for a key without a text (a state
+ * the cards do not know yet). */
+function tOr(loc, key, fallback) {
+  return hasKey(key) ? t(loc, key) : fallback;
+}
 
 export const DOMAIN = "nibepi";
 export const SYSTEMS = ["s1", "s2"];
@@ -40,6 +58,11 @@ export const LEASES = [
 ];
 
 export const HW_LEASES = LEASES.slice(4);
+
+/** A lease's label in the language of ``loc``. */
+export function leaseLabel(lease, loc) {
+  return t(loc, `lease.${lease.key}`);
+}
 
 const MISSING = new Set(["unknown", "unavailable", "none", ""]);
 
@@ -167,18 +190,19 @@ export function toNumber(value) {
 // Formatting
 // --------------------------------------------------------------------------
 
-export function formatNumber(value, digits = 1) {
+/** "21.5" ("21,5" in Swedish), "–" without a number. */
+export function formatNumber(value, digits = 1, loc) {
   const n = toNumber(value);
-  return n === null ? "–" : n.toFixed(digits);
+  return n === null ? "–" : numberText(n, digits, loc);
 }
 
-/** "+2", "−1.5", "0". */
-export function formatSigned(value, digits = 0) {
+/** "+2", "−1.5" ("−1,5"), "0". */
+export function formatSigned(value, digits = 0, loc) {
   const n = toNumber(value);
   if (n === null) return "–";
-  const text = Math.abs(n).toFixed(digits);
-  if (Number(text) === 0) return (0).toFixed(digits);
-  return (n > 0 ? "+" : "−") + text;
+  const abs = Math.abs(n);
+  if (Number(abs.toFixed(digits)) === 0) return numberText(0, digits, loc);
+  return (n > 0 ? "+" : "−") + numberText(abs, digits, loc);
 }
 
 /** Milliseconds as "45 s", "4 min 05 s", "1 h 02 min", "2 d 3 h";
@@ -205,24 +229,32 @@ export function parseTime(value) {
 }
 
 /** Time left until ``until``: {ms, text, expired}; null without a time. */
-export function countdown(until, now) {
-  const t = parseTime(until);
-  if (t === null) return null;
-  const ms = t - now;
-  return { ms, expired: ms <= 0, text: ms <= 0 ? "expired" : formatDuration(ms) };
+export function countdown(until, now, loc) {
+  const at = parseTime(until);
+  if (at === null) return null;
+  const ms = at - now;
+  return { ms, expired: ms <= 0, text: ms <= 0 ? t(loc, "time.expired") : formatDuration(ms) };
 }
 
-/** "12 s ago", or "" without a time. */
-export function formatAge(since, now, coarse = false) {
-  const t = parseTime(since);
-  if (t === null) return "";
-  const ms = now - t;
-  return ms < 0 ? "just now" : `${formatDuration(ms, coarse)} ago`;
+/** "12 s ago" ("för 12 s sedan"), or "" without a time. */
+export function formatAge(since, now, coarse = false, loc) {
+  const at = parseTime(since);
+  if (at === null) return "";
+  const ms = now - at;
+  return ms < 0 ? t(loc, "time.just_now") : t(loc, "time.ago", { duration: formatDuration(ms, coarse) });
 }
 
-export function formatClock(t) {
-  const d = new Date(t);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+/** "in 2 h" ("om 2 h") until ``until``, or "" without a time. */
+export function formatIn(until, now, coarse = true, loc) {
+  const at = parseTime(until);
+  if (at === null) return "";
+  const ms = at - now;
+  return ms <= 0 ? t(loc, "time.just_now") : t(loc, "time.in", { duration: formatDuration(ms, coarse) });
+}
+
+/** "14:05", or in the locale's (or HA's) 12/24 h format with ``loc``. */
+export function formatClock(time, loc) {
+  return clockText(time, loc);
 }
 
 // --------------------------------------------------------------------------
@@ -338,7 +370,7 @@ const r1 = (v) => Math.round(v * 10) / 10;
  * height}. Returns {empty} when no step of the plan is in the window; else
  * the paths, bands, ticks and one hover segment per step.
  */
-export function planChart({ rows, levels, comfort, now, hours = 24, width = 600, height = 220, clock = formatClock }) {
+export function planChart({ rows, levels, comfort, now, hours = 24, width = 600, height = 220, loc, clock = (time) => formatClock(time, loc) }) {
   const start = now;
   const end = now + hours * 3600000;
   const points = planPoints(rows, now);
@@ -410,25 +442,25 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
     x: x(slot.start),
     w: r1(x(slot.end) - x(slot.start)),
     level: slot.level,
-    label: `${clock(slot.start)}–${clock(slot.end)} ${slot.level.replace("_", " ")}`,
+    label: `${clock(slot.start)}–${clock(slot.end)} ${tOr(loc, `price.${slot.level}`, slot.level.replace(/_/g, " "))}`,
   }));
 
   const tempTicks = [];
   const tStep = tHi - tLo > 4 ? 1 : 0.5;
   for (let v = Math.ceil(tLo / tStep) * tStep; v <= tHi + 1e-9; v += tStep) {
-    tempTicks.push({ y: yT(v), label: v.toFixed(tStep < 1 ? 1 : 0) });
+    tempTicks.push({ y: yT(v), label: formatNumber(v, tStep < 1 ? 1 : 0, loc) });
   }
   const offsetTicks = [];
   const oStep = oHi - oLo > 8 ? 2 : 1;
   for (let v = Math.ceil(oLo / oStep) * oStep; v <= oHi; v += oStep) {
-    offsetTicks.push({ y: yO(v), label: formatSigned(v) });
+    offsetTicks.push({ y: yO(v), label: formatSigned(v, 0, loc) });
   }
   const timeTicks = [];
   const every = hours > 24 || width < 420 ? 6 : 3;
   const first = new Date(start);
   first.setMinutes(0, 0, 0);
-  for (let t = first.getTime() + 3600000; t < end; t += 3600000) {
-    if (new Date(t).getHours() % every === 0) timeTicks.push({ x: x(t), label: clock(t) });
+  for (let at = first.getTime() + 3600000; at < end; at += 3600000) {
+    if (new Date(at).getHours() % every === 0) timeTicks.push({ x: x(at), label: clock(at) });
   }
 
   return {
@@ -449,7 +481,7 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
     segments: steps.map((s) => ({
       x: x(s.start),
       w: r1(x(s.end) - x(s.start)),
-      label: `${clock(s.start)}–${clock(s.end)}: offset ${formatSigned(s.offset)}, indoor ${formatNumber(s.tin)} °C`,
+      label: t(loc, "plan.segment", { from: clock(s.start), to: clock(s.end), offset: formatSigned(s.offset, 0, loc), indoor: formatNumber(s.tin, 1, loc) }),
     })),
   };
 }
@@ -462,7 +494,8 @@ export function planChart({ rows, levels, comfort, now, hours = 24, width = 600,
  * strip: VV-AI windows (plan_24h, ISO times), the optimiser's charge
  * blocks (start_at / end_at) and a planned or running legionella cycle
  * ({start, end, temperature} in ms, from legionellaModel().window). */
-export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24 }) {
+export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24, loc }) {
+  const clock = (time) => (time === null ? "" : formatClock(time, loc));
   const end = now + hours * 3600000;
   const span = end - now;
   const out = [];
@@ -475,17 +508,22 @@ export function hotwaterWindows({ vvPlan, blocks, legionella, now, hours = 24 })
   for (const w of Array.isArray(vvPlan) ? vvPlan : []) {
     const s = parseTime(w?.start);
     const e = parseTime(w?.end);
-    add(s, e, "vv", `VV-AI ${w?.mode || ""} ${s !== null ? formatClock(s) : ""}–${e !== null ? formatClock(e) : ""}`.replace(/\s+/g, " ").trim());
+    const mode = w?.mode ? tOr(loc, `hwmode.${w.mode}`, w.mode) : "";
+    add(s, e, "vv", t(loc, "hw.window_vv", { mode, from: clock(s), to: clock(e) }).replace(/\s+/g, " ").trim());
   }
   for (const b of Array.isArray(blocks) ? blocks : []) {
     if (b?.action !== "charge") continue;
     const s = parseTime(b.start_at);
     const e = parseTime(b.end_at);
-    add(s, e, "charge", `Charge ${b.start}–${b.end}${b.target ? ` to ${b.target} °C` : ""}${b.reason ? `: ${b.reason}` : ""}`);
+    const vars = { from: clock(s), to: clock(e), temperature: formatNumber(b.target, Number.isInteger(toNumber(b.target)) ? 0 : 1, loc) };
+    const text = t(loc, b.target ? "hw.window_charge_to" : "hw.window_charge", vars);
+    // The reason is the optimiser's (English) text.
+    add(s, e, "charge", `${text}${b.reason ? `: ${b.reason}` : ""}`);
   }
   if (legionella && legionella.start !== null && legionella.end !== null) {
-    const t = legionella.temperature !== null && legionella.temperature !== undefined ? ` to ${formatNumber(legionella.temperature)} °C` : "";
-    add(legionella.start, legionella.end, "legionella", `Legionella ${formatClock(legionella.start)}–${formatClock(legionella.end)}${t}`);
+    const known = legionella.temperature !== null && legionella.temperature !== undefined;
+    const vars = { from: clock(legionella.start), to: clock(legionella.end), temperature: formatNumber(legionella.temperature, 1, loc) };
+    add(legionella.start, legionella.end, "legionella", t(loc, known ? "hw.window_legionella_to" : "hw.window_legionella", vars));
   }
   return out.sort((a, b) => a.start - b.start);
 }
@@ -526,14 +564,19 @@ export function legionellaModel(nextDue, lastDone) {
 
 /** The bars under the offset: the rules' components, or the optimiser's
  * offset against the rules' total. {key, label, value, reason, frac}. */
-export function contributions(planned, optimiserOffset) {
+export function contributions(planned, optimiserOffset, loc) {
   const attrs = planned?.attributes || {};
   const source = attrs.source || "rules";
   let items;
   if (source !== "rules") {
     items = [
-      { key: "optimiser", label: source === "comfort_floor" ? "Comfort floor" : "Optimiser", value: toNumber(optimiserOffset ?? attrs.total), reason: attrs.strategy_reason || "" },
-      { key: "rules", label: "Rules would be", value: toNumber(attrs.rules_total), reason: "" },
+      {
+        key: "optimiser",
+        label: t(loc, source === "comfort_floor" ? "part.comfort_floor" : "part.optimiser"),
+        value: toNumber(optimiserOffset ?? attrs.total),
+        reason: attrs.strategy_reason || "",
+      },
+      { key: "rules", label: t(loc, "part.rules"), value: toNumber(attrs.rules_total), reason: "" },
     ];
   } else {
     const components = attrs.components || {};
@@ -541,7 +584,7 @@ export function contributions(planned, optimiserOffset) {
     const keys = "away" in components ? [...COMPONENTS, "away"] : COMPONENTS;
     items = keys.map((c) => ({
       key: c,
-      label: { indoor: "Indoor", price: "Price", weather: "Forecast", away: "Away" }[c],
+      label: t(loc, `part.${c}`),
       value: toNumber(components[c]),
       reason: reasons[c] || "",
     }));
@@ -551,35 +594,35 @@ export function contributions(planned, optimiserOffset) {
 }
 
 /** Alerts for a system's climate card: [{level, text, key}]. */
-export function climateAlerts(hass, ids, system) {
+export function climateAlerts(hass, ids, system, loc) {
   const alerts = [];
   const st = (key) => stateOf(hass, ids, key);
   const gw = st("gateway_online");
   if (gw && (gw.state === "off" || gw.state === "unavailable")) {
-    alerts.push({ level: "error", text: "Gateway offline", key: "gateway_online" });
+    alerts.push({ level: "error", text: t(loc, "alert.gateway_offline"), key: "gateway_online" });
   }
   const lease = st(sysKey("lease_state", system));
   if (lease?.state === "error") {
     const err = lease.attributes?.error;
-    alerts.push({ level: "error", text: `Curve offset lease error${err ? `: ${err}` : ""}`, key: sysKey("lease_state", system) });
+    alerts.push({ level: "error", text: err ? t(loc, "alert.lease_error_detail", { error: err }) : t(loc, "alert.lease_error"), key: sysKey("lease_state", system) });
   }
   const strategy = st(sysKey("strategy", system));
   const model = st(sysKey("house_model", system));
   if (strategy?.state === "optimiser" && model && ["prior", "low"].includes(model.state)) {
     alerts.push({
       level: "warning",
-      text: `House model confidence is ${model.state} while the optimiser is selected`,
+      text: t(loc, "alert.model_confidence", { confidence: tOr(loc, `model.${model.state}`, model.state) }),
       key: sysKey("house_model", system),
     });
   }
-  const away = awayAlert(hass, ids, sysKey("mode", system), `heating mode ${system.toUpperCase()}`);
+  const away = awayAlert(hass, ids, sysKey("mode", system), t(loc, "alert.heating_mode", { system: system.toUpperCase() }), loc);
   if (away) alerts.push(away);
   const feed = st(sysKey("rmu_feed", system));
   const rmu = st(sysKey("rmu_lease_state", system));
   if (feed?.state === "on" && !["active", "grace"].includes(rmu?.state)) {
     alerts.push({
       level: "warning",
-      text: `RMU40 feed is on but its lease is ${rmu?.state || "missing"}`,
+      text: t(loc, "alert.rmu_lease", { state: rmu?.state ? tOr(loc, `lease.state.${rmu.state}`, rmu.state) : t(loc, "state.missing") }),
       key: sysKey("rmu_lease_state", system),
     });
   }
@@ -592,7 +635,7 @@ export function climateAlerts(hass, ids, system) {
 
 /** The Away switch for the cards: null without the entity, else {on,
  * entity, until (ms or null), untilText, setback, hotWater, targets}. */
-export function awayModel(hass, ids, now) {
+export function awayModel(hass, ids, now, loc) {
   const sw = stateOf(hass, ids, "away");
   if (!sw) return null;
   const a = sw.attributes || {};
@@ -604,7 +647,7 @@ export function awayModel(hass, ids, now) {
     entity: sw.entity_id || ids.away,
     available: !isMissing(sw),
     until,
-    countdown: until !== null ? countdown(until, now) : null,
+    countdown: until !== null ? countdown(until, now, loc) : null,
     setback: toNumber(a.setback),
     hotWater: a.hot_water || null,
     targets: a.targets && typeof a.targets === "object" ? a.targets : {},
@@ -613,23 +656,23 @@ export function awayModel(hass, ids, now) {
 
 /** A warning when Away is on but the mode select ``modeKey`` does not let
  * anything be written: {level, text, key}, or null. */
-export function awayAlert(hass, ids, modeKey, label) {
+export function awayAlert(hass, ids, modeKey, label, loc) {
   const sw = stateOf(hass, ids, "away");
   if (sw?.state !== "on") return null;
   const mode = stateOf(hass, ids, modeKey);
   if (!mode || mode.state === "active") return null;
   return {
     level: "warning",
-    text: `Away is on but ${label} is ${mode.state}: nothing is written to the pump`,
+    text: t(loc, "alert.away_mode", { mode: label, state: tOr(loc, `mode.${mode.state}`, mode.state) }),
     key: modeKey,
   };
 }
 
 /** Alerts for the hot water card. */
-export function hotwaterAlerts(hass, ids) {
+export function hotwaterAlerts(hass, ids, loc) {
   const sw = stateOf(hass, ids, "away");
   if (sw?.attributes?.hot_water === "normal") return [];
-  const away = awayAlert(hass, ids, "hw_mode", "hot water mode");
+  const away = awayAlert(hass, ids, "hw_mode", t(loc, "alert.hot_water_mode"), loc);
   return away ? [away] : [];
 }
 
@@ -640,18 +683,18 @@ export function hotwaterAlerts(hass, ids) {
 /** "Gateway v2.0.0 (build 20261017-87eb233) · Integration v0.6.0" from the
  * Gateway version sensor, falling back to the Gateway entity's version
  * attribute; the parts that are known, "" without any. */
-export function versionLine(versionState, gatewayState) {
+export function versionLine(versionState, gatewayState, loc) {
   const a = versionState?.attributes || {};
   const gw = !isMissing(versionState) ? versionState.state : gatewayState?.attributes?.version || null;
   const parts = [];
-  if (gw) parts.push(`Gateway v${gw}${a.build ? ` (build ${a.build})` : ""}`);
-  if (a.integration_version) parts.push(`Integration v${a.integration_version}`);
+  if (gw) parts.push(t(loc, a.build ? "gw.version_build" : "gw.version_gateway", { version: gw, build: a.build }));
+  if (a.integration_version) parts.push(t(loc, "gw.version_integration", { version: a.integration_version }));
   return parts.join(" · ");
 }
 
 /** One row per lease entity present: {key, label, register, state,
  * countdown, error, value}. */
-export function leaseRows(hass, ids, now, leases = LEASES) {
+export function leaseRows(hass, ids, now, leases = LEASES, loc) {
   const rows = [];
   for (const lease of leases) {
     const s = stateOf(hass, ids, lease.key);
@@ -659,10 +702,10 @@ export function leaseRows(hass, ids, now, leases = LEASES) {
     const a = s.attributes || {};
     rows.push({
       key: lease.key,
-      label: lease.label,
+      label: leaseLabel(lease, loc),
       register: a.register ?? lease.register,
       state: s.state,
-      countdown: s.state === "active" || s.state === "grace" ? countdown(a.expires, now) : null,
+      countdown: s.state === "active" || s.state === "grace" ? countdown(a.expires, now, loc) : null,
       error: a.error || null,
       value: a.value ?? a.ha_value ?? null,
     });
@@ -703,7 +746,7 @@ export function sparkline(values, width = 120, height = 32) {
 }
 
 /** The savings card's figures from the cost and savings entities. */
-export function savingsModel(cost, savings) {
+export function savingsModel(cost, savings, loc) {
   const ca = cost?.attributes || {};
   const sa = savings?.attributes || {};
   const y = ca.yesterday && typeof ca.yesterday === "object" ? ca.yesterday : null;
@@ -717,7 +760,7 @@ export function savingsModel(cost, savings) {
     savingsParts: Object.entries(sa)
       .filter(([k, v]) => k !== "day" && k !== "unit_of_measurement" && typeof v === "number")
       .filter(([k]) => !["state_class", "last_reset", "device_class", "friendly_name", "icon"].includes(k))
-      .map(([k, v]) => ({ key: k, label: k === "hot_water" ? "Hot water" : k.toUpperCase(), value: v })),
+      .map(([k, v]) => ({ key: k, label: k === "hot_water" ? t(loc, "sav.hot_water") : k.toUpperCase(), value: v })),
     yesterday: y
       ? { cost: toNumber(y.cost), predictedCost: toNumber(y.predicted_cost), gapPct: toNumber(y.cost_vs_predicted_pct), day: y.day || null }
       : null,
