@@ -822,7 +822,9 @@ class OptimizerRuntime:
         if self.last_plan_at is None or key != self._price_key:
             self._price_key = key
             self.request_plan()
-        elif not self.plan_running and should_replan(now, self.last_plan_at, self._inputs_back(now), self.planned_ok):
+        elif not self.plan_running and should_replan(
+            now, self.last_plan_at, self._inputs_back(now), self.planned_ok, since_start=now - started
+        ):
             self.request_plan()
 
     def _inputs_back(self, now: datetime) -> List[bool]:

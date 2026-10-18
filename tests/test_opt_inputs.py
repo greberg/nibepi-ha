@@ -235,6 +235,11 @@ class RetryTest(unittest.TestCase):
         # Never right after a plan, nor before the first one.
         self.assertFalse(should_replan(NOW + RETRY_MIN_GAP - timedelta(seconds=1), last, [True], False))
         self.assertFalse(should_replan(tick, None, [True], False))
+        # The every-tick retry stops after the startup window; an input that
+        # comes back still triggers a plan.
+        self.assertTrue(should_replan(tick, last, [False], False, since_start=timedelta(minutes=19)))
+        self.assertFalse(should_replan(tick, last, [False], False, since_start=timedelta(minutes=20)))
+        self.assertTrue(should_replan(tick, last, [True], False, since_start=timedelta(hours=5)))
 
 
 if __name__ == "__main__":

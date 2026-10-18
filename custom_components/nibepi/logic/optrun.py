@@ -663,6 +663,9 @@ INDOOR_REASONS = ("not_found", "unavailable", "unknown", "not_numeric", "bad_uni
 # Between a plan and a retry for a missing input; the runtime ticks once
 # a minute, so this is at most one retry per tick.
 RETRY_MIN_GAP = timedelta(seconds=30)
+# Retry every tick after start only this long; then only when an input is
+# back (a setup that never gets prices would otherwise plan every minute).
+STARTUP_RETRY = timedelta(minutes=20)
 
 
 def input_problem(problem: Any) -> bool:
@@ -691,17 +694,21 @@ def should_replan(
     cleared: Sequence[bool],
     planned_ok: bool,
     min_gap: timedelta = RETRY_MIN_GAP,
+    since_start: Optional[timedelta] = None,
 ) -> bool:
     """Whether to plan now, off the quarter-hour schedule.
 
     ``cleared`` has one item per current plan that failed on an input:
     whether that input is usable again. Retry when one is; until the first
     plan without such a problem since start (``planned_ok``), retry on
-    every tick anyway. Never sooner than ``min_gap`` after the last plan.
+    every tick anyway, for the first ``STARTUP_RETRY`` after start
+    (``since_start``; None counts as within it). Never sooner than
+    ``min_gap`` after the last plan.
     """
     if not cleared or last_plan_at is None or now - last_plan_at < min_gap:
         return False
-    return any(cleared) or not planned_ok
+    early = since_start is None or since_start < STARTUP_RETRY
+    return any(cleared) or (not planned_ok and early)
 
 
 def indoor_problem(source: str, reason: str, details: Optional[Mapping[str, Any]] = None) -> Msg:
