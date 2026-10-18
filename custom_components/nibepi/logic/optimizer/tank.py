@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from typing import List, Optional, Sequence, Tuple
 
 from .energy import KELVIN
+from ..texts import msg
 from .horizon import HorizonSlot
 
 
@@ -387,19 +388,21 @@ def _blocks(
         if key(steps[i]) == "legionella":
             target = max(s.target or 0.0 for s in chunk)
             blocks.append(HotWaterBlock(chunk[0].start, chunk[-1].end, "legionella", target, 2, True,
-                                        heat, cost, "legionella cycle (fixed)"))
+                                        heat, cost, msg("tank.legionella")))
         elif key(steps[i]) == "charge":
             target = max(s.target or 0.0 for s in chunk)
             later = [s for s in steps[j + 1:] if s.draw_kwh > 0.05]
-            why = "price %.2f vs %.2f average" % (avg, mean_price)
             if later:
-                why += ", before the draw expected at %s" % later[0].start.astimezone(tz).strftime("%H:%M")
+                at = later[0].start.astimezone(tz).strftime("%H:%M")
+                why = msg("tank.price_before", price=avg, avg=mean_price, at=at)
+            else:
+                why = msg("tank.price", price=avg, avg=mean_price)
             boost = target > settings.normal_stop + 0.1
             blocks.append(HotWaterBlock(chunk[0].start, chunk[-1].end, "charge", target, 2 if boost else 1,
                                         boost, heat, cost, why))
         else:
             forced = any(s.forced for s in chunk)
-            why = "pump charges by itself below economy start" if forced else "waiting for cheaper slots"
+            why = msg("tank.pump_forced") if forced else msg("tank.waiting")
             blocks.append(HotWaterBlock(chunk[0].start, chunk[-1].end, "hold", None, 0, False, heat, cost, why))
         i = j + 1
     return blocks

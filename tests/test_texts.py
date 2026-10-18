@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 
 import context  # noqa: F401
-from context import utc
+from context import UTC, utc
 from logic.away import away_component
 from logic.indoor import compute_indoor
 from logic.inputs import ForecastPoint, Reading
@@ -183,6 +183,50 @@ class ClimateTextsTest(unittest.TestCase):
         self.assertEqual(both(room_temperature(Reading(21.44, self.now), self.now).reason),
                          ("room temperature 21.4", "Rumstemperatur 21,4 °C"))
         self.assertEqual(both(room_temperature(None, self.now).reason), ("room temperature missing", "Rumstemperatur saknas"))
+
+
+class OptimiserTextsTest(unittest.TestCase):
+    def test_plan_explanation_and_summary(self) -> None:
+        from datetime import date
+        from zoneinfo import ZoneInfo
+
+        from logic.optimizer.explain import explain_plan, summary
+        from logic.optimizer.horizon import build_horizon
+        from logic.optimizer.planner import plan_heating
+        from test_opt_planner import COMFORT, CURVE, ENERGY, HOUSE, base_settings, slots_from_numbers
+
+        tz = ZoneInfo("Europe/Stockholm")
+        values = [3.0 if i % 24 < 6 else 0.5 for i in range(96)]
+        prices = slots_from_numbers(values, date(2026, 1, 10), tz)
+        settings = base_settings()
+        plan = plan_heating(build_horizon(prices, prices[0].start, -2.0), 21.0, HOUSE, CURVE, ENERGY, COMFORT,
+                            settings, settings.base_offset)
+        blocks = explain_plan(plan, COMFORT, tz)
+        line = next(b.text for b in blocks if b.reason == "expensive")
+        self.assertEqual(line.code, "explain.line")
+        en, sv = both(line)
+        self.assertRegex(en, r"^\d\d:\d\d-\d\d:\d\d offset -\d: .*, indoor \d+\.\d °C at \d\d:\d\d$")
+        self.assertRegex(sv, r"^\d\d:\d\d-\d\d:\d\d kurvjustering \u2212\d: .*, inomhus \d+,\d °C kl\. \d\d:\d\d$")
+        self.assertIn("mot snittet", sv)
+        en, sv = both(summary(plan, "SEK"))
+        self.assertTrue(en.startswith("Planned ") and en.endswith(" changes."))
+        self.assertTrue(sv.startswith("Planerat ") and sv.endswith(" ändringar."))
+
+    def test_problems(self) -> None:
+        from logic.optrun import TankInputs, plan_tank
+
+        now = utc(2026, 1, 10, 12, 0)
+        tank = plan_tank(TankInputs([], now, UTC, None, 50.0, 45.0, 50.0, 60.0, 45.0, [0.0] * 168))
+        self.assertEqual(both(tank.problem), ("BT6 missing or stale", "BT6 saknas eller är inaktuell"))
+        self.assertEqual(both(msg("opt.no_plan_why", why=msg("opt.no_prices"))),
+                         ("no plan (no prices cover now)", "Ingen plan (inga priser för nu)"))
+
+    def test_hot_water_blocks(self) -> None:
+        self.assertEqual(both(msg("tank.price_before", price=1.234, avg=1.5, at="06:00")), (
+            "price 1.23 vs 1.50 average, before the draw expected at 06:00",
+            "Pris 1,23 mot snittet 1,50, före tappningen som väntas kl. 06:00",
+        ))
+        self.assertEqual(both(msg("tank.waiting")), ("waiting for cheaper slots", "Väntar på billigare timmar"))
 
 
 if __name__ == "__main__":

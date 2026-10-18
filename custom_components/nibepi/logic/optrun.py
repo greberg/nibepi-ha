@@ -78,6 +78,7 @@ from .optimizer.tank import (
     draws_from_week_profile,
     plan_hot_water,
 )
+from .texts import msg
 
 HEATING_SHARE = 0.5  # an hour counts as heating when prio was 30 this much
 HW_SHARE = 0.1  # ... and as free of hot water charging below this
@@ -651,7 +652,7 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
     t_out_now = inputs.t_out if inputs.t_out is not None else 0.0
     result = HeatingResult(inputs.system, inputs.now, base_offset(models, t_out_now, target))
     if inputs.t_in is None:
-        result.problem = "indoor temperature missing"
+        result.problem = msg("opt.no_indoor")
         return result
     lagged = models.lag_planner
     slots = build_horizon(
@@ -665,7 +666,7 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
         t_brine=inputs.t_brine,
     )
     if not slots:
-        result.problem = "no prices cover now"
+        result.problem = msg("opt.no_prices")
         return result
     hours = sum(s.hours for s in slots)
     mean_out = sum(s.t_out * s.hours for s in slots) / hours
@@ -744,14 +745,14 @@ def plan_tank(inputs: TankInputs) -> TankResult:
     """
     result = TankResult(inputs.now)
     if inputs.bt6 is None:
-        result.problem = "BT6 missing or stale"
+        result.problem = msg("opt.no_bt6")
         return result
     if None in (inputs.economy_stop, inputs.normal_stop, inputs.lux_stop):
-        result.problem = "stop temperatures unknown"
+        result.problem = msg("opt.no_stops")
         return result
     slots = build_horizon(inputs.prices, inputs.now, None, None, t_brine=inputs.t_brine)
     if not slots:
-        result.problem = "no prices cover now"
+        result.problem = msg("opt.no_prices")
         return result
     normal_stop = float(inputs.normal_stop)  # type: ignore[arg-type]
     normal_start = inputs.normal_start if inputs.normal_start is not None else normal_stop - 5.0

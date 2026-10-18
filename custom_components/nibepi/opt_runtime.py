@@ -918,11 +918,11 @@ class OptimizerRuntime:
         """(windows, None) from a current hot water plan, or (None, why not)."""
         tank = self.tank
         if tank is None:
-            return None, "not planned yet"
+            return None, msg("opt.not_planned")
         if tank.plan is None:
-            return None, tank.problem or "no plan"
+            return None, tank.problem or msg("opt.no_plan")
         if now - tank.planned_at > PLAN_MAX_AGE:
-            return None, "plan older than %d min" % (PLAN_MAX_AGE.total_seconds() // 60)
+            return None, _plan_too_old()
         return hw_windows(tank.plan.blocks, now, _tz()), None
 
     async def _async_plan_once(self) -> None:
@@ -932,7 +932,7 @@ class OptimizerRuntime:
         tank_inputs = self._tank_inputs(now)
         results, tank = await self.hass.async_add_executor_job(_run_plans, inputs, tank_inputs)
         if tank is None and self.away_blocks_charges(now):
-            tank = TankResult(now, problem="away: no planned charges")
+            tank = TankResult(now, problem=msg("away.no_charges"))
         self._book_savings(now, results, tank)
         self.tank = tank
         active = {r.system for r in results}
@@ -1004,12 +1004,12 @@ def _run_plans(inputs: List[HeatingInputs], tank: Optional[TankInputs]):
             results.append(plan_system(item))
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("NibePi optimiser: planning %s failed", item.system)
-            results.append(HeatingResult(item.system, item.now, 0, problem="error: %r" % err))
+            results.append(HeatingResult(item.system, item.now, 0, problem=msg("common.error", error=repr(err))))
     tank_result = None
     if tank is not None:
         try:
             tank_result = plan_tank(tank)
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("NibePi optimiser: hot water planning failed")
-            tank_result = TankResult(tank.now, problem="error: %r" % err)
+            tank_result = TankResult(tank.now, problem=msg("common.error", error=repr(err)))
     return results, tank_result

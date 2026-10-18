@@ -187,7 +187,7 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
         "Planned {kwh:.1f} kWh for {cost:.2f} {unit}, base offset {base:+d} alone {base_kwh:.1f} kWh "
         "for {base_cost:.2f} {unit}: saves {savings:.2f} {unit} (heat left in the house counted). "
         "Indoor {t_min:.1f}-{t_max:.1f} °C, {changes:d} changes.",
-        "Planerat {kwh:.1f} kWh för {cost:.2f} {unit}, bara grundjustering {base:+d} {base_kwh:.1f} kWh "
+        "Planerat {kwh:.1f} kWh för {cost:.2f} {unit}, med bara grundjusteringen {base:+d} {base_kwh:.1f} kWh "
         "för {base_cost:.2f} {unit}: sparar {savings:.2f} {unit} (värmen kvar i huset medräknad). "
         "Inomhus {t_min:.1f}–{t_max:.1f} °C, {changes:d} ändringar.",
     ),

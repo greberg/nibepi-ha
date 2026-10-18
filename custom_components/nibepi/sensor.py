@@ -27,7 +27,7 @@ from .logic.optcost import summary as cost_summary
 from .logic.optrun import models_summary
 from .logic.optstrategy import SOURCE_RULES, offset_at
 from .logic.price import LEVELS
-from .logic.texts import code_of, codes
+from .logic.texts import code_of, codes, msg
 from .logic.pump import (
     BUS_HEALTH,
     PRIORITY_STATES,
@@ -583,7 +583,12 @@ class OptimiserPlanSensor(_SystemSensor):
             "strategy": optimizer.strategy.get(system),
             "applied": applied,
             "gate": (
-                {"use": decision.use_optimizer, "offset": decision.offset, "reason": decision.reason}
+                {
+                    "use": decision.use_optimizer,
+                    "offset": decision.offset,
+                    "reason": decision.reason,
+                    "reason_code": code_of(decision.reason),
+                }
                 if decision is not None
                 else None
             ),
@@ -591,12 +596,13 @@ class OptimiserPlanSensor(_SystemSensor):
             "model_level": (models.fit.level if models.fit.ok else "prior") if models is not None else None,
             "planned_at": _iso(result.planned_at) if result is not None else None,
             "problem": result.problem if result is not None else optimizer.plan_error,
+            "problem_code": code_of(result.problem) if result is not None else None,
             "comfort": _comfort(
                 optimizer.comfort(system), optimizer.normal_comfort(system), self.runtime.away.active(dt_util.utcnow())
             ),
         }
         if result is None or result.plan is None:
-            return attrs
+            return self.localised(attrs)
         plan = result.plan
         tz = _local_tz()
         now = dt_util.utcnow()
@@ -641,7 +647,7 @@ class OptimiserPlanSensor(_SystemSensor):
                 "plan_24h": rows,
             }
         )
-        return attrs
+        return self.localised(attrs)
 
 
 class AwayUntilSensor(NibePiEntity, SensorEntity):
@@ -838,10 +844,11 @@ class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
             "enabled": bool(runtime.hotwater.features.get("optimiser")),
             "in_use": bool(decision is not None and decision.details.get("plan_source") == "optimiser"),
             "planned_at": _iso(tank.planned_at) if tank is not None else None,
-            "problem": tank.problem if tank is not None else "not planned yet",
+            "problem": tank.problem if tank is not None else msg("opt.not_planned"),
         }
+        attrs["problem_code"] = code_of(attrs["problem"])
         if tank is None or tank.plan is None:
-            return attrs
+            return self.localised(attrs)
         plan = tank.plan
         tz = _local_tz()
         now = dt_util.utcnow()
@@ -872,7 +879,7 @@ class HotWaterOptimiserSensor(NibePiEntity, SensorEntity):
                 ],
             }
         )
-        return attrs
+        return self.localised(attrs)
 
 
 # -- read-only pump values ----------------------------------------------------
