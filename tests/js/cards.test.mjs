@@ -267,3 +267,117 @@ test("away chip, lowered target and the shadow-mode alert", () => {
   home.card._onClick({ composedPath: () => [{ dataset: { toggle: "away" } }] });
   assert.deepEqual(hass.calls.at(-1), ["switch", "turn_on", { entity_id: "switch.away" }]);
 });
+
+function swedish(hass = makeHass()) {
+  hass.locale = { language: "sv", time_format: "language", number_format: "language" };
+  hass.language = "sv";
+  return hass;
+}
+
+test("every card renders in Swedish and in English", () => {
+  for (const type of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-gateway-card", "nibepi-savings-card"]) {
+    for (const hass of [makeHass(), swedish()]) {
+      const { html } = render(type, { system: "s1" }, hass);
+      assert.match(html, /<ha-card>/, type);
+      assert.doesNotMatch(html, /card error|kortet:|undefined|NaN|\{\w+\}/, type);
+    }
+  }
+});
+
+test("climate card in Swedish", () => {
+  const hass = swedish();
+  const ids = hass.states["binary_sensor.nibe_gateway"].attributes.entities;
+  ids.away = "switch.away";
+  hass.states["switch.away"] = { entity_id: "switch.away", state: "on", attributes: { until: iso(now + 30 * H) } };
+  const { html } = render("nibepi-climate-card", { system: "s1" }, hass);
+  assert.match(html, /Klimat S1/);
+  assert.match(html, /Inomhus<\/span><span class="value big">21,3<span class="unit">°C/);
+  assert.match(html, /Börvärde/);
+  assert.match(html, /Utomhus<\/span><span class="value ">4,2 °C/);
+  assert.match(html, /Pumpens kurvjustering/);
+  assert.match(html, /Planerad \(regler\)/);
+  assert.match(html, /Husmodellens säkerhet är låg/);
+  assert.match(html, /Borta är på men läge S1 är Skugga/);
+  assert.match(html, /Borta till \S+ \d\d:\d\d</);
+  assert.match(html, /<span class="num">\+1,0<\/span>/);
+  assert.match(html, /Strategi/);
+  const home = swedish();
+  assert.match(render("nibepi-climate-card", { system: "s2" }, home).html, /Klimatsystem S2 är inte konfigurerat/);
+  assert.match(render("nibepi-climate-card", {}, swedish({ entities: {}, devices: {}, states: {} })).html, /Ingen NibePi-integration hittades/);
+});
+
+test("plan, hot water, gateway and savings cards in Swedish", async () => {
+  const plan = render("nibepi-plan-card", { system: "s1" }, swedish()).html;
+  assert.match(plan, /Optimerarens plan S1/);
+  assert.match(plan, />nu</);
+  assert.match(plan, /3,21 SEK/);
+  assert.match(plan, /för 2 min sedan/);
+  assert.match(plan, /Varför \(1\)/);
+  assert.match(plan, /Komfortintervall/);
+  assert.match(plan, /<text[^>]*>\d\d:\d\d<\/text>/); // 24 h ticks
+
+  const hass = swedish();
+  hass.states["sensor.hw_action"].attributes.reasons = { price_comfort: "cheap", autoluxury: "off", vv_control: "no draw expected", new_feature: "x" };
+  const hw = render("nibepi-hotwater-card", {}, hass).html;
+  assert.match(hw, /Varmvatten/);
+  assert.match(hw, /Topp \(BT7\)/);
+  assert.match(hw, /51,0<span class="unit">°C/);
+  assert.match(hw, /Laddning \(BT6\)/);
+  assert.match(hw, /Orsaker \(4\)/);
+  assert.match(hw, /Prisstyrd komfort:<\/span> cheap/);
+  assert.match(hw, /Automatisk lyx:/);
+  assert.match(hw, /VV-styrning:<\/span> no draw expected/);
+  assert.match(hw, /new feature:/); // a reason without a label: its key
+  assert.match(hw, /Nästa tappning/);
+  assert.match(hw, /Nästa laddning/);
+  assert.match(hw, /Närmaste 24 h/);
+  assert.match(hw, /VV-AI-fönster/);
+  assert.match(hw, /Optimerad laddning/);
+  assert.match(hw, /title="VV-AI normal \d\d:\d\d–\d\d:\d\d"/);
+
+  const gw = render("nibepi-gateway-card", { status_url: "http://pi:8080" }, swedish()).html;
+  assert.match(gw, /NibePi-gateway/);
+  assert.match(gw, /Statussida/);
+  assert.match(gw, /Ansluten/);
+  assert.match(gw, /för 4 s sedan/);
+  assert.match(gw, /Kurvjustering S1/);
+  assert.match(gw, /\d min \d\d s kvar/);
+  const offline = swedish();
+  offline.states["binary_sensor.nibe_gateway"].state = "off";
+  assert.match(render("nibepi-gateway-card", {}, offline).html, /Frånkopplad/);
+  assert.match(render("nibepi-climate-card", { system: "s1" }, offline).html, /Gateway frånkopplad/);
+
+  const { card } = render("nibepi-savings-card", {}, swedish());
+  const sav = card.shadowRoot.innerHTML;
+  assert.match(sav, /Värmepumpens kostnad/);
+  assert.match(sav, /Kostnad idag/);
+  assert.match(sav, /12,34<span class="unit">SEK/);
+  assert.match(sav, /\+7,3 % mot planen/);
+  assert.match(sav, /Kostnad igår/);
+  assert.match(sav, /Varmvatten 0,50/);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(card.shadowRoot.innerHTML, /Kostnad per dag, 2 dagar/);
+});
+
+test("a language change re-renders the card", () => {
+  const hass = makeHass();
+  const { card } = render("nibepi-hotwater-card", {}, hass);
+  assert.match(card.shadowRoot.innerHTML, /Next charge/);
+  card.hass = swedish({ ...hass });
+  assert.match(card.shadowRoot.innerHTML, /Nästa laddning/);
+});
+
+test("editor labels and helpers follow the language", async () => {
+  const editor = await customElements.get("nibepi-gateway-card").getConfigElement();
+  editor.setConfig({});
+  editor.hass = { locale: { language: "sv" } };
+  const form = editor._form;
+  assert.equal(form.computeLabel({ name: "status_url" }), "Adress till gatewayns statussida");
+  assert.equal(form.computeHelper({ name: "status_url" }), "t.ex. http://nibepi.local:8080");
+  assert.equal(form.computeLabel({ name: "system" }), "Klimatsystem");
+  assert.equal(form.computeHelper({ name: "title" }), "Ersätter kortets standardrubrik");
+  assert.equal(form.computeHelper({ name: "system" }), undefined);
+  assert.equal(form.computeLabel({ name: "other" }), "other");
+  editor.hass = { locale: { language: "en" } };
+  assert.equal(form.computeLabel({ name: "hours" }), "Hours ahead");
+});

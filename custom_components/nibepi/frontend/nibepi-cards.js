@@ -2,10 +2,14 @@
 //
 // Served by the integration (frontend_cards.py) and loaded on every
 // dashboard; plain custom elements, no build step and no external imports.
-// Entity resolution and data shaping are in nibepi-core.js (unit tested);
-// it is imported with this module's own ?v= query so both update together.
+// Entity resolution and data shaping are in nibepi-core.js (unit tested),
+// texts and locale formatting in nibepi-i18n.js; both are imported with
+// this module's own ?v= query so all update together. The cards follow
+// Home Assistant's language (Swedish or English) and number/time format.
 
-const core = await import(new URL(`./nibepi-core.js${new URL(import.meta.url).search}`, import.meta.url).href);
+const moduleUrl = (name) => new URL(`./${name}${new URL(import.meta.url).search}`, import.meta.url).href;
+const core = await import(moduleUrl("nibepi-core.js"));
+const { hasKey, langOf, localeOf, registrationLang, t: translate, weekdayText, dateText } = await import(moduleUrl("nibepi-i18n.js"));
 const {
   HW_LEASES,
   LEASES,
@@ -23,6 +27,7 @@ const {
   hotwaterWindows,
   isMissing,
   leaseColor,
+  leaseLabel,
   legionellaModel,
   leaseRows,
   num,
@@ -49,10 +54,8 @@ const esc = (value) =>
 
 const SYSTEM_LABEL = (system) => String(system || "").toUpperCase();
 
-const PROBLEMS = {
-  no_entry: "No NibePi integration found. Is it set up, and is its Gateway entity enabled?",
-  unknown_entry: "No NibePi entry with this entry_id.",
-};
+// Problems from resolveEntities() shown instead of the card.
+const PROBLEMS = new Set(["no_entry", "unknown_entry"]);
 
 const STYLES = `
   :host { display: block; }
@@ -192,8 +195,10 @@ class NibePiCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
-    if (first || hass.entities !== this._entitiesRef || this._changed()) {
+    if (first || hass.entities !== this._entitiesRef || hass.locale !== this._localeRef || hass.language !== this._languageRef || this._changed()) {
       this._entitiesRef = hass.entities;
+      this._localeRef = hass.locale;
+      this._languageRef = hass.language;
       this._render();
     }
   }
@@ -244,12 +249,33 @@ class NibePiCard extends HTMLElement {
     return sysKey(key, this.system);
   }
 
+  // Texts and numbers in Home Assistant's language and formats.
+  t(key, vars) {
+    return translate(this.lang, key, vars);
+  }
+
+  n(value, digits = 1) {
+    return formatNumber(value, digits, this.loc);
+  }
+
+  signed(value, digits = 0) {
+    return formatSigned(value, digits, this.loc);
+  }
+
+  clock(time) {
+    return formatClock(time, this.loc);
+  }
+
+  age(since, now, coarse = false) {
+    return formatAge(since, now, coarse, this.loc);
+  }
+
   fmt(stateObj, digits) {
     if (isMissing(stateObj)) return "–";
     if (digits === undefined && this._hass.formatEntityState) return this._hass.formatEntityState(stateObj);
     const unit = stateObj.attributes?.unit_of_measurement;
     const n = toNumber(stateObj.state);
-    const text = n !== null && digits !== undefined ? n.toFixed(digits) : stateObj.state;
+    const text = n !== null && digits !== undefined ? this.n(n, digits) : stateObj.state;
     return unit ? `${text} ${unit}` : text;
   }
 
@@ -267,10 +293,9 @@ class NibePiCard extends HTMLElement {
     if (t === null) return "–";
     const d = new Date(t);
     const sameDay = new Date().toDateString() === d.toDateString();
-    const time = formatClock(t);
+    const time = this.clock(t);
     if (sameDay) return time;
-    const lang = this._hass?.locale?.language || this._hass?.language || undefined;
-    return `${d.toLocaleDateString(lang, { weekday: "short" })} ${time}`;
+    return `${weekdayText(t, this.loc)} ${time}`;
   }
 
   // A tappable value that opens the more-info dialog.
@@ -298,13 +323,14 @@ class NibePiCard extends HTMLElement {
 
   // The Away toggle chip with its return time; "" without the switch.
   awayChip(now) {
-    const away = awayModel(this._hass, this._ids, now);
+    const away = awayModel(this._hass, this._ids, now, this.loc);
     if (!away) return "";
-    const until = away.on && away.until !== null ? ` until ${esc(this.fmtTime(away.until))}` : "";
-    const title = away.on ? "Away is on: tap to end it" : "Tap to start Away (no end time)";
+    let text = this.t("away.home");
+    if (away.on) text = away.until !== null ? this.t("away.until", { time: this.fmtTime(away.until) }) : this.t("away.away");
+    const title = away.on ? this.t("away.tap_end") : this.t("away.tap_start");
     return `<div class="chips"><button class="chip toggle ${away.on ? "on" : ""}" ${away.available ? "" : "disabled"} data-toggle="away" title="${esc(
       title,
-    )}"><ha-icon icon="${away.on ? "mdi:home-export-outline" : "mdi:home"}"></ha-icon>${away.on ? `Away${until}` : "Home"}</button></div>`;
+    )}"><ha-icon icon="${away.on ? "mdi:home-export-outline" : "mdi:home"}"></ha-icon>${esc(text)}</button></div>`;
   }
 
   alertList(alerts) {
@@ -346,36 +372,35 @@ class NibePiCard extends HTMLElement {
     if (option === "active") {
       const name = s.attributes?.friendly_name || s.entity_id;
       // eslint-disable-next-line no-alert
-      if (!window.confirm(`Set ${name} to active? NibePi will then write to the heat pump through leases.`)) return;
+      if (!window.confirm(this.t("away.confirm_active", { name }))) return;
     }
     this._hass.callService("select", "select_option", { entity_id: s.entity_id, option });
   }
 
   _render() {
     if (!this._config || !this._hass) return;
+    this.lang = langOf(this._hass);
+    this.loc = localeOf(this._hass);
     const found = resolveEntities(this._hass, this._config);
     this._ids = found.ids;
     this._systems = found.systems;
     for (const id of this.watched()) this._seen.set(id, this._hass.states[id]);
     let body;
-    if (found.problem && PROBLEMS[found.problem]) {
-      body = `<div class="content"><div class="empty">${esc(PROBLEMS[found.problem])}</div></div>`;
+    if (PROBLEMS.has(found.problem)) {
+      body = `<div class="content"><div class="empty">${esc(this.t(`problem.${found.problem}`))}</div></div>`;
     } else if (this.constructor.perSystem && found.systems.length && !found.systems.includes(this.system)) {
-      body = `<div class="content"><div class="empty">Climate system ${esc(SYSTEM_LABEL(this.system))} is not configured in NibePi (${esc(
-        found.systems.map(SYSTEM_LABEL).join(", "),
-      )}).</div></div>`;
+      body = `<div class="content"><div class="empty">${esc(
+        this.t("problem.system_missing", { system: SYSTEM_LABEL(this.system), systems: found.systems.map(SYSTEM_LABEL).join(", ") }),
+      )}</div></div>`;
     } else {
       try {
         body = this.renderBody(Date.now());
       } catch (err) {
-        body = `<div class="content"><div class="empty">NibePi card error: ${esc(err?.message || err)}</div></div>`;
+        body = `<div class="content"><div class="empty">${esc(this.t("problem.card_error", { error: err?.message || err }))}</div></div>`;
         console.error("NibePi card", err);
       }
     }
-    const note =
-      found.problem === "several_entries"
-        ? `<div class="content sub">Several NibePi entries: choose one with entry_id.</div>`
-        : "";
+    const note = found.problem === "several_entries" ? `<div class="content sub">${esc(this.t("problem.several_entries"))}</div>` : "";
     this.shadowRoot.innerHTML = `<style>${STYLES}</style><ha-card>${this.renderHeader()}${body}${note}</ha-card>`;
   }
 
@@ -405,7 +430,7 @@ class NibePiClimateCard extends NibePiCard {
   static defaultIcon = "mdi:home-thermometer";
 
   defaultTitle() {
-    return `Climate ${SYSTEM_LABEL(this.system)}`;
+    return this.t("climate.title", { system: SYSTEM_LABEL(this.system) });
   }
 
   watched() {
@@ -437,7 +462,7 @@ class NibePiClimateCard extends NibePiCard {
     const indoor = this.st(`indoor_${s}`);
     const outdoor = this.st("outdoor");
     const pa = planned?.attributes || {};
-    const away = awayModel(this._hass, this._ids, now);
+    const away = awayModel(this._hass, this._ids, now, this.loc);
     const comfort = plan?.attributes?.comfort || {};
     const awayTarget = away?.on ? toNumber(away.targets?.[s]) : null;
     // While away: the lowered target (the optimiser's band, else the switch's).
@@ -448,36 +473,40 @@ class NibePiClimateCard extends NibePiCard {
     const targetText =
       target === null
         ? "–"
-        : `${formatNumber(target)} °C${
-            away?.on ? ` <span class="muted small">away${normalTarget !== null && normalTarget !== target ? ` · normal ${formatNumber(normalTarget)}` : ""}</span>` : ""
+        : `${this.n(target)} °C${
+            away?.on
+              ? ` <span class="muted small">${esc(this.t("climate.away"))}${
+                  normalTarget !== null && normalTarget !== target ? ` · ${esc(this.t("climate.normal", { value: this.n(normalTarget) }))}` : ""
+                }</span>`
+              : ""
           }`;
     const source = pa.source || "rules";
-    const sourceText = { rules: "rules", optimiser: "optimiser", comfort_floor: "comfort floor" }[source] || source;
+    const sourceText = hasKey(`source.${source}`) ? this.t(`source.${source}`) : source;
 
     const temps = `<div class="row">
-      ${this.stat(`indoor_${s}`, "Indoor", indoor ? `${formatNumber(num(indoor))}<span class="unit">°C</span>` : "–", "big")}
+      ${this.stat(`indoor_${s}`, this.t("climate.indoor"), indoor ? `${this.n(num(indoor))}<span class="unit">°C</span>` : "–", "big")}
       <div class="grid" style="flex:1; min-width: 180px">
         ${
           this._ids?.[this.sk("optimiser_plan")]
-            ? this.stat(this.sk("optimiser_plan"), "Target", targetText)
-            : `<div class="stat"><span class="label">Target</span><span class="value">${targetText}</span></div>`
+            ? this.stat(this.sk("optimiser_plan"), this.t("climate.target"), targetText)
+            : `<div class="stat"><span class="label">${esc(this.t("climate.target"))}</span><span class="value">${targetText}</span></div>`
         }
-        ${this.stat("outdoor", "Outdoor", outdoor ? `${formatNumber(num(outdoor))} °C` : "–")}
+        ${this.stat("outdoor", this.t("climate.outdoor"), outdoor ? `${this.n(num(outdoor))} °C` : "–")}
       </div>
     </div>`;
 
     const offsets = `<div class="grid">
-      ${this.stat(this.sk("pump_offset"), "Pump offset", formatSigned(num(pump)))}
-      ${this.stat(this.sk("planned_offset"), `Planned (${esc(sourceText)})`, formatSigned(num(planned)))}
+      ${this.stat(this.sk("pump_offset"), this.t("climate.pump_offset"), this.signed(num(pump)))}
+      ${this.stat(this.sk("planned_offset"), this.t("climate.planned", { source: sourceText }), this.signed(num(planned)))}
       ${
         plan && !isMissing(plan)
-          ? this.stat(this.sk("optimiser_plan"), "Optimiser now", formatSigned(num(plan)))
+          ? this.stat(this.sk("optimiser_plan"), this.t("climate.optimiser_now"), this.signed(num(plan)))
           : ""
       }
     </div>`;
     const reason = pa.strategy_reason ? `<div class="reason">${esc(pa.strategy_reason)}</div>` : "";
 
-    const bars = contributions(planned, num(plan))
+    const bars = contributions(planned, num(plan), this.loc)
       .map((c) => {
         const width = Math.abs(c.frac) * 50;
         const left = c.frac < 0 ? 50 - width : 50;
@@ -489,11 +518,11 @@ class NibePiClimateCard extends NibePiCard {
         return `<div class="bar" data-more="${esc(key)}" title="${esc(c.reason || c.label)}" role="button" tabindex="0">
           <span>${esc(c.label)}</span>
           <span class="track"><span class="mid"></span><span class="fill ${c.frac < 0 ? "neg" : "pos"}" style="left:${left}%;width:${width}%"></span></span>
-          <span class="num">${formatSigned(c.value, 1)}</span></div>`;
+          <span class="num">${this.signed(c.value, 1)}</span></div>`;
       })
       .join("");
 
-    const alerts = this.alertList(climateAlerts(this._hass, this._ids, s));
+    const alerts = this.alertList(climateAlerts(this._hass, this._ids, s, this.loc));
 
     return `<div class="content">
       ${alerts ? `<div class="alerts">${alerts}</div>` : ""}
@@ -502,8 +531,8 @@ class NibePiClimateCard extends NibePiCard {
       ${offsets}${reason}
       ${planned ? `<div class="bars">${bars}</div>` : ""}
       ${this.awayChip(now)}
-      ${this.chips(this.sk("strategy"), "Strategy")}
-      ${this.chips(this.sk("mode"), "Mode")}
+      ${this.chips(this.sk("strategy"), this.t("climate.strategy"))}
+      ${this.chips(this.sk("mode"), this.t("climate.mode"))}
     </div>`;
   }
 }
@@ -522,7 +551,7 @@ class NibePiPlanCard extends NibePiCard {
   }
 
   defaultTitle() {
-    return `Optimiser plan ${SYSTEM_LABEL(this.system)}`;
+    return this.t("plan.title", { system: SYSTEM_LABEL(this.system) });
   }
 
   watched() {
@@ -568,13 +597,15 @@ class NibePiPlanCard extends NibePiCard {
       hours,
       width,
       height,
+      loc: this.loc,
     });
     if (!plan || chart.empty) {
-      const why = a.problem ? `: ${esc(a.problem)}` : "";
-      return `<div class="content"><div class="empty">No optimiser plan for the next ${hours} h yet${why}.</div></div>`;
+      // The problem is the optimiser's (English) text.
+      const text = a.problem ? this.t("plan.empty_why", { hours, problem: a.problem }) : this.t("plan.empty", { hours });
+      return `<div class="content"><div class="empty">${esc(text)}</div></div>`;
     }
     const p = chart.plot;
-    const svg = `<svg viewBox="0 0 ${chart.width} ${chart.height}" role="img" aria-label="Optimiser plan">
+    const svg = `<svg viewBox="0 0 ${chart.width} ${chart.height}" role="img" aria-label="${esc(this.t("plan.aria"))}">
       ${chart.priceBands
         .map((b) => {
           const c = PRICE_COLORS[b.level] || PRICE_COLORS.normal;
@@ -586,9 +617,9 @@ class NibePiPlanCard extends NibePiCard {
       ${chart.bands
         .map(
           (b) =>
-            `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="var(--primary-color)" fill-opacity="0.10" stroke="var(--primary-color)" stroke-opacity="0.35" stroke-dasharray="3 3"><title>Comfort band ${formatNumber(
-              b.lower,
-            )}–${formatNumber(b.upper)} °C</title></rect>`,
+            `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="var(--primary-color)" fill-opacity="0.10" stroke="var(--primary-color)" stroke-opacity="0.35" stroke-dasharray="3 3"><title>${esc(
+              this.t("plan.comfort_band_range", { lower: this.n(b.lower), upper: this.n(b.upper) }),
+            )}</title></rect>`,
         )
         .join("")}
       <line x1="${p.x0}" x2="${p.x1}" y1="${chart.zeroY}" y2="${chart.zeroY}" stroke="var(--divider-color)" />
@@ -605,36 +636,43 @@ class NibePiPlanCard extends NibePiCard {
       <path d="${chart.offsetPath}" fill="none" stroke="var(--warning-color, #ffa600)" stroke-width="2" />
       ${chart.indoorPath ? `<path d="${chart.indoorPath}" fill="none" stroke="var(--primary-color)" stroke-width="2" stroke-linejoin="round" />` : ""}
       <line x1="${chart.nowX}" x2="${chart.nowX}" y1="${p.y0 - 4}" y2="${p.y1}" stroke="var(--primary-text-color)" stroke-dasharray="2 3" />
-      <text x="${chart.nowX + 3}" y="${p.y0 + 2}">now</text>
+      <text x="${chart.nowX + 3}" y="${p.y0 + 2}">${esc(this.t("plan.now"))}</text>
       ${chart.segments
         .map((s) => `<rect x="${s.x}" y="${p.y0}" width="${s.w}" height="${p.y1 - p.y0}" fill="transparent"><title>${esc(s.label)}</title></rect>`)
         .join("")}
     </svg>`;
     const legend = `<div class="legend">
-      <span><i style="background: var(--warning-color, #ffa600)"></i>Planned offset (right)</span>
-      <span><i style="background: var(--primary-color)"></i>Predicted indoor °C (left)</span>
-      ${chart.band ? `<span><i style="background: var(--primary-color); opacity: .3; height: 8px"></i>Comfort band</span>` : ""}
-      ${chart.priceBands.length ? `<span><i style="background: var(--success-color, #43a047); opacity:.5; height: 8px"></i>Cheap</span><span><i style="background: var(--error-color, #db4437); opacity:.5; height: 8px"></i>Expensive</span>` : ""}
+      <span><i style="background: var(--warning-color, #ffa600)"></i>${esc(this.t("plan.legend_offset"))}</span>
+      <span><i style="background: var(--primary-color)"></i>${esc(this.t("plan.legend_indoor"))}</span>
+      ${chart.band ? `<span><i style="background: var(--primary-color); opacity: .3; height: 8px"></i>${esc(this.t("plan.legend_band"))}</span>` : ""}
+      ${
+        chart.priceBands.length
+          ? `<span><i style="background: var(--success-color, #43a047); opacity:.5; height: 8px"></i>${esc(
+              this.t("plan.legend_cheap"),
+            )}</span><span><i style="background: var(--error-color, #db4437); opacity:.5; height: 8px"></i>${esc(this.t("plan.legend_expensive"))}</span>`
+          : ""
+      }
     </div>`;
     const currency = a.currency || "";
     const savings =
       toNumber(a.savings) !== null
-        ? `${this.stat(this.sk("optimiser_plan"), "Expected savings", `${formatNumber(a.savings, 2)} ${esc(currency)}${
-            toNumber(a.savings_pct) !== null ? ` <span class="muted small">(${formatNumber(a.savings_pct)} %)</span>` : ""
+        ? `${this.stat(this.sk("optimiser_plan"), this.t("plan.expected_savings"), `${this.n(a.savings, 2)} ${esc(currency)}${
+            toNumber(a.savings_pct) !== null ? ` <span class="muted small">(${this.n(a.savings_pct)} %)</span>` : ""
           }`)}`
         : "";
     const cost =
       toNumber(a.expected_cost) !== null
-        ? `<div class="stat"><span class="label">Plan cost / baseline</span><span class="value">${formatNumber(a.expected_cost, 2)} / ${formatNumber(
+        ? `<div class="stat"><span class="label">${esc(this.t("plan.cost_baseline"))}</span><span class="value">${this.n(a.expected_cost, 2)} / ${this.n(
             a.baseline_cost,
             2,
           )} ${esc(currency)}</span></div>`
         : "";
-    const status = `<div class="stat"><span class="label">Planned</span><span class="value">${esc(
-      a.planned_at ? formatAge(a.planned_at, now, true) : "–",
-    )}${a.applied ? "" : ' <span class="muted small">(not applied)</span>'}</span></div>`;
+    const status = `<div class="stat"><span class="label">${esc(this.t("plan.planned"))}</span><span class="value">${esc(
+      a.planned_at ? this.age(a.planned_at, now, true) : "–",
+    )}${a.applied ? "" : ` <span class="muted small">${esc(this.t("plan.not_applied"))}</span>`}</span></div>`;
+    // The summary and explanation are the optimiser's (English) texts.
     const explanation = Array.isArray(a.explanation) && a.explanation.length
-      ? `<details><summary>Why (${a.explanation.length})</summary><ul>${a.explanation.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
+      ? `<details><summary>${esc(this.t("plan.why", { count: a.explanation.length }))}</summary><ul>${a.explanation.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
       : "";
     return `<div class="content">
       ${svg}${legend}
@@ -656,7 +694,7 @@ class NibePiHotWaterCard extends NibePiCard {
   tickMs = 60000;
 
   defaultTitle() {
-    return "Hot water";
+    return this.t("hw.title");
   }
 
   watched() {
@@ -680,79 +718,87 @@ class NibePiHotWaterCard extends NibePiCard {
     const bt6 = this.st("bt6_hw_load");
 
     const temps = `<div class="row">
-      ${this.stat("bt7_hw_top", "Top (BT7)", bt7 ? `${formatNumber(num(bt7))}<span class="unit">°C</span>` : "–", "big")}
+      ${this.stat("bt7_hw_top", this.t("hw.top"), bt7 ? `${this.n(num(bt7))}<span class="unit">°C</span>` : "–", "big")}
       <div class="grid" style="flex:1; min-width: 180px">
-        ${this.stat("bt6_hw_load", "Charging (BT6)", bt6 ? `${formatNumber(num(bt6))} °C` : "–")}
-        ${this.stat("hw_planned_action", "Planned action", esc(this.fmt(action)))}
+        ${this.stat("bt6_hw_load", this.t("hw.charging"), bt6 ? `${this.n(num(bt6))} °C` : "–")}
+        ${this.stat("hw_planned_action", this.t("hw.planned_action"), esc(this.fmt(action)))}
       </div>
     </div>`;
 
+    // The reasons are the control's (English) texts; their labels are ours.
     const reasons = aa.reasons && typeof aa.reasons === "object" ? Object.entries(aa.reasons).filter(([, v]) => v) : [];
+    const reasonLabel = (k) => (hasKey(`reason.${k}`) ? this.t(`reason.${k}`) : k.replace(/_/g, " "));
     const reasonList = reasons.length
-      ? `<details><summary>Reasons (${reasons.length})</summary><ul>${reasons
-          .map(([k, v]) => `<li><span class="muted">${esc(k.replace(/_/g, " "))}:</span> ${esc(v)}</li>`)
+      ? `<details><summary>${esc(this.t("hw.reasons", { count: reasons.length }))}</summary><ul>${reasons
+          .map(([k, v]) => `<li><span class="muted">${esc(reasonLabel(k))}:</span> ${esc(v)}</li>`)
           .join("")}</ul></details>`
       : "";
 
     const confidence = toNumber(draw?.attributes?.confidence);
     const drawText = isMissing(draw)
       ? "–"
-      : `${esc(this.fmtTime(draw.state))}${confidence !== null ? ` <span class="muted small">(${Math.round(confidence * 100)} %)</span>` : ""}`;
+      : `${esc(this.fmtTime(draw.state))}${confidence !== null ? ` <span class="muted small">(${this.n(confidence * 100, 0)} %)</span>` : ""}`;
     const vvNext = aa.next_heat_start ? this.fmtTime(aa.next_heat_start) : null;
     const optNext = !isMissing(opt) ? this.fmtTime(opt.state) : null;
     const usingOpt = oa.in_use || (oa.enabled && optNext);
-    const nextCharge = usingOpt && optNext ? `${esc(optNext)} <span class="muted small">optimiser</span>` : vvNext ? `${esc(vvNext)} <span class="muted small">VV-AI</span>` : "–";
+    let nextCharge = "–";
+    if (usingOpt && optNext) nextCharge = `${esc(optNext)} <span class="muted small">${esc(this.t("hw.by_optimiser"))}</span>`;
+    else if (vvNext) nextCharge = `${esc(vvNext)} <span class="muted small">${esc(this.t("hw.by_vvai"))}</span>`;
 
     const leg = legionellaModel(this.st("hw_legionella_next_due"), this.st("hw_legionella_last_done"));
-    const windows = hotwaterWindows({ vvPlan: aa.plan_24h, blocks: oa.blocks, legionella: leg?.window, now, hours: 24 });
+    const windows = hotwaterWindows({ vvPlan: aa.plan_24h, blocks: oa.blocks, legionella: leg?.window, now, hours: 24, loc: this.loc });
     const ticks = [];
     const hour = new Date(now);
     hour.setMinutes(0, 0, 0);
     for (let t = hour.getTime() + 3600000; t < now + 24 * 3600000 - 1800000; t += 3600000) {
       // Skip a tick that would sit on top of the "now" label.
-      if (new Date(t).getHours() % 6 === 0 && t - now >= 1.5 * 3600000) ticks.push(`<span style="left:${(((t - now) / (24 * 3600000)) * 100).toFixed(2)}%">${esc(formatClock(t))}</span>`);
+      if (new Date(t).getHours() % 6 === 0 && t - now >= 1.5 * 3600000) ticks.push(`<span style="left:${(((t - now) / (24 * 3600000)) * 100).toFixed(2)}%">${esc(this.clock(t))}</span>`);
     }
     const strip = `<div>
-      <div class="label">Next 24 h</div>
+      <div class="label">${esc(this.t("hw.next_24h"))}</div>
       <div class="strip">${windows
         .map(
           (w) =>
             `<div class="seg ${w.kind}" style="left:${(w.from * 100).toFixed(2)}%;width:${((w.to - w.from) * 100).toFixed(2)}%" title="${esc(w.label)}"></div>`,
         )
         .join("")}</div>
-      <div class="ticks"><span style="left:0; transform:none">now</span>${ticks.join("")}</div>
-      <div class="legend"><span><i style="background: var(--info-color, var(--primary-color)); opacity:.55; height: 8px"></i>VV-AI window</span><span><i style="background: var(--warning-color, #ffa600); height: 8px"></i>Optimiser charge</span>${
-        windows.some((w) => w.kind === "legionella") ? '<span><i style="background: var(--error-color, #db4437); height: 8px"></i>Legionella</span>' : ""
-      }${
-        windows.length ? "" : '<span>nothing planned</span>'
-      }</div>
+      <div class="ticks"><span style="left:0; transform:none">${esc(this.t("hw.now"))}</span>${ticks.join("")}</div>
+      <div class="legend"><span><i style="background: var(--info-color, var(--primary-color)); opacity:.55; height: 8px"></i>${esc(
+        this.t("hw.legend_vv"),
+      )}</span><span><i style="background: var(--warning-color, #ffa600); height: 8px"></i>${esc(this.t("hw.legend_charge"))}</span>${
+        windows.some((w) => w.kind === "legionella")
+          ? `<span><i style="background: var(--error-color, #db4437); height: 8px"></i>${esc(this.t("hw.legend_legionella"))}</span>`
+          : ""
+      }${windows.length ? "" : `<span>${esc(this.t("hw.nothing_planned"))}</span>`}</div>
     </div>`;
 
     const leases = HW_LEASES.map((l) => {
       const s = this.st(l.key);
       if (!s) return "";
-      return `<span data-more="${esc(l.key)}" title="${esc(`${l.label} (${l.register}): ${s.state}`)}" role="button" tabindex="0"><i class="dot" style="background:${leaseColor(
+      return `<span data-more="${esc(l.key)}" title="${esc(`${leaseLabel(l, this.loc)} (${l.register}): ${this.fmt(s)}`)}" role="button" tabindex="0"><i class="dot" style="background:${leaseColor(
         s.state,
       )}"></i>${esc(l.register)}</span>`;
     }).join("");
 
     let legionella = "";
     if (leg) {
-      const last = leg.lastDone !== null ? `${esc(formatAge(leg.lastDone, now, true))}${leg.lastBy ? ` <span class="muted small">${esc(leg.lastBy === "ha" ? "NibePi" : leg.lastBy)}</span>` : ""}` : "–";
+      const known = (prefix, value) => (hasKey(`${prefix}${value}`) ? this.t(`${prefix}${value}`) : value);
+      const last = leg.lastDone !== null ? `${esc(this.age(leg.lastDone, now, true))}${leg.lastBy ? ` <span class="muted small">${esc(known("leg.by.", leg.lastBy))}</span>` : ""}` : "–";
+      const small = (text) => ` <span class="muted small">${esc(text)}</span>`;
       let next;
-      if (leg.running) next = `<b>running</b>${leg.temperature !== null ? ` <span class="muted small">to ${esc(formatNumber(leg.temperature))} °C</span>` : ""}`;
-      else if (leg.state === "planned" && leg.window) next = `${esc(this.fmtTime(leg.window.start))}–${esc(formatClock(leg.window.end))} <span class="muted small">planned</span>`;
-      else if (leg.state === "off" || leg.state === "disabled") next = `<span class="muted">${esc(leg.state === "off" ? "hot water off" : "guard off")}</span>`;
-      else if (leg.due !== null) next = `${esc(this.fmtTime(leg.due))}${leg.pumpPeriodic ? ' <span class="muted small">if the pump has not</span>' : ""}`;
+      if (leg.running) next = `<b>${esc(this.t("leg.running"))}</b>${leg.temperature !== null ? small(this.t("leg.to", { temperature: this.n(leg.temperature) })) : ""}`;
+      else if (leg.state === "planned" && leg.window) next = `${esc(this.fmtTime(leg.window.start))}–${esc(this.clock(leg.window.end))}${small(this.t("leg.planned"))}`;
+      else if (leg.state === "off" || leg.state === "disabled") next = `<span class="muted">${esc(this.t(leg.state === "off" ? "leg.hot_water_off" : "leg.guard_off"))}</span>`;
+      else if (leg.due !== null) next = `${esc(this.fmtTime(leg.due))}${leg.pumpPeriodic ? small(this.t("leg.if_pump_not")) : ""}`;
       else next = "–";
-      if (leg.state === "aborted" && leg.lastResult) next += ` <span class="muted small">${esc(leg.lastResult)}</span>`;
+      if (leg.state === "aborted" && leg.lastResult) next += small(known("leg.result.", leg.lastResult));
       legionella = `<div class="grid">
-        ${this.stat("hw_legionella_last_done", `Legionella${leg.temperature !== null ? ` ${formatNumber(leg.temperature)} °C` : ""}`, last)}
-        ${this.stat("hw_legionella_next_due", "Next legionella", next)}
+        ${this.stat("hw_legionella_last_done", leg.temperature !== null ? this.t("leg.label_temp", { temperature: this.n(leg.temperature) }) : this.t("leg.label"), last)}
+        ${this.stat("hw_legionella_next_due", this.t("leg.next"), next)}
       </div>`;
     }
 
-    const alerts = this.alertList(hotwaterAlerts(this._hass, this._ids));
+    const alerts = this.alertList(hotwaterAlerts(this._hass, this._ids, this.loc));
     const awayNote = aa.reasons?.away ? `<div class="reason">${esc(aa.reasons.away)}</div>` : "";
 
     return `<div class="content">
@@ -761,14 +807,14 @@ class NibePiHotWaterCard extends NibePiCard {
       ${awayNote}
       ${reasonList}
       <div class="grid">
-        ${this.stat("hw_draw_profile", "Next draw", drawText)}
-        ${this.stat(usingOpt ? "hw_optimiser_plan" : "hw_planned_action", "Next charge", nextCharge)}
+        ${this.stat("hw_draw_profile", this.t("hw.next_draw"), drawText)}
+        ${this.stat(usingOpt ? "hw_optimiser_plan" : "hw_planned_action", this.t("hw.next_charge"), nextCharge)}
       </div>
       ${legionella}
       ${strip}
       ${this.awayChip(now)}
-      ${this.chips("hw_mode", "Mode")}
-      ${leases ? `<div class="dots"><span class="label" style="cursor:default">Leases</span>${leases}</div>` : ""}
+      ${this.chips("hw_mode", this.t("hw.mode"))}
+      ${leases ? `<div class="dots"><span class="label" style="cursor:default">${esc(this.t("hw.leases"))}</span>${leases}</div>` : ""}
     </div>`;
   }
 }
@@ -792,7 +838,7 @@ class NibePiGatewayCard extends NibePiCard {
   }
 
   defaultTitle() {
-    return "NibePi gateway";
+    return this.t("gw.title");
   }
 
   getCardSize() {
@@ -801,35 +847,41 @@ class NibePiGatewayCard extends NibePiCard {
 
   renderHeader() {
     const url = this._config.status_url;
-    const link = url && /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="small">Status page</a>` : "";
+    const link = url && /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="small">${esc(this.t("gw.status_page"))}</a>` : "";
     return super.renderHeader(link);
   }
 
   renderBody(now) {
     const gw = this.st("gateway_online");
     const ga = gw?.attributes || {};
-    const online = gw?.state === "on" ? "Online" : gw?.state === "off" ? "Offline" : "Unknown";
+    const online = this.t(gw?.state === "on" ? "gw.online" : gw?.state === "off" ? "gw.offline" : "gw.unknown");
     const color = gw?.state === "on" ? "var(--success-color, #43a047)" : gw?.state === "off" ? "var(--error-color, #db4437)" : "var(--disabled-color, #bdbdbd)";
     const bus = this.st("bus_health");
     const status = `<div class="grid">
-      ${this.stat("gateway_online", "Gateway", `<i class="dot" style="background:${color}"></i> ${online}${ga.version ? ` <span class="muted small">${esc(ga.version)}</span>` : ""}`)}
-      <div class="stat"><span class="label">Core</span><span class="value">${esc(ga.core ?? "–")}</span></div>
-      <div class="stat"><span class="label">Last data</span><span class="value">${esc(formatAge(ga.last_data, now) || "–")}</span></div>
-      <div class="stat"><span class="label">Raw writes</span><span class="value">${esc(Array.isArray(ga.raw_set) ? ga.raw_set.join(", ") : ga.raw_set ?? "–")}</span></div>
-      ${bus ? this.stat("bus_health", "Bus errors", esc(this.fmt(bus))) : ""}
-      <div class="stat"><span class="label">Last message</span><span class="value">${esc(formatAge(ga.last_message_at, now) || "–")}</span></div>
+      ${this.stat("gateway_online", this.t("gw.gateway"), `<i class="dot" style="background:${color}"></i> ${esc(online)}${ga.version ? ` <span class="muted small">${esc(ga.version)}</span>` : ""}`)}
+      <div class="stat"><span class="label">${esc(this.t("gw.core"))}</span><span class="value">${esc(ga.core ?? "–")}</span></div>
+      <div class="stat"><span class="label">${esc(this.t("gw.last_data"))}</span><span class="value">${esc(this.age(ga.last_data, now) || "–")}</span></div>
+      <div class="stat"><span class="label">${esc(this.t("gw.raw_writes"))}</span><span class="value">${esc(Array.isArray(ga.raw_set) ? ga.raw_set.join(", ") : ga.raw_set ?? "–")}</span></div>
+      ${bus ? this.stat("bus_health", this.t("gw.bus_errors"), esc(this.fmt(bus))) : ""}
+      <div class="stat"><span class="label">${esc(this.t("gw.last_message"))}</span><span class="value">${esc(this.age(ga.last_message_at, now) || "–")}</span></div>
     </div>`;
     const hint = ga.hint ? `<div class="alert warning" data-more="gateway_online"><ha-icon icon="mdi:alert"></ha-icon><span>${esc(ga.hint)}</span></div>` : "";
 
-    const rows = leaseRows(this._hass, this._ids, now, LEASES.filter((l) => !/_s[12]$/.test(l.key) || this._systems.some((s) => l.key.endsWith(s))));
+    const rows = leaseRows(
+      this._hass,
+      this._ids,
+      now,
+      LEASES.filter((l) => !/_s[12]$/.test(l.key) || this._systems.some((s) => l.key.endsWith(s))),
+      this.loc,
+    );
     const leases = rows.length
-      ? `<div class="leases"><div class="label">Leases</div>${rows
+      ? `<div class="leases"><div class="label">${esc(this.t("gw.leases"))}</div>${rows
           .map(
             (r) => `<div class="lease" data-more="${esc(r.key)}" role="button" tabindex="0" title="${esc(`${r.label} (${r.register})`)}">
               <i class="dot" style="background:${leaseColor(r.state)}"></i>
               <span>${esc(r.label)} <span class="muted small">${esc(r.register)}</span></span>
-              <span class="meta">${esc(this.fmt(this.st(r.key)))}${r.value !== null && r.state !== "inactive" ? ` · value ${esc(r.value)}` : ""}${
-                r.countdown ? ` · ${r.countdown.expired ? "expired" : `${esc(r.countdown.text)} left`}` : ""
+              <span class="meta">${esc(this.fmt(this.st(r.key)))}${r.value !== null && r.state !== "inactive" ? ` · ${esc(this.t("gw.value", { value: r.value }))}` : ""}${
+                r.countdown ? ` · ${esc(r.countdown.expired ? this.t("time.expired") : this.t("time.left", { duration: r.countdown.text }))}` : ""
               }</span>
               ${r.error ? `<span class="err">${esc(r.error)}</span>` : ""}
             </div>`,
@@ -843,12 +895,12 @@ class NibePiGatewayCard extends NibePiCard {
         if (!feed) return "";
         const lease = this.st(sysKey("rmu_lease_state", s));
         const room = toNumber(lease?.attributes?.room_temperature);
-        const text = feed.state === "on" ? `on${room !== null ? ` · ${formatNumber(room)} °C` : ""}` : "off";
-        return this.stat(sysKey("rmu_feed", s), `RMU40 feed ${SYSTEM_LABEL(s)}`, esc(text));
+        const text = feed.state === "on" ? `${this.t("on")}${room !== null ? ` · ${this.n(room)} °C` : ""}` : this.t("off");
+        return this.stat(sysKey("rmu_feed", s), this.t("gw.rmu_feed", { system: SYSTEM_LABEL(s) }), esc(text));
       })
       .join("");
 
-    const versions = versionLine(this.st("gateway_version"), gw);
+    const versions = versionLine(this.st("gateway_version"), gw, this.loc);
     return `<div class="content">
       ${hint}${status}
       ${leases ? `<div class="divider"></div>${leases}` : ""}
@@ -874,7 +926,7 @@ class NibePiSavingsCard extends NibePiCard {
   }
 
   defaultTitle() {
-    return "Heat pump cost";
+    return this.t("sav.title");
   }
 
   watched() {
@@ -927,25 +979,26 @@ class NibePiSavingsCard extends NibePiCard {
     const cost = this.st("heat_pump_cost_today");
     const savings = this.st("optimiser_savings_today");
     if (!cost && !savings) {
-      return `<div class="content"><div class="empty">No cost or savings sensors found.</div></div>`;
+      return `<div class="content"><div class="empty">${esc(this.t("sav.no_sensors"))}</div></div>`;
     }
-    const m = savingsModel(cost, savings);
+    const m = savingsModel(cost, savings, this.loc);
     const cur = esc(m.currency);
-    const money = (v) => (v === null ? "–" : `${formatNumber(v, 2)} ${cur}`);
-    const bigMoney = (v) => (v === null ? "–" : `${formatNumber(v, 2)}<span class="unit">${cur}</span>`);
-    const gap = (pct) => (pct === null ? "" : ` <span class="muted small">(${formatSigned(pct, 1)} % vs plan)</span>`);
+    const money = (v) => (v === null ? "–" : `${this.n(v, 2)} ${cur}`);
+    const bigMoney = (v) => (v === null ? "–" : `${this.n(v, 2)}<span class="unit">${cur}</span>`);
+    const gap = (pct) => (pct === null ? "" : ` <span class="muted small">${esc(this.t("sav.vs_plan", { pct: this.signed(pct, 1) }))}</span>`);
+    const label = (key) => `<span class="label">${esc(this.t(key))}</span>`;
 
     const costHist = this._history("heat_pump_cost_today", now);
     const saveHist = this._history("optimiser_savings_today", now);
-    const spark = (hist, label, stroke) => {
+    const spark = (hist, labelKey, stroke) => {
       const d = sparkline(hist.map((h) => h.value), 120, 32);
       if (!d) return "";
       const total = hist.reduce((acc, h) => acc + h.value, 0);
-      return `<div class="stat"><span class="label">${esc(label)}, ${hist.length} days</span>
+      return `<div class="stat"><span class="label">${esc(this.t("sav.days", { label: this.t(labelKey), count: hist.length }))}</span>
         <svg viewBox="0 0 120 32" style="max-width:160px" preserveAspectRatio="none"><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5" vector-effect="non-scaling-stroke"><title>${esc(
-          hist.map((h) => `${new Date(h.start).toLocaleDateString()}: ${formatNumber(h.value, 2)}`).join("\n"),
+          hist.map((h) => `${dateText(h.start, this.loc)}: ${this.n(h.value, 2)}`).join("\n"),
         )}</title></path></svg>
-        <span class="muted small">total ${formatNumber(total, 2)} ${cur}</span></div>`;
+        <span class="muted small">${esc(this.t("sav.total", { value: this.n(total, 2), currency: m.currency }))}</span></div>`;
     };
     const savedYesterday = saveHist.length ? saveHist[saveHist.length - 1] : null;
     const yesterdayDate = new Date(now);
@@ -954,23 +1007,21 @@ class NibePiSavingsCard extends NibePiCard {
     const isYesterday = savedYesterday && savedYesterday.start === yesterdayDate.getTime();
 
     const today = `<div class="grid">
-      ${cost ? this.stat("heat_pump_cost_today", "Cost today", bigMoney(m.costToday), "big") : ""}
-      ${savings ? this.stat("optimiser_savings_today", "Expected savings today", bigMoney(m.savingsToday), "big") : ""}
+      ${cost ? this.stat("heat_pump_cost_today", this.t("sav.cost_today"), bigMoney(m.costToday), "big") : ""}
+      ${savings ? this.stat("optimiser_savings_today", this.t("sav.savings_today"), bigMoney(m.savingsToday), "big") : ""}
     </div>`;
     const detail = `<div class="grid">
-      ${cost ? `<div class="stat"><span class="label">Predicted so far</span><span class="value">${money(m.predictedCost)}${gap(m.gapPct)}</span></div>` : ""}
-      ${
-        m.yesterday
-          ? `<div class="stat"><span class="label">Cost yesterday</span><span class="value">${money(m.yesterday.cost)}${gap(m.yesterday.gapPct)}</span></div>`
-          : ""
-      }
-      ${isYesterday ? `<div class="stat"><span class="label">Saved yesterday</span><span class="value">${money(savedYesterday.value)}</span></div>` : ""}
+      ${cost ? `<div class="stat">${label("sav.predicted")}<span class="value">${money(m.predictedCost)}${gap(m.gapPct)}</span></div>` : ""}
+      ${m.yesterday ? `<div class="stat">${label("sav.cost_yesterday")}<span class="value">${money(m.yesterday.cost)}${gap(m.yesterday.gapPct)}</span></div>` : ""}
+      ${isYesterday ? `<div class="stat">${label("sav.saved_yesterday")}<span class="value">${money(savedYesterday.value)}</span></div>` : ""}
     </div>`;
     const parts = m.savingsParts.length
-      ? `<div class="sub">Savings today: ${m.savingsParts.map((p) => `${esc(p.label)} ${formatNumber(p.value, 2)}`).join(" · ")} ${cur}</div>`
+      ? `<div class="sub">${esc(
+          this.t("sav.parts", { parts: m.savingsParts.map((p) => `${p.label} ${this.n(p.value, 2)}`).join(" · "), currency: m.currency }),
+        )}</div>`
       : "";
-    const sparks = `${spark(costHist, "Cost per day", "var(--warning-color, #ffa600)")}${spark(saveHist, "Savings per day", "var(--success-color, #43a047)")}`;
-    const costNote = cost && m.costToday === null ? `<div class="sub">Cost needs a heat pump meter (meter scope: heat pump).</div>` : "";
+    const sparks = `${spark(costHist, "sav.cost_per_day", "var(--warning-color, #ffa600)")}${spark(saveHist, "sav.savings_per_day", "var(--success-color, #43a047)")}`;
+    const costNote = cost && m.costToday === null ? `<div class="sub">${esc(this.t("sav.cost_note"))}</div>` : "";
     return `<div class="content">${today}${detail}${parts}${sparks ? `<div class="grid">${sparks}</div>` : ""}${costNote}</div>`;
   }
 }
@@ -979,12 +1030,10 @@ class NibePiSavingsCard extends NibePiCard {
 // Editor (ha-form)
 // --------------------------------------------------------------------------
 
-const LABELS = {
-  system: "Climate system",
-  entry_id: "NibePi entry (only with several)",
-  title: "Title",
-  hours: "Hours ahead",
-  status_url: "Gateway status page URL (e.g. http://nibepi.local:8080)",
+// Editor labels and helper texts: "editor.<field>" and "editor.<field>_help".
+const editorText = (lang, name, suffix = "") => {
+  const key = `editor.${name}${suffix}`;
+  return hasKey(key) ? translate(lang, key) : suffix ? undefined : name;
 };
 
 async function ensureHaForm() {
@@ -1040,7 +1089,8 @@ class NibePiCardEditor extends HTMLElement {
     if (!this._hass || !this._config) return;
     if (!this._form) {
       this._form = document.createElement("ha-form");
-      this._form.computeLabel = (s) => LABELS[s.name] || s.name;
+      this._form.computeLabel = (s) => editorText(langOf(this._hass), s.name);
+      this._form.computeHelper = (s) => editorText(langOf(this._hass), s.name, "_help");
       this._form.addEventListener("value-changed", (ev) => {
         ev.stopPropagation();
         const config = { ...ev.detail.value };
@@ -1060,20 +1110,23 @@ class NibePiCardEditor extends HTMLElement {
 // Registration
 // --------------------------------------------------------------------------
 
-const CARDS = [
-  [NibePiClimateCard, "NibePi climate", "Indoor vs target, outdoor, the planned and pump curve offset with its parts, the Away toggle, strategy and mode, and alerts for one climate system."],
-  [NibePiPlanCard, "NibePi optimiser plan", "Chart of the optimiser's planned offset and predicted indoor temperature with the comfort band and price levels, plus the expected savings."],
-  [NibePiHotWaterCard, "NibePi hot water", "BT7/BT6, the planned action and its reasons, next draw and charge, the legionella guard, the next 24 h of planned charges, the Away toggle, hot water mode and leases."],
-  [NibePiGatewayCard, "NibePi gateway", "Gateway status, last data, raw writes, bus errors, every lease with its countdown, and the RMU40 feeds."],
-  [NibePiSavingsCard, "NibePi cost and savings", "Heat pump cost and expected savings today, against the plan and yesterday, with 7-day sparklines."],
-];
+const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiGatewayCard, NibePiSavingsCard];
 
+// The card picker's names and descriptions: there is no hass yet, so the
+// page's (or the browser's) language.
+const pickerLang = registrationLang();
 if (!customElements.get("nibepi-card-editor")) customElements.define("nibepi-card-editor", NibePiCardEditor);
 window.customCards = window.customCards || [];
-for (const [cls, name, description] of CARDS) {
+for (const cls of CARDS) {
   if (!customElements.get(cls.cardType)) customElements.define(cls.cardType, cls);
   if (!window.customCards.some((c) => c.type === cls.cardType)) {
-    window.customCards.push({ type: cls.cardType, name, description, preview: true, documentationURL: DOCS });
+    window.customCards.push({
+      type: cls.cardType,
+      name: translate(pickerLang, `card.${cls.cardType}.name`),
+      description: translate(pickerLang, `card.${cls.cardType}.description`),
+      preview: true,
+      documentationURL: DOCS,
+    });
   }
 }
 
