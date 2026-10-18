@@ -775,7 +775,10 @@ The integration ships five custom cards for your own dashboards; nothing
 to install besides the integration. Edit a dashboard -> **Add card** ->
 search for **NibePi**: each card shows a preview, and its editor has the
 options below (or switch it to YAML). The cards follow your theme, light
-or dark.
+or dark, and Home Assistant's language: Swedish or English (any other
+language shows English), with your profile's number and time format
+(decimal comma, 12/24 h). The reasons and explanations the integration
+writes in its attributes are still English.
 
 Options common to all cards:
 
@@ -1026,12 +1029,14 @@ function it ports and where it deliberately differs.
 
 ```sh
 python3 -m unittest discover -s tests
-node --test tests/js/*.test.mjs   # the cards (frontend/nibepi-core.js)
+node --test tests/js/*.test.mjs   # the cards (frontend/nibepi-core.js, nibepi-i18n.js)
 ```
 
 The cards are plain ES modules in `custom_components/nibepi/frontend/`
 with no build step: `nibepi-core.js` holds the entity resolution and data
-shaping (unit tested), `nibepi-cards.js` the elements.
+shaping (unit tested), `nibepi-i18n.js` the English and Swedish texts
+and the locale formatting (a key missing in Swedish shows the English
+text), `nibepi-cards.js` the elements.
 
 ## License
 
