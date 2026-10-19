@@ -151,6 +151,7 @@ export const TEXTS = {
   "hw.away_economy": ["away: economy", "borta: ekonomi"],
   "hw.away_off": ["away: off", "borta: av"],
   "hw.opt_drives": ["drives the charges", "styr laddningarna"],
+  "hw.opt_blocked": ["planned but not applied: {reason}", "planerad men tillämpas inte: {reason}"],
   "hw.opt_no_plan": ["no plan ({why})", "ingen plan ({why})"],
   "hw.opt_no_plan_vv": ["no plan ({why}): VV-AI plan used", "ingen plan ({why}): VV-AI-planen används"],
   "hw.away_economy_pump": ["away (economy): the pump heats hot water itself in economy mode", "borta (ekonomi): pumpen värmer varmvattnet själv i ekonomiläge"],

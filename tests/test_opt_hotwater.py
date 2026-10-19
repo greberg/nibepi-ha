@@ -140,6 +140,9 @@ class ControllerTest(unittest.TestCase):
         decision = rig.decide(optimiser=True, priority=True)
         self.assertIsNone(decision.targets[REG_PERIOD])
         self.assertIn("precedence", decision.reasons["vv_control"])
+        # The optimiser's blocks are not written either, and it says so.
+        self.assertTrue(decision.reasons["optimiser"].startswith("planned but not applied"))
+        self.assertEqual(decision.reasons["optimiser"].code, "hw.opt_blocked")
 
     def test_off_by_default(self) -> None:
         rig = Rig(local(2026, 10, 6, 12, 0))

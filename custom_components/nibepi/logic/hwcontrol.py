@@ -438,6 +438,10 @@ class HotWaterController:
         elif blocked is not None:
             self.vv.reset()
             reasons["vv_control"] = blocked[0]
+            if optimised:
+                # Its blocks are not written either: say so instead of
+                # "drives the charges".
+                reasons["optimiser"] = msg("hw.opt_blocked", reason=blocked[0])
             if blocked[1]:
                 faults.append("vv_control")
         else:
