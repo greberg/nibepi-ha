@@ -695,8 +695,14 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-def _solve(bins, hours: float, prior: HouseModel, prior_hours: float, lagged: bool):
-    """Ridge regression of a..d; (theta, normal equations, ridge) or None."""
+def _solve(bins, hours: float, prior: HouseModel, prior_hours: float, lagged: bool,
+           c_max: Optional[float] = None):
+    """Ridge regression of a..d; (theta, normal equations, ridge) or None.
+
+    ``c`` (solar) also soaks up daytime effects the model does not have:
+    a sensor in the sun, cooking, people at home, past cloud cover. Above
+    ``c_max`` it is pinned there and a, b, d refitted, rather than letting
+    it reject the whole fit."""
     eq = NormalEquations(4)
     for x, y in _rows(bins, hours, lagged):
         eq.add(x, y)
@@ -711,6 +717,11 @@ def _solve(bins, hours: float, prior: HouseModel, prior_hours: float, lagged: bo
         pinned[2] = 1e9
         theta = eq.solve(pinned, prior_theta[:2] + [0.0, prior_theta[3]]) or theta
         theta[2] = max(0.0, theta[2])
+    elif theta is not None and c_max is not None and theta[2] > c_max:
+        pinned = list(ridge)
+        pinned[2] = 1e9
+        theta = eq.solve(pinned, prior_theta[:2] + [c_max, prior_theta[3]]) or theta
+        theta[2] = min(c_max, theta[2])
     return theta, eq, ridge
 
 
@@ -761,7 +772,7 @@ def fit_house_model(
         for tau in (lag_grid if lag_grid is not None else LAG_GRID_H):
             slab = slab_filter(ordered, tau, tau * ratio)
             cand_bins = resample(ordered, step_minutes, slab)
-            theta, eq, ridge = _solve(cand_bins, hours, prior, prior_hours, True)
+            theta, eq, ridge = _solve(cand_bins, hours, prior, prior_hours, True, bounds.c[1])
             if theta is None or theta[0] <= 0 or theta[1] <= 0:
                 continue
             cand = HouseModel(theta[0], theta[1], theta[2], theta[3], tau, tau * ratio)
@@ -773,7 +784,7 @@ def fit_house_model(
         if best is None:
             # Nothing usable: report why with the prior's lag.
             bins = resample(ordered, step_minutes, slab_filter(ordered, prior.tau_f, prior.drain_h))
-            theta, eq, ridge = _solve(bins, hours, prior, prior_hours, True)
+            theta, eq, ridge = _solve(bins, hours, prior, prior_hours, True, bounds.c[1])
             tau_f, tau_d = prior.tau_f, prior.drain_h
         else:
             _, tau_f, theta, eq, ridge, bins, bt2_rmse = best
@@ -792,7 +803,7 @@ def fit_house_model(
             })
             track = slab_track(ordered, slab_fit.tau_f, slab_fit.tau_d, slab_fit.kappa)
             bins3 = resample(ordered, step_minutes, track)
-            theta3, eq3, ridge3 = _solve(bins3, hours, prior, prior_hours, True)
+            theta3, eq3, ridge3 = _solve(bins3, hours, prior, prior_hours, True, bounds.c[1])
             if theta3 is not None and _plausible(theta3, bounds):
                 cand = HouseModel(theta3[0], theta3[1], theta3[2], theta3[3], slab_fit.tau_f, slab_fit.tau_d,
                                   slab_fit.kappa)
@@ -809,7 +820,7 @@ def fit_house_model(
                 extra["bt3"]["reason"] = "room fit on the BT3 slab implausible"
     else:
         bins = resample(ordered, step_minutes)
-        theta, eq, ridge = _solve(bins, hours, prior, prior_hours, False)
+        theta, eq, ridge = _solve(bins, hours, prior, prior_hours, False, bounds.c[1])
         tau_f = tau_d = 0.0
     n = eq.rows
     if n < 24:
@@ -832,7 +843,8 @@ def fit_house_model(
     se_b = (sigma2 * cov[1][1]) ** 0.5 if cov else float("inf")
     rel_se_b = se_b / abs(b) if b else float("inf")
     sim_rmse, _ = simulate_bins(model, bins, hours, chunk) if a > 0 and b > 0 else (0.0, 0)
-    details = {"a": a, "b": b, "c": c, "d": d, "tau_h": (1.0 / (a + b)) if a + b > 0 else None}
+    details = {"a": a, "b": b, "c": c, "d": d, "tau_h": (1.0 / (a + b)) if a + b > 0 else None,
+               "c_pinned": c >= bounds.c[1] - 1e-9}
     if prior.lagged:
         details.update({"tau_f": tau_f, "tau_d": tau_d, "lag_grid": grid_scores, **extra})
 

@@ -85,6 +85,21 @@ class HouseFitTest(unittest.TestCase):
         self.assertFalse(fit.ok)
         self.assertEqual(fit.model, PRIOR)
 
+    def test_too_much_solar_is_pinned_not_rejected(self) -> None:
+        # c soaks up daytime effects (sun on the sensor, cooking): above its
+        # bound it is pinned there and the rest refitted, not the whole fit lost.
+        from logic.optimizer.house import FitBounds
+        bounds = FitBounds(c=(0.0, 0.06))
+        fit = fit_house_model(history(1), PRIOR, bounds)
+        self.assertTrue(fit.ok, fit.reason)
+        self.assertAlmostEqual(fit.model.c, 0.06, places=6)
+        self.assertTrue(fit.details["c_pinned"])
+        self.assertAlmostEqual(fit.model.a, TRUE.a, delta=0.3 * TRUE.a)
+        self.assertAlmostEqual(fit.model.b, TRUE.b, delta=0.3 * TRUE.b)
+        # The solar gain cut off by the pin shifts into d: a little off, far
+        # closer than the prior the rejected fit fell back to.
+        self.assertAlmostEqual(fit.model.steady_supply(21, -5), TRUE.steady_supply(21, -5), delta=1.0)
+
     def test_rejects_outside_bounds(self) -> None:
         fast = HouseModel(0.2, 0.3, 0.0, 0.0)  # time constant 2 h
         fit = fit_house_model(history(5, model=fast), PRIOR)
