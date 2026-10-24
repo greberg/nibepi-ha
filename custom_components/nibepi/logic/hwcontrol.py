@@ -491,6 +491,8 @@ class HotWaterController:
             "closed_until": self.vv.closed_until,
             "floor_active": self.vv.floor_active,
             "plan_source": "optimiser" if optimised else ("away" if reduced else "vv_ai"),
+            # The optimiser's blocks are actually written (not blocked, e.g. by 47134 = 0).
+            "plan_applied": bool(optimised and blocked is None),
             "away": inputs.away,
             "legionella": legionella.state,
         }

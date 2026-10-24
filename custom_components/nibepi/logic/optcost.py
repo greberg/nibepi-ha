@@ -6,10 +6,12 @@ slot it falls in and added to the day. Alongside, what the optimiser's
 plans predicted for the same hours is banked when a plan is replaced
 (heating and hot water, plus the heating baseline: the base offset held).
 
-In shadow mode the pump follows the rules, not the plan, so the gap
-between measured and predicted mixes model error with the difference
-between the strategies; with the optimiser active it is the model's
-error. The tally is a plain dict so it can be persisted as is.
+In shadow mode, or with the optimiser gated off, the pump follows the
+rules, not the plan, so measured and predicted describe different runs.
+Each bin therefore records whether the plans were applied, and the gap is
+only given when they were for at least ``MIN_APPLIED_SHARE`` of the
+measured time; then it is the model's error. The tally is a plain dict so
+it can be persisted as is.
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from datetime import datetime
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 PLANNED_KEYS = ("heating", "hot_water", "baseline")
+# Share of the measured bins the plans must have been applied in for the
+# measured-vs-predicted gap to be given.
+MIN_APPLIED_SHARE = 0.9
 
 
 def price_at(slots: Sequence[Any], when: datetime) -> Optional[float]:
@@ -52,6 +57,7 @@ def new_day(day: str, previous: Optional[Mapping[str, Any]] = None) -> Dict[str,
         "cost": 0.0,
         "unpriced_kwh": 0.0,
         "bins": 0,
+        "bins_applied": 0,
         "planned": {key: [0.0, 0.0] for key in PLANNED_KEYS},
     }
     if previous and previous.get("day") and previous.get("day") != day:
@@ -66,11 +72,14 @@ def roll(tally: Any, day: str) -> Dict[str, Any]:
     return new_day(day, tally if isinstance(tally, Mapping) else None)
 
 
-def add_measured(tally: Dict[str, Any], kwh: float, price: Optional[float]) -> None:
+def add_measured(tally: Dict[str, Any], kwh: float, price: Optional[float], applied: bool = False) -> None:
+    """A measured bin; ``applied``: the plans steered the pump during it."""
     if kwh is None or kwh < 0:
         return
     tally["kwh"] = tally.get("kwh", 0.0) + kwh
     tally["bins"] = tally.get("bins", 0) + 1
+    if applied:
+        tally["bins_applied"] = tally.get("bins_applied", 0) + 1
     if price is None:
         tally["unpriced_kwh"] = tally.get("unpriced_kwh", 0.0) + kwh
     else:
@@ -98,6 +107,9 @@ def summary(tally: Mapping[str, Any]) -> Dict[str, Any]:
     predicted_cost = heat_cost + hw_cost
     kwh = float(tally.get("kwh") or 0.0)
     cost = float(tally.get("cost") or 0.0)
+    bins = int(tally.get("bins") or 0)
+    applied_share = int(tally.get("bins_applied") or 0) / bins if bins else None
+    comparable = predicted_cost > 0 and applied_share is not None and applied_share >= MIN_APPLIED_SHARE
     return {
         "day": tally.get("day"),
         "kwh": round(kwh, 2),
@@ -110,7 +122,8 @@ def summary(tally: Mapping[str, Any]) -> Dict[str, Any]:
         "predicted_hot_water_cost": round(hw_cost, 2),
         "baseline_heating_cost": round(base_cost, 2),
         "baseline_heating_kwh": round(base_kwh, 2),
+        "plan_applied_share": round(applied_share, 2) if applied_share is not None else None,
         "cost_vs_predicted_pct": round(100.0 * (cost - predicted_cost) / predicted_cost, 1)
-        if predicted_cost > 0
+        if comparable
         else None,
     }

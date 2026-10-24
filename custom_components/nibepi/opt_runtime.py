@@ -88,6 +88,7 @@ from .logic.opthistory import (
     retention_start,
 )
 from .logic import optcost
+from .logic.applied import HOT_WATER, AppliedLog
 from .logic.texts import code_of, msg
 from .logic.pump import PRIORITY_VALUES, history_sources, own_unique_id, register_owner
 from .logic.optimizer.gate import GateDecision, gate
@@ -118,6 +119,7 @@ from .logic.optrun import (
     should_replan,
 )
 from .logic.optstrategy import (
+    SOURCE_RULES,
     STRATEGY_RULES,
     STRATEGIES,
     StrategyChoice,
@@ -265,6 +267,11 @@ class OptimizerRuntime:
         # Expected savings today: {"day", "heating": {system: banked}, ...}.
         self.savings: Dict[str, Any] = {}
         self.savings_today: Dict[str, float] = {}
+        # The same as if every plan had been applied (shadow mode, closed gate).
+        self.savings_if_applied: Dict[str, float] = {}
+        # When each plan (a system, or hot water) actually steered the pump:
+        # savings and the plan-vs-measured gap only count that time.
+        self.applied = AppliedLog()
         # Heat pump electricity today, measured (heat pump meter) vs planned.
         self.hp_cost: Dict[str, Any] = {}
 
@@ -512,7 +519,8 @@ class OptimizerRuntime:
         prices = scale_prices(self.rt.price_slots, self.rt.opt(OPT_PRICE_UNIT_FACTOR))
         price = optcost.price_at(prices, when + timedelta(seconds=STEP_S / 2))
         self.hp_cost = optcost.roll(self.hp_cost, self._local_day(when))
-        optcost.add_measured(self.hp_cost, kwh, price)
+        share = self.applied.share(self._plan_keys(), when, when + timedelta(seconds=STEP_S))
+        optcost.add_measured(self.hp_cost, kwh, price, applied=share is not None and share >= 0.5)
 
     # -- bootstrap from the recorder ----------------------------------------
 
@@ -803,13 +811,30 @@ class OptimizerRuntime:
             decision = GateDecision(False, None, msg("opt.no_plan_why", why=why))
         return decision
 
-    def decide(self, system: str, now: datetime, rules: CurvePlan, current: Optional[float]) -> CurvePlan:
-        """The curve plan for this tick: the rules, or the optimiser's offset."""
+    def decide(
+        self, system: str, now: datetime, rules: CurvePlan, current: Optional[float], active: bool = True
+    ) -> CurvePlan:
+        """The curve plan for this tick: the rules, or the optimiser's offset.
+
+        ``active``: the system's mode writes to the pump (not shadow/off).
+        """
         decision = self.live_gate(system, now)
         choice = choose_total(self.strategy.get(system, STRATEGY_RULES), rules.total, decision)
         self.gates[system] = decision
         self.choices[system] = choice
+        self.applied.mark(system, now, active and choice.source != SOURCE_RULES)
         return apply_choice(rules, choice, current)
+
+    def mark_hot_water(self, now: datetime, applied: bool) -> None:
+        """Whether the hot water controller follows the optimiser's plan this tick."""
+        self.applied.mark(HOT_WATER, now, applied)
+
+    def _plan_keys(self) -> List[str]:
+        """The plans whose prediction is banked: heating systems and hot water."""
+        keys = [system for system, result in self.heating.items() if result.plan is not None]
+        if self.tank is not None and self.tank.plan is not None:
+            keys.append(HOT_WATER)
+        return keys
 
     def on_tick(self, now: datetime) -> None:
         """Replan when the prices changed, the first time after start, and
@@ -998,49 +1023,97 @@ class OptimizerRuntime:
 
     def _book_savings(self, now: datetime, heating: List[HeatingResult], tank: Optional[TankResult]) -> None:
         """Bank what the previous plans expected to save until now; add the
-        new plans' share of the rest of today."""
+        new plans' share of the rest of today.
+
+        Two tallies: ``savings_today`` counts only the time a plan actually
+        steered the pump (``applied``); a plan in shadow mode, behind a
+        closed gate or blocked by the pump's settings saves nothing, and the
+        rest of today is counted only when the plan is applied now.
+        ``savings_if_applied`` counts all of it: what the plans would have
+        saved, for judging the optimiser before switching it on."""
         day_start = dt_util.start_of_local_day(dt_util.as_local(now))
         day_end = dt_util.start_of_local_day(dt_util.as_local(now) + timedelta(days=1))
         day = day_start.date().isoformat()
         if self.savings.get("day") != day:
-            self.savings = {"day": day, "heating": {}, "hot_water": 0.0}
-        banked: Dict[str, float] = self.savings.setdefault("heating", {})
-        today: Dict[str, float] = {}
+            self.savings = {"day": day}
+        elif "if_applied" not in self.savings:
+            # Banked before 0.9.4, when every plan counted: hypothetical.
+            self.savings = {
+                "day": day,
+                "if_applied": {
+                    "heating": self.savings.get("heating") or {},
+                    "hot_water": self.savings.get("hot_water") or 0.0,
+                },
+            }
         if self.measures_heat_pump:
             self.hp_cost = optcost.roll(self.hp_cost, day)
-        for result in heating:
-            prev = self.heating.get(result.system)
-            if prev is not None and prev.plan is not None:
-                since = max(prev.planned_at, day_start)
-                banked[result.system] = banked.get(result.system, 0.0) + savings_between(prev.plan, since, now)
-                if self.measures_heat_pump:
+            for result in heating:
+                prev = self.heating.get(result.system)
+                if prev is not None and prev.plan is not None:
+                    since = max(prev.planned_at, day_start)
                     optcost.add_planned(
                         self.hp_cost, "heating", *optcost.energy_between(prev.plan.plan.steps, since, now)
                     )
                     optcost.add_planned(
                         self.hp_cost, "baseline", *optcost.energy_between(prev.plan.baseline.steps, since, now)
                     )
-            ahead = savings_between(result.plan, now, day_end) if result.plan is not None else 0.0
-            today[result.system] = banked.get(result.system, 0.0) + ahead
-        # Hot water: spread over the plan's span by time.
-        prev_tank = self.tank
-        hw_banked = float(self.savings.get("hot_water") or 0.0)
-        if prev_tank is not None and prev_tank.plan is not None and prev_tank.plan.steps:
-            span = (prev_tank.plan.steps[0].start, prev_tank.plan.steps[-1].end)
-            hw_banked += prev_tank.plan.savings * time_share(max(prev_tank.planned_at, day_start), now, *span)
-            if self.measures_heat_pump:
+            prev_tank = self.tank
+            if prev_tank is not None and prev_tank.plan is not None and prev_tank.plan.steps:
                 optcost.add_planned(
                     self.hp_cost, "hot_water",
                     *optcost.energy_between(prev_tank.plan.steps, max(prev_tank.planned_at, day_start), now),
                 )
-        self.savings["hot_water"] = hw_banked
-        if tank is not None and tank.plan is not None and tank.plan.steps:
+
+        def applied_spans(key: str, start: datetime, end: datetime):
+            return self.applied.spans(key, start, end)
+
+        def all_spans(key: str, start: datetime, end: datetime):
+            return [(start, end)] if end > start else []
+
+        self.savings_today = self._bank(
+            self.savings, now, day_start, day_end, heating, tank, applied_spans, self.applied.applied_now
+        )
+        self.savings_if_applied = self._bank(
+            self.savings.setdefault("if_applied", {}), now, day_start, day_end, heating, tank, all_spans,
+            lambda key: True,
+        )
+        self.applied.prune(day_start - timedelta(days=1))
+
+    def _bank(self, store, now, day_start, day_end, heating, tank, spans, applied_now) -> Dict[str, float]:
+        """One savings tally: bank the previous plans over ``spans`` into
+        ``store`` (``heating`` per system, ``hot_water``), return today's
+        expected total per key."""
+        banked: Dict[str, float] = store.setdefault("heating", {})
+        today: Dict[str, float] = {}
+        for result in heating:
+            prev = self.heating.get(result.system)
+            if prev is not None and prev.plan is not None:
+                since = max(prev.planned_at, day_start)
+                banked[result.system] = banked.get(result.system, 0.0) + sum(
+                    savings_between(prev.plan, a, b) for a, b in spans(result.system, since, now)
+                )
+            ahead = (
+                savings_between(result.plan, now, day_end)
+                if result.plan is not None and applied_now(result.system)
+                else 0.0
+            )
+            today[result.system] = banked.get(result.system, 0.0) + ahead
+        # Hot water: spread over the plan's span by time.
+        prev_tank = self.tank
+        hw_banked = float(store.get("hot_water") or 0.0)
+        if prev_tank is not None and prev_tank.plan is not None and prev_tank.plan.steps:
+            span = (prev_tank.plan.steps[0].start, prev_tank.plan.steps[-1].end)
+            since = max(prev_tank.planned_at, day_start)
+            hw_banked += prev_tank.plan.savings * sum(
+                time_share(a, b, *span) for a, b in spans(HOT_WATER, since, now)
+            )
+        store["hot_water"] = hw_banked
+        if tank is not None and tank.plan is not None and tank.plan.steps and applied_now(HOT_WATER):
             span = (tank.plan.steps[0].start, tank.plan.steps[-1].end)
             today["hot_water"] = hw_banked + tank.plan.savings * time_share(now, day_end, *span)
         elif hw_banked:
             today["hot_water"] = hw_banked
-        self.savings_today = today
-
+        return today
 
 def _plan_too_old():
     return msg("opt.plan_old", minutes=int(PLAN_MAX_AGE.total_seconds() // 60))

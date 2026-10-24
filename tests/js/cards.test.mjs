@@ -104,8 +104,8 @@ function makeHass() {
     "sensor.hw_draw": { state: iso(now + 6 * H), attributes: { confidence: 0.8 } },
     "sensor.hw_opt": { state: "unknown", attributes: { enabled: false, blocks: [] } },
     "sensor.hw_comfort_lease": { state: "error", attributes: { error: "refused" } },
-    "sensor.cost": { state: "12.34", attributes: { unit_of_measurement: "SEK", predicted_cost: 11.5, cost_vs_predicted_pct: 7.3, yesterday: { cost: 20.1, cost_vs_predicted_pct: -2 } } },
-    "sensor.savings": { state: "3.5", attributes: { unit_of_measurement: "SEK", s1: 3.0, hot_water: 0.5, day: "x" } },
+    "sensor.cost": { state: "12.34", attributes: { unit_of_measurement: "SEK", predicted_cost: 11.5, cost_vs_predicted_pct: 7.3, plan_applied_share: 0.95, yesterday: { cost: 20.1, cost_vs_predicted_pct: -2, plan_applied_share: 0.4 } } },
+    "sensor.savings": { state: "3.5", attributes: { unit_of_measurement: "SEK", s1: 3.0, hot_water: 0.5, day: "x", applied: { s1: true, hot_water: false } } },
   };
   const calls = [];
   return {
@@ -354,6 +354,10 @@ test("plan, hot water, gateway and savings cards in Swedish", async () => {
   assert.match(sav, /12,34<span class="unit">SEK/);
   assert.match(sav, /\+7,3 % mot planen/);
   assert.match(sav, /Kostnad igår/);
+  // Yesterday the plan steered only 40 % of the day: no gap, a note instead.
+  assert.doesNotMatch(sav, /-2,0 % mot planen/);
+  assert.match(sav, /planen styrde inte pumpen/);
+  assert.doesNotMatch(sav, /Ingen besparing räknas/);
   assert.match(sav, /Varmvatten 0,50/);
   await new Promise((r) => setTimeout(r, 0));
   assert.match(card.shadowRoot.innerHTML, /Kostnad per dag, 2 dagar/);
@@ -421,4 +425,17 @@ test("editor labels and helpers follow the language", async () => {
   assert.equal(form.computeLabel({ name: "other" }), "other");
   editor.hass = { locale: { language: "en" } };
   assert.equal(form.computeLabel({ name: "hours" }), "Hours ahead");
+});
+
+test("savings card when no plan steers the pump", () => {
+  const hass = swedish();
+  hass.states["sensor.savings"].attributes.applied = { s1: false, hot_water: false };
+  delete hass.states["sensor.cost"].attributes.plan_applied_share;
+  const sav = render("nibepi-savings-card", {}, hass).card.shadowRoot.innerHTML;
+  assert.match(sav, /Ingen besparing räknas medan optimeraren inte styr pumpen/);
+  hass.states["sensor.savings"].attributes.if_applied = 0.42;
+  const would = render("nibepi-savings-card", {}, hass).card.shadowRoot.innerHTML;
+  assert.match(would, /Om planerna hade tillämpats: 0,42 SEK idag/);
+  // An unknown share (older integration): neither the gap nor the note.
+  assert.doesNotMatch(sav, /mot planen/);
 });

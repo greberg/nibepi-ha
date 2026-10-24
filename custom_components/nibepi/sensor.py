@@ -711,6 +711,12 @@ class SavingsTodaySensor(NibePiEntity, SensorEntity):
         optimizer = self.runtime.optimizer
         attrs: Dict[str, Any] = {k: _money(v) for k, v in optimizer.savings_today.items()}
         attrs["day"] = optimizer.savings.get("day")
+        # Whether each plan steers the pump now; savings only count while it does.
+        attrs["applied"] = {key: optimizer.applied.applied_now(key) for key in optimizer.savings_today}
+        # What the plans would have saved had they all been applied (shadow mode,
+        # closed gate): for judging the optimiser before switching it on.
+        if_applied = optimizer.savings_if_applied
+        attrs["if_applied"] = _money(sum(if_applied.values())) if if_applied else None
         return attrs
 
 

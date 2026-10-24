@@ -15,6 +15,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
 from . import NibePiConfigEntry
+from .logic import optcost
 from .logic.lease import LeaseManager
 from .logic.optrun import models_summary
 from .runtime import NibePiRuntime
@@ -168,6 +169,14 @@ def _optimizer(runtime: NibePiRuntime) -> Dict[str, Any]:
         ),
         "savings": optimizer.savings,
         "savings_today": optimizer.savings_today,
+        "savings_if_applied": optimizer.savings_if_applied,
+        "applied_now": {key: optimizer.applied.applied_now(key) for key in optimizer.savings_today},
+        # Measured vs predicted heat pump electricity today (and yesterday).
+        "hp_cost": (
+            dict(optcost.summary(optimizer.hp_cost), yesterday=optimizer.hp_cost.get("yesterday"))
+            if optimizer.hp_cost.get("day")
+            else None
+        ),
         "history": {
             "bins": len(log),
             "first": datetime.fromtimestamp(span[0], timezone.utc).isoformat() if span else None,

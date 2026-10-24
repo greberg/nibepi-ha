@@ -93,6 +93,7 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(decision.targets[REG_PERIOD], 0)
         self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
         self.assertEqual(decision.details["plan_source"], "optimiser")
+        self.assertTrue(decision.details["plan_applied"])
         self.assertEqual(decision.reasons["optimiser"], "drives the charges")
         self.assertEqual(decision.next_heat, rig.now - timedelta(minutes=10))
         # BT7 reaches the block's target: the charge ends, the run is closed.
@@ -132,6 +133,7 @@ class ControllerTest(unittest.TestCase):
         decision = rig.decide(optimiser=True, vv_control=True)
         self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
         self.assertEqual(decision.details["plan_source"], "vv_ai")
+        self.assertFalse(decision.details["plan_applied"])
         self.assertIn("VV-AI plan used", decision.reasons["optimiser"])
 
     def test_regulation_takes_precedence(self) -> None:
@@ -143,6 +145,9 @@ class ControllerTest(unittest.TestCase):
         # The optimiser's blocks are not written either, and it says so.
         self.assertTrue(decision.reasons["optimiser"].startswith("planned but not applied"))
         self.assertEqual(decision.reasons["optimiser"].code, "hw.opt_blocked")
+        # Blocked: no savings may be counted for it.
+        self.assertEqual(decision.details["plan_source"], "optimiser")
+        self.assertFalse(decision.details["plan_applied"])
 
     def test_off_by_default(self) -> None:
         rig = Rig(local(2026, 10, 6, 12, 0))

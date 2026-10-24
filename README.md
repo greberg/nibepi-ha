@@ -604,13 +604,17 @@ error.
    24 h indoor prediction error) around 0.25 °C or less.
 3. For a few days, compare *Optimiser plan*'s `plan_24h` predicted indoor
    temperature with the real one; expect them within about 0.3 °C, and
-   *Expected savings today* above 0 on most days.
+   *Expected savings today*'s `if_applied` (what the plans would have
+   saved) above 0 on most days.
 4. Set the strategy to `optimiser` (with the mode `active`). Watch the
    indoor temperature for a week; if it often goes under the band, widen
    the band or raise the setpoint, or go back to `rules`. With a heat
    pump meter, *Heat pump cost today*'s `cost_vs_predicted_pct` now
    measures the energy model: a day-after-day gap of more than about
-   15 % means the efficiency or the emitter fit is off.
+   15 % means the efficiency or the emitter fit is off. (It is only given
+   when the plans steered the pump for at least 90 % of the measured
+   time, `plan_applied_share`; before that it would compare the plan with
+   what the rules did.)
 
 ### Hot water charges
 
@@ -661,14 +665,20 @@ Shared:
 
 - `sensor` Expected savings today (the price currency): what the plans
   expect to save today against the base offset, heating per system and
-  hot water as attributes. It is an expectation from the model, made in
-  shadow mode too, not a measurement.
+  hot water as attributes. It is an expectation from the model, not a
+  measurement, and counts only the time a plan actually steered the pump:
+  in shadow mode, with the gate closed (low model confidence, missing
+  inputs) or with a hot water plan blocked by the pump's settings it stays
+  at 0. `applied` says per plan whether it steers the pump now;
+  `if_applied` is what the plans would have saved had they all been
+  applied.
 - `sensor` Heat pump cost today (the price currency), with a heat pump
   meter only: the meter's kWh priced per slot; attributes `kwh`,
   `predicted_cost`, `predicted_kwh`, `predicted_heating_cost`,
   `predicted_hot_water_cost`, `baseline_heating_cost`,
-  `cost_vs_predicted_pct`, `hours_measured`, `unpriced_kwh` and
-  `yesterday`.
+  `cost_vs_predicted_pct` (only when the plans steered the pump for at
+  least 90 % of the measured time), `plan_applied_share`,
+  `hours_measured`, `unpriced_kwh` and `yesterday`.
 
   Both are daily totals (state class `total`, reset at local midnight),
   so the long-term statistics give the savings and the cost per day.
@@ -856,8 +866,10 @@ status_url: http://nibepi.local:8080
 ```
 
 **Cost and savings**: the heat pump's cost today (with a heat pump meter)
-and the optimiser's expected savings today, the predicted cost so far and
-the gap, yesterday's cost and savings, and 7-day sparklines of both from
+and the optimiser's expected savings today (only while it steers the
+pump; otherwise the card says so and shows what its plans would have
+saved), the predicted cost so far and the gap (or that the plan was not
+steering), yesterday's cost and savings, and 7-day sparklines of both from
 the long-term statistics (left out until there are two days).
 
 ```yaml

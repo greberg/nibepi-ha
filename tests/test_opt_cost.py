@@ -32,8 +32,8 @@ class CostTest(unittest.TestCase):
 
     def test_day_tally(self) -> None:
         tally = optcost.roll({}, "2026-01-15")
-        optcost.add_measured(tally, 0.5, 2.0)
-        optcost.add_measured(tally, 0.25, None)
+        optcost.add_measured(tally, 0.5, 2.0, applied=True)
+        optcost.add_measured(tally, 0.25, None, applied=True)
         optcost.add_planned(tally, "heating", 0.6, 1.0)
         optcost.add_planned(tally, "hot_water", 0.1, 0.25)
         optcost.add_planned(tally, "baseline", 0.8, 1.5)
@@ -48,6 +48,27 @@ class CostTest(unittest.TestCase):
         self.assertEqual(nxt["yesterday"]["cost"], 1.0)
         self.assertNotIn("yesterday", nxt["yesterday"])
         self.assertIsNone(optcost.summary(optcost.new_day("x"))["cost_vs_predicted_pct"])
+
+    def test_gap_only_when_the_plans_steered(self) -> None:
+        tally = optcost.roll({}, "2026-01-15")
+        optcost.add_planned(tally, "heating", 1.0, 2.0)
+        for i in range(10):
+            optcost.add_measured(tally, 0.1, 1.0, applied=i < 9)
+        s = optcost.summary(tally)
+        self.assertEqual(s["plan_applied_share"], 0.9)
+        self.assertEqual(s["cost_vs_predicted_pct"], -50.0)
+        # One more bin with the rules steering: below 90 %, no gap.
+        optcost.add_measured(tally, 0.1, 1.0)
+        s = optcost.summary(tally)
+        self.assertEqual(s["plan_applied_share"], 0.82)
+        self.assertIsNone(s["cost_vs_predicted_pct"])
+        self.assertEqual(s["predicted_cost"], 2.0)
+
+    def test_tally_from_before_applied_tracking_has_no_gap(self) -> None:
+        old = {"day": "2026-01-15", "kwh": 1.0, "cost": 1.0, "bins": 6, "planned": {"heating": [1.0, 2.0]}}
+        s = optcost.summary(old)
+        self.assertEqual(s["plan_applied_share"], 0.0)
+        self.assertIsNone(s["cost_vs_predicted_pct"])
 
 
 if __name__ == "__main__":

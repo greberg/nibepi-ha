@@ -995,6 +995,9 @@ class NibePiRuntime:
                         event.verdict, event.span, event.minutes, event.rate, event.reason,
                     )
                 hw.decision = hw.controller.decide(hw.mode, hw.features, inputs, settings, sample)
+                self.optimizer.mark_hot_water(
+                    now, hw.mode == MODE_ACTIVE and bool(hw.decision.details.get("plan_applied"))
+                )
                 hw.healthy = True
                 hw.error = None
             except Exception as err:  # noqa: BLE001 - release, the gateway restores
@@ -1173,7 +1176,7 @@ class NibePiRuntime:
         try:
             # Heating strategy "optimiser": its offset replaces the sum
             # while the gate allows it.
-            sys.plan = self.optimizer.decide(sys.system, now, rules, reference)
+            sys.plan = self.optimizer.decide(sys.system, now, rules, reference, active=sys.mode == MODE_ACTIVE)
         except Exception:  # noqa: BLE001 - fall back to the rules
             _LOGGER.exception("NibePi %s optimiser decision failed; using the rules", sys.system)
             sys.plan = rules

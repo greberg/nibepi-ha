@@ -59,6 +59,9 @@ const SYSTEM_LABEL = (system) => String(system || "").toUpperCase();
 
 // Problems from resolveEntities() shown instead of the card.
 const PROBLEMS = new Set(["no_entry", "unknown_entry"]);
+// Share of the day the plans must have steered the pump for the cost
+// card to compare measured with predicted (as MIN_APPLIED_SHARE in optcost.py).
+const APPLIED_SHARE_MIN = 0.9;
 
 const STYLES = `
   :host { display: block; }
@@ -1002,7 +1005,16 @@ class NibePiSavingsCard extends NibePiCard {
     const cur = esc(m.currency);
     const money = (v) => (v === null ? "–" : `${this.n(v, 2)} ${cur}`);
     const bigMoney = (v) => (v === null ? "–" : `${this.n(v, 2)}<span class="unit">${cur}</span>`);
-    const gap = (pct) => (pct === null ? "" : ` <span class="muted small">${esc(this.t("sav.vs_plan", { pct: this.signed(pct, 1) }))}</span>`);
+    // The gap is the model's error only when the plans steered the pump;
+    // otherwise say so (an unknown share, e.g. a figure from an older
+    // version, shows nothing).
+    const gap = (pct, share) => {
+      if (share !== null && share < APPLIED_SHARE_MIN) {
+        return ` <span class="muted small">${esc(this.t("sav.not_applied"))}</span>`;
+      }
+      if (pct === null || share === null) return "";
+      return ` <span class="muted small">${esc(this.t("sav.vs_plan", { pct: this.signed(pct, 1) }))}</span>`;
+    };
     const label = (key) => `<span class="label">${esc(this.t(key))}</span>`;
 
     const costHist = this._history("heat_pump_cost_today", now);
@@ -1028,8 +1040,8 @@ class NibePiSavingsCard extends NibePiCard {
       ${savings ? this.stat("optimiser_savings_today", this.t("sav.savings_today"), bigMoney(m.savingsToday), "big") : ""}
     </div>`;
     const detail = `<div class="grid">
-      ${cost ? `<div class="stat">${label("sav.predicted")}<span class="value">${money(m.predictedCost)}${gap(m.gapPct)}</span></div>` : ""}
-      ${m.yesterday ? `<div class="stat">${label("sav.cost_yesterday")}<span class="value">${money(m.yesterday.cost)}${gap(m.yesterday.gapPct)}</span></div>` : ""}
+      ${cost ? `<div class="stat">${label("sav.predicted")}<span class="value">${money(m.predictedCost)}${gap(m.gapPct, m.appliedShare)}</span></div>` : ""}
+      ${m.yesterday ? `<div class="stat">${label("sav.cost_yesterday")}<span class="value">${money(m.yesterday.cost)}${gap(m.yesterday.gapPct, m.yesterday.appliedShare)}</span></div>` : ""}
       ${isYesterday ? `<div class="stat">${label("sav.saved_yesterday")}<span class="value">${money(savedYesterday.value)}</span></div>` : ""}
     </div>`;
     const parts = m.savingsParts.length
@@ -1039,7 +1051,15 @@ class NibePiSavingsCard extends NibePiCard {
       : "";
     const sparks = `${spark(costHist, "sav.cost_per_day", "var(--warning-color, #ffa600)")}${spark(saveHist, "sav.savings_per_day", "var(--success-color, #43a047)")}`;
     const costNote = cost && m.costToday === null ? `<div class="sub">${esc(this.t("sav.cost_note"))}</div>` : "";
-    return `<div class="content">${today}${detail}${parts}${sparks ? `<div class="grid">${sparks}</div>` : ""}${costNote}</div>`;
+    const savingsNote =
+      savings && m.savingsApplied === false
+        ? `<div class="sub">${esc(
+            m.savingsIfApplied === null
+              ? this.t("sav.savings_off")
+              : this.t("sav.savings_off_would", { value: this.n(m.savingsIfApplied, 2), currency: m.currency }),
+          )}</div>`
+        : "";
+    return `<div class="content">${today}${detail}${parts}${savingsNote}${sparks ? `<div class="grid">${sparks}</div>` : ""}${costNote}</div>`;
   }
 }
 

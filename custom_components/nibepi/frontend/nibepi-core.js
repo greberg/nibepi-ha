@@ -765,13 +765,23 @@ export function savingsModel(cost, savings, loc) {
     savingsToday: num(savings),
     predictedCost: toNumber(ca.predicted_cost),
     gapPct: toNumber(ca.cost_vs_predicted_pct),
+    appliedShare: toNumber(ca.plan_applied_share),
+    // null: unknown (older integration); false: no plan steers the pump now.
+    savingsApplied: sa.applied && typeof sa.applied === "object" ? Object.values(sa.applied).some(Boolean) : null,
+    savingsIfApplied: toNumber(sa.if_applied),
     hoursMeasured: toNumber(ca.hours_measured),
     savingsParts: Object.entries(sa)
       .filter(([k, v]) => k !== "day" && k !== "unit_of_measurement" && typeof v === "number")
       .filter(([k]) => !["state_class", "last_reset", "device_class", "friendly_name", "icon"].includes(k))
       .map(([k, v]) => ({ key: k, label: k === "hot_water" ? t(loc, "sav.hot_water") : k.toUpperCase(), value: v })),
     yesterday: y
-      ? { cost: toNumber(y.cost), predictedCost: toNumber(y.predicted_cost), gapPct: toNumber(y.cost_vs_predicted_pct), day: y.day || null }
+      ? {
+          cost: toNumber(y.cost),
+          predictedCost: toNumber(y.predicted_cost),
+          gapPct: toNumber(y.cost_vs_predicted_pct),
+          appliedShare: toNumber(y.plan_applied_share),
+          day: y.day || null,
+        }
       : null,
   };
 }
