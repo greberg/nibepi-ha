@@ -771,7 +771,8 @@ export function savingsModel(cost, savings, loc) {
     savingsIfApplied: toNumber(sa.if_applied),
     hoursMeasured: toNumber(ca.hours_measured),
     savingsParts: Object.entries(sa)
-      .filter(([k, v]) => k !== "day" && k !== "unit_of_measurement" && typeof v === "number")
+      // if_applied is what the plans would have saved, not a part of today's savings.
+      .filter(([k, v]) => !["day", "unit_of_measurement", "if_applied"].includes(k) && typeof v === "number")
       .filter(([k]) => !["state_class", "last_reset", "device_class", "friendly_name", "icon"].includes(k))
       .map(([k, v]) => ({ key: k, label: k === "hot_water" ? t(loc, "sav.hot_water") : k.toUpperCase(), value: v })),
     yesterday: y

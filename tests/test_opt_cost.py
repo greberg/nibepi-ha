@@ -64,6 +64,28 @@ class CostTest(unittest.TestCase):
         self.assertIsNone(s["cost_vs_predicted_pct"])
         self.assertEqual(s["predicted_cost"], 2.0)
 
+    def test_a_late_bin_does_not_roll_back(self) -> None:
+        # Yesterday: 10 bins. The new day starts (a plan books at 00:00),
+        # then the 23:50 bin arrives: it must go to yesterday, not replace it.
+        tally = optcost.roll({}, "2026-10-29")
+        for _ in range(10):
+            optcost.add_measured(tally, 0.5, 2.0, applied=True)
+        tally = optcost.roll(tally, "2026-10-30")
+        self.assertEqual(tally["yesterday"]["cost"], 10.0)
+        self.assertIs(optcost.roll(tally, "2026-10-29"), tally)
+        late = optcost.bucket(tally, "2026-10-29")
+        self.assertIs(late, tally["previous"])
+        optcost.add_measured(late, 0.5, 2.0, applied=True)
+        optcost.refresh(tally)
+        self.assertEqual(tally["day"], "2026-10-30")
+        self.assertEqual(tally["yesterday"]["cost"], 11.0)
+        self.assertEqual(tally["yesterday"]["hours_measured"], round(11 / 6.0, 1))
+        self.assertIsNone(optcost.bucket(tally, "2026-10-28"))
+        # The next day keeps only one previous day, not a chain.
+        nxt = optcost.roll(tally, "2026-10-31")
+        self.assertEqual(nxt["previous"]["day"], "2026-10-30")
+        self.assertNotIn("previous", nxt["previous"])
+
     def test_tally_from_before_applied_tracking_has_no_gap(self) -> None:
         old = {"day": "2026-01-15", "kwh": 1.0, "cost": 1.0, "bins": 6, "planned": {"heating": [1.0, 2.0]}}
         s = optcost.summary(old)

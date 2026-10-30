@@ -61,15 +61,41 @@ def new_day(day: str, previous: Optional[Mapping[str, Any]] = None) -> Dict[str,
         "planned": {key: [0.0, 0.0] for key in PLANNED_KEYS},
     }
     if previous and previous.get("day") and previous.get("day") != day:
+        # Kept raw so a late bin of that day can still be added (``bucket``).
+        tally["previous"] = {k: v for k, v in previous.items() if k not in ("previous", "yesterday")}
         tally["yesterday"] = summary(previous)
     return tally
 
 
 def roll(tally: Any, day: str) -> Dict[str, Any]:
-    """The tally for ``day``: the same one, or a new one remembering the last."""
-    if isinstance(tally, dict) and tally.get("day") == day and isinstance(tally.get("planned"), dict):
-        return tally
+    """The tally for ``day``: the same one, or a new one remembering the last.
+
+    Never back: a meter bin ending at midnight is counted just after the
+    new day has started, and rolling back to its day would replace the
+    previous day's tally with that one bin (and lose today's)."""
+    if isinstance(tally, dict) and isinstance(tally.get("planned"), dict):
+        current = tally.get("day")
+        if current == day or (isinstance(current, str) and day < current):
+            return tally
     return new_day(day, tally if isinstance(tally, Mapping) else None)
+
+
+def bucket(tally: Dict[str, Any], day: str) -> Optional[Dict[str, Any]]:
+    """The raw tally to add ``day``'s figures to: today's or the previous
+    day's; None for anything older."""
+    if tally.get("day") == day:
+        return tally
+    previous = tally.get("previous")
+    if isinstance(previous, dict) and previous.get("day") == day and isinstance(previous.get("planned"), dict):
+        return previous
+    return None
+
+
+def refresh(tally: Dict[str, Any]) -> None:
+    """Recompute ``yesterday`` after the previous day's tally changed."""
+    previous = tally.get("previous")
+    if isinstance(previous, dict):
+        tally["yesterday"] = summary(previous)
 
 
 def add_measured(tally: Dict[str, Any], kwh: float, price: Optional[float], applied: bool = False) -> None:

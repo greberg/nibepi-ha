@@ -518,9 +518,15 @@ class OptimizerRuntime:
         when = datetime.fromtimestamp(start, timezone.utc)
         prices = scale_prices(self.rt.price_slots, self.rt.opt(OPT_PRICE_UNIT_FACTOR))
         price = optcost.price_at(prices, when + timedelta(seconds=STEP_S / 2))
-        self.hp_cost = optcost.roll(self.hp_cost, self._local_day(when))
+        day = self._local_day(when)
+        self.hp_cost = optcost.roll(self.hp_cost, day)
+        tally = optcost.bucket(self.hp_cost, day)
+        if tally is None:
+            return
         share = self.applied.share(self._plan_keys(), when, when + timedelta(seconds=STEP_S))
-        optcost.add_measured(self.hp_cost, kwh, price, applied=share is not None and share >= 0.5)
+        optcost.add_measured(tally, kwh, price, applied=share is not None and share >= 0.5)
+        if tally is not self.hp_cost:
+            optcost.refresh(self.hp_cost)
 
     # -- bootstrap from the recorder ----------------------------------------
 
@@ -1047,22 +1053,27 @@ class OptimizerRuntime:
             }
         if self.measures_heat_pump:
             self.hp_cost = optcost.roll(self.hp_cost, day)
+            # A plan made before midnight: its part up to midnight goes to
+            # the previous day, which no booking covers otherwise.
+            yesterday_start = dt_util.start_of_local_day(dt_util.as_local(day_start - timedelta(hours=12)))
+            yesterday = optcost.bucket(self.hp_cost, yesterday_start.date().isoformat())
+
+            def book(key: str, steps, planned_at: datetime) -> None:
+                optcost.add_planned(self.hp_cost, key, *optcost.energy_between(steps, max(planned_at, day_start), now))
+                if yesterday is not None and planned_at < day_start:
+                    optcost.add_planned(
+                        yesterday, key, *optcost.energy_between(steps, max(planned_at, yesterday_start), day_start)
+                    )
+
             for result in heating:
                 prev = self.heating.get(result.system)
                 if prev is not None and prev.plan is not None:
-                    since = max(prev.planned_at, day_start)
-                    optcost.add_planned(
-                        self.hp_cost, "heating", *optcost.energy_between(prev.plan.plan.steps, since, now)
-                    )
-                    optcost.add_planned(
-                        self.hp_cost, "baseline", *optcost.energy_between(prev.plan.baseline.steps, since, now)
-                    )
+                    book("heating", prev.plan.plan.steps, prev.planned_at)
+                    book("baseline", prev.plan.baseline.steps, prev.planned_at)
             prev_tank = self.tank
             if prev_tank is not None and prev_tank.plan is not None and prev_tank.plan.steps:
-                optcost.add_planned(
-                    self.hp_cost, "hot_water",
-                    *optcost.energy_between(prev_tank.plan.steps, max(prev_tank.planned_at, day_start), now),
-                )
+                book("hot_water", prev_tank.plan.steps, prev_tank.planned_at)
+            optcost.refresh(self.hp_cost)
 
         def applied_spans(key: str, start: datetime, end: datetime):
             return self.applied.spans(key, start, end)

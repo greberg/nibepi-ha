@@ -436,6 +436,7 @@ test("savings card when no plan steers the pump", () => {
   hass.states["sensor.savings"].attributes.if_applied = 0.42;
   const would = render("nibepi-savings-card", {}, hass).card.shadowRoot.innerHTML;
   assert.match(would, /Om planerna hade tillämpats: 0,42 SEK idag/);
+  assert.doesNotMatch(would, /IF_APPLIED/);
   // An unknown share (older integration): neither the gap nor the note.
   assert.doesNotMatch(sav, /mot planen/);
 });
