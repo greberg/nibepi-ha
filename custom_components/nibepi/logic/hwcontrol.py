@@ -389,6 +389,8 @@ class HotWaterController:
         floor = bool(settings.floor_enabled) and floor_temp is not None
         # (reason, is a missing input) when VV-AI control must not drive.
         blocked: Optional[Tuple[Msg, bool]] = None
+        # VV-AI control (or the optimiser's blocks) drives the charges.
+        in_charge = False
         # Away economy (or minimum that cannot hold 47134): the pump heats
         # hot water itself in economy mode, the floor via a one-time increase.
         pump_heats = False
@@ -446,6 +448,7 @@ class HotWaterController:
                 faults.append("vv_control")
         else:
             targets[REG_PERIOD] = 0
+            in_charge = True
             result = self.vv.decide(
                 bt7, now, inputs.tz, windows, stops, bool(settings.floor_enabled), floor_temp, use_price
             )
@@ -457,6 +460,16 @@ class HotWaterController:
 
         if sources:
             targets[REG_TEMP_LUX] = TEMP_LUX_START
+
+        # 47134 = 0 only holds hot water back while there is heating demand;
+        # without it the pump starts charges itself at the comfort mode's
+        # start temperature (luxury: 46 °C). While in charge, hold economy
+        # (start 40 °C), so the pump's own charges are only a fallback; ours
+        # use temporary lux and heat to the luxury stop anyway. The gateway
+        # restores the pump's own mode on release. Before price comfort mode.
+        if in_charge and not reduced:
+            targets[REG_COMFORT] = 0
+            reasons["price_comfort"] = msg("hw.economy_in_charge")
 
         # Legionella cycle: first priority, Away included.
         reasons["legionella"] = legionella.reason

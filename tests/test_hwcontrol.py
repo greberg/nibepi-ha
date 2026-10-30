@@ -216,13 +216,16 @@ class LeaseTest(unittest.TestCase):
         return {lease.register: action for lease, action in actions}
 
     def test_active_sets_all_three(self) -> None:
+        # Price comfort would say normal (CHEAP), but while VV-AI control is
+        # in charge 47041 is held at economy so the pump starts no charges.
         self.rig.price_level = "CHEAP"
         decision = self.rig.decide(vv_control=True, price_comfort=True)
+        self.assertEqual(decision.reasons["price_comfort"].code, "hw.economy_in_charge")
         actions = self.apply(MODE_ACTIVE, decision)
         self.assertEqual(
             actions,
             {
-                REG_COMFORT: LeaseAction("set", 1),
+                REG_COMFORT: LeaseAction("set", 0),
                 REG_PERIOD: LeaseAction("set", 0),
                 REG_TEMP_LUX: LeaseAction("set", 4),
             },
@@ -250,14 +253,19 @@ class LeaseTest(unittest.TestCase):
         self.apply(MODE_ACTIVE, decision)
         actions = self.apply(MODE_SHADOW, decision)
         self.assertEqual(
-            actions, {REG_PERIOD: LeaseAction("release"), REG_TEMP_LUX: LeaseAction("release")}
+            actions,
+            {
+                REG_COMFORT: LeaseAction("release"),
+                REG_PERIOD: LeaseAction("release"),
+                REG_TEMP_LUX: LeaseAction("release"),
+            },
         )
 
     def test_unhealthy_tick_releases(self) -> None:
         decision = self.rig.decide(vv_control=True)
         self.apply(MODE_ACTIVE, decision)
         actions = self.apply(MODE_ACTIVE, decision, healthy=False)
-        self.assertEqual(set(actions), {REG_PERIOD, REG_TEMP_LUX})
+        self.assertEqual(set(actions), {REG_COMFORT, REG_PERIOD, REG_TEMP_LUX})
         self.assertEqual({a.kind for a in actions.values()}, {"release"})
 
     def test_stale_input_releases(self) -> None:
@@ -265,25 +273,44 @@ class LeaseTest(unittest.TestCase):
         self.rig.age[REG_BT7] = 120
         self.rig.held = self.leases.held()
         actions = self.apply(MODE_ACTIVE, self.rig.decide(vv_control=True))
+        # Blocked (stale BT7): the pump's own comfort mode is restored too.
         self.assertEqual(
-            actions, {REG_PERIOD: LeaseAction("release"), REG_TEMP_LUX: LeaseAction("release")}
+            actions,
+            {
+                REG_COMFORT: LeaseAction("release"),
+                REG_PERIOD: LeaseAction("release"),
+                REG_TEMP_LUX: LeaseAction("release"),
+            },
         )
 
     def test_grace_sends_nothing_in_active_mode(self) -> None:
         decision = self.rig.decide(vv_control=True)
         self.assertEqual(self.apply(MODE_ACTIVE, decision, in_grace=True), {})
         self.assertEqual(self.apply(MODE_ACTIVE, decision), {
-            REG_PERIOD: LeaseAction("set", 0), REG_TEMP_LUX: LeaseAction("set", 4)
+            REG_COMFORT: LeaseAction("set", 0), REG_PERIOD: LeaseAction("set", 0), REG_TEMP_LUX: LeaseAction("set", 4)
         })
 
     def test_release_all(self) -> None:
         self.apply(MODE_ACTIVE, self.rig.decide(vv_control=True))
         released = {lease.register for lease, _ in self.leases.release_all()}
-        self.assertEqual(released, {REG_PERIOD, REG_TEMP_LUX})
+        self.assertEqual(released, {REG_COMFORT, REG_PERIOD, REG_TEMP_LUX})
 
     def test_limits(self) -> None:
         lease = self.leases.leases[REG_COMFORT]
         self.assertEqual(lease.decide(MODE_ACTIVE, 7, True), LeaseAction("set", 2))
+
+    def test_economy_only_while_in_charge(self) -> None:
+        # In charge (holding 47134): economy, also during a charge.
+        decision = self.rig.decide(vv_control=True)
+        self.assertEqual(decision.targets[REG_PERIOD], 0)
+        self.assertEqual(decision.targets[REG_COMFORT], 0)
+        # Blocked by the pump's period 0: not in charge, 47041 left alone.
+        self.rig.values[REG_PERIOD] = 0.0
+        decision = self.rig.decide(vv_control=True)
+        self.assertIsNone(decision.targets[REG_PERIOD])
+        self.assertIsNone(decision.targets[REG_COMFORT])
+        # Neither feature on: 47041 left alone.
+        self.assertIsNone(self.rig.decide().targets[REG_COMFORT])
 
 
 class LegionellaTest(unittest.TestCase):
@@ -305,6 +332,7 @@ class LegionellaTest(unittest.TestCase):
         self.assertEqual(decision.targets[47047], 60.0)
         self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
         self.assertIsNone(decision.targets[REG_PERIOD], "47134 released so the pump may charge")
+        self.assertEqual(decision.targets[REG_COMFORT], 0, "economy kept: the cycle runs on temporary lux")
         self.assertIn("legionella", decision.details["heat_sources"])
         # Away economy does not pause it.
         inputs = replace(rig.inputs(), away="economy")

@@ -267,7 +267,7 @@ It has its own **Hot water mode** select (`off` / `shadow` (default) /
 | Switch | Default | What it does | Registers |
 |---|---|---|---|
 | Hot water learning | on | Learns a weekly draw profile from BT6 (in shadow and active) | none |
-| Hot water VV-AI control | off | Holds the hot water period at 0 and starts charges itself before the learned draws, to the stop temperature of the day's mode; a min-temp floor on BT7 | 47134, 48132 |
+| Hot water VV-AI control | off | Holds the hot water period at 0 and the comfort mode at economy, and starts charges itself before the learned draws, to the stop temperature of the day's mode; a min-temp floor on BT7 | 47134, 47041, 48132 |
 | Hot water automatic luxury | off | A one-time increase when BT6 falls fast | 48132 |
 | Hot water priority | off | A one-time increase when BT7 reaches the start temperature | 48132 |
 | Hot water comfort mode by price | off | Comfort mode (economy/normal/luxury) per price level | 47041 |
@@ -290,8 +290,17 @@ leases (`ttl` 900 s, renewed every 5 minutes):
   pump's period reads 0 (the gateway would capture 0 and restore it), nor
   without the stop temperatures, nor with nothing learned and the floor
   off.
-- 47041 comfort mode is released (baseline) when the price for the
-  current hour is missing or the level's setting is *Unchanged*.
+- 47041 comfort mode is held at economy while VV-AI control (or the
+  optimiser's charges) is in charge: 47134 = 0 only holds hot water back
+  while there is heating demand, and without it the pump would start its
+  own charges at the comfort mode's start temperature (luxury 46 °C). In
+  economy its own start (40 °C) is only a fallback below the floor; the
+  integration's charges use temporary lux and heat to the luxury stop.
+  This wins over price comfort mode. On release the gateway restores the
+  pump's own mode.
+- Otherwise 47041 follows price comfort mode, and is released (baseline)
+  when the price for the current hour is missing or the level's setting is
+  *Unchanged*.
 - A stale or missing BT6/BT7 (sensor timeout), a failed tick, mode
   `shadow`/`off`, or unloading the integration releases the leases at
   once. If Home Assistant goes away, they expire after 15 minutes.

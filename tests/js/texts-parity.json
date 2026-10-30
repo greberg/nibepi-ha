@@ -143,6 +143,7 @@
 {"text": {"c": "hw.away_reduced", "p": {"away": "06:00"}}, "en": "away (06:00): economy mode, no planned charges or boosts", "sv": "Borta (06:00): ekonomiläge, inga planerade laddningar eller lyft", "sv_nested": "borta (06:00): ekonomiläge, inga planerade laddningar eller lyft"},
 {"text": {"c": "hw.away_unchanged", "p": {"away": {"c": "opt.no_plan_why", "p": {"why": {"c": "price.no_prices_in", "p": {"entity": "sensor.nordpool"}}}}}}, "en": "away (no plan (no prices in sensor.nordpool)): hot water unchanged", "sv": "Borta (ingen plan (inga priser i sensor.nordpool)): varmvattnet oförändrat", "sv_nested": "borta (ingen plan (inga priser i sensor.nordpool)): varmvattnet oförändrat"},
 {"text": {"c": "hw.away_economy"}, "en": "away: economy", "sv": "Borta: ekonomi", "sv_nested": "borta: ekonomi"},
+{"text": {"c": "hw.economy_in_charge"}, "en": "economy while the charges are controlled here, so the pump does not start its own", "sv": "Ekonomi medan laddningarna styrs härifrån, så att pumpen inte startar egna", "sv_nested": "ekonomi medan laddningarna styrs härifrån, så att pumpen inte startar egna"},
 {"text": {"c": "hw.away_off"}, "en": "away: off", "sv": "Borta: av", "sv_nested": "borta: av"},
 {"text": {"c": "hw.opt_drives"}, "en": "drives the charges", "sv": "Styr laddningarna", "sv_nested": "styr laddningarna"},
 {"text": {"c": "hw.opt_blocked", "p": {"reason": "sensor.indoor"}}, "en": "planned but not applied: sensor.indoor", "sv": "Planerad men tillämpas inte: sensor.indoor", "sv_nested": "planerad men tillämpas inte: sensor.indoor"},

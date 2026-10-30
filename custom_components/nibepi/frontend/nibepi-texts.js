@@ -149,6 +149,7 @@ export const TEXTS = {
   "hw.away_reduced": ["away ({away}): economy mode, no planned charges or boosts", "borta ({away}): ekonomiläge, inga planerade laddningar eller lyft"],
   "hw.away_unchanged": ["away ({away}): hot water unchanged", "borta ({away}): varmvattnet oförändrat"],
   "hw.away_economy": ["away: economy", "borta: ekonomi"],
+  "hw.economy_in_charge": ["economy while the charges are controlled here, so the pump does not start its own", "ekonomi medan laddningarna styrs härifrån, så att pumpen inte startar egna"],
   "hw.away_off": ["away: off", "borta: av"],
   "hw.opt_drives": ["drives the charges", "styr laddningarna"],
   "hw.opt_blocked": ["planned but not applied: {reason}", "planerad men tillämpas inte: {reason}"],

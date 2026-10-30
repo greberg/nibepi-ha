@@ -80,7 +80,9 @@ Everything above, with the same constants and defaults, as pure modules:
 
 One controller owns the three registers, so two features never write the
 same register: 48132 is 4 when any feature wants a charge, 47134 is 0 only
-while VV-AI control is in charge, 47041 comes from the price level only.
+while VV-AI control is in charge, 47041 is economy while VV-AI control is in
+charge (47134 = 0 does not stop the pump's own charges when there is no
+heating demand) and otherwise comes from the price level.
 As in Node-RED, automatic luxury or hot water priority on means VV-AI
 control stands aside.
 
