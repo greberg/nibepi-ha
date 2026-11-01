@@ -256,6 +256,29 @@ class ControlTest(unittest.TestCase):
         result = VvControl().decide(40.0, local(2026, 10, 6, 12), STHLM, [], STOPS, True, 55.0, False)
         self.assertEqual(result.target, 56.0)
 
+    def test_a_draw_reopens_a_closed_run(self) -> None:
+        self.assertTrue(self.decide(45.0, local(2026, 10, 6, 5, 10)).heat)
+        self.assertFalse(self.decide(48.0, local(2026, 10, 6, 5, 30)).heat)  # reached: closed
+        # Cooling a little stays closed.
+        self.assertFalse(self.decide(44.0, local(2026, 10, 6, 6, 0)).heat)
+        # A shower takes BT7 more than 5 °C under the reached 48: heat again.
+        result = self.decide(42.5, local(2026, 10, 6, 6, 10))
+        self.assertEqual((result.heat, result.target, result.source), (True, 48.0, "plan"))
+        self.assertEqual(result.reason.code, "vv.reopened")
+        self.assertIsNone(self.control.closed_until)
+        self.assertFalse(self.decide(48.0, local(2026, 10, 6, 6, 40)).heat)  # closed again
+
+    def test_a_new_source_opens_the_run(self) -> None:
+        self.control.set_source("vv_ai")
+        self.decide(45.0, local(2026, 10, 6, 5, 10))
+        self.decide(48.0, local(2026, 10, 6, 5, 30))
+        self.assertIsNotNone(self.control.closed_until)
+        self.control.set_source("vv_ai")  # same source: still closed
+        self.assertIsNotNone(self.control.closed_until)
+        self.control.set_source("optimiser")
+        self.assertIsNone(self.control.closed_until)
+        self.assertTrue(self.decide(46.0, local(2026, 10, 6, 6, 0)).heat)
+
     def test_floor_off(self) -> None:
         self.assertFalse(self.decide(20.0, local(2026, 10, 6, 12), floor=False).heat)
 

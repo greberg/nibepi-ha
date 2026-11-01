@@ -57,7 +57,11 @@ increase"), stopping it (48132 = 0) when BT7 (40013, hot water top) reaches
 the target. Priority: the min-temp floor (BT7 below `min_temp` → heat to
 `min_temp + 4`, at most the luxury stop temperature), then the plan (in a
 window, target = the stop temperature of the day's mode; once BT7 reaches it,
-the rest of the window is closed). Automatic luxury (BT6 fell `diff` °C
+the rest of the window is closed, until BT7 falls more than 5 °C under the
+target it reached (a draw used the charge: heat again), or the windows'
+source changes between VV-AI and the optimiser). While 47134 is held at 0
+and the house needs heat, the pump makes no hot water at all, so these
+charges and the floor are the only ones. Automatic luxury (BT6 fell `diff` °C
 within `time` minutes → 48132 = 4 until BT6 is 5 °C below where it started,
 or 1 °C under the stop temperature) and hot water priority (BT7 at the start
 temperature → 48132 = 4 until 1 °C under the stop temperature) switched

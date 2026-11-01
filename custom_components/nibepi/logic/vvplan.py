@@ -59,6 +59,10 @@ MIN_PEAK_GAP_H = 6
 FLOOR_MARGIN = 4.0  # °C over min_temp the floor heats to
 CHEAP_HOURS = 2
 RUN_LIMIT = timedelta(hours=24)
+# A closed run (target reached) opens again when BT7 falls this far under
+# the target it reached: a draw used the charge, and the run's window still
+# wants hot water.
+REOPEN_DROP = 5.0
 
 MODE_NAMES = {1: "economy", 2: "normal", 3: "luxury"}
 
@@ -425,6 +429,16 @@ class VvControl:
         self.floor_active = False
         self.floor_target: Optional[float] = None
         self.closed_until: Optional[datetime] = None
+        self.closed_target: Optional[float] = None
+        self.source: Optional[str] = None
+
+    def set_source(self, source: str) -> None:
+        """Where the windows come from (VV-AI or the optimiser). A run closed
+        on one source's windows says nothing about the other's: open it."""
+        if source != self.source:
+            self.closed_until = None
+            self.closed_target = None
+            self.source = source
 
     def decide(
         self,
@@ -487,12 +501,19 @@ class VvControl:
                 why = msg("vv.waiting", span=span)
             return ControlResult(False, window.target, "plan", why)
         if self.closed_until is not None and now < self.closed_until:
+            reached = self.closed_target if self.closed_target is not None else window.target
+            if bt7 < reached - REOPEN_DROP:
+                # A draw since: heat again instead of staying closed for the run.
+                self.closed_until = None
+                self.closed_target = None
+                return ControlResult(True, window.target, "plan", msg("vv.reopened", span=span, bt7=bt7))
             return ControlResult(
                 False, window.target, "plan", msg("vv.closed", span=span, until=_hm(self.closed_until, tz))
             )
         if bt7 < window.target:
             return ControlResult(True, window.target, "plan", msg("vv.heat", span=span, bt7=bt7))
         self.closed_until = run_end(windows, now)
+        self.closed_target = window.target
         return ControlResult(
             False, window.target, "plan", msg("vv.reached", span=span, bt7=bt7, until=_hm(self.closed_until, tz))
         )

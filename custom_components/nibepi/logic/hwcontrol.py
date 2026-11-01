@@ -449,6 +449,7 @@ class HotWaterController:
         else:
             targets[REG_PERIOD] = 0
             in_charge = True
+            self.vv.set_source("optimiser" if optimised else "vv_ai")
             result = self.vv.decide(
                 bt7, now, inputs.tz, windows, stops, bool(settings.floor_enabled), floor_temp, use_price
             )

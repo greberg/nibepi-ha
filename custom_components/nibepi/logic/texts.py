@@ -275,6 +275,10 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
     ),
     "vv.closed": ("{span}: done, closed until {until}", "{span}: klar, stängt till {until}"),
     "vv.heat": ("{span}: BT7 {bt7:.1f}, heat", "{span}: BT7 {bt7:.1f} °C, värmer"),
+    "vv.reopened": (
+        "{span}: BT7 {bt7:.1f} fell after the charge, heat again",
+        "{span}: BT7 {bt7:.1f} °C sjönk efter laddningen, värmer igen",
+    ),
     "vv.reached": (
         "{span}: BT7 {bt7:.1f} reached, closed until {until}",
         "{span}: BT7 {bt7:.1f} °C nådd, stängt till {until}",
