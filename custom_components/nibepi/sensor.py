@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.const import EntityCategory, UnitOfFrequency, UnitOfPower, UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfFrequency, UnitOfPower, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -64,6 +64,7 @@ async def async_setup_entry(
     entities.append(AwayUntilSensor(runtime))
     entities.append(SavingsTodaySensor(runtime))
     entities.append(HeatPumpCostTodaySensor(runtime))
+    entities.append(HeatPumpEnergyTodaySensor(runtime))
     entities.append(HotWaterActionSensor(runtime))
     entities.append(DrawProfileSensor(runtime))
     entities.append(HotWaterOptimiserSensor(runtime))
@@ -764,6 +765,36 @@ class HeatPumpCostTodaySensor(NibePiEntity, SensorEntity):
             attrs.update(cost_summary(tally))
             attrs["yesterday"] = tally.get("yesterday")
         return attrs
+
+
+class HeatPumpEnergyTodaySensor(NibePiEntity, SensorEntity):
+    """The heat pump's electricity today (kWh), from a heat pump meter.
+
+    The kWh behind *Heat pump cost today*: the meter's finished 10-minute
+    bins since local midnight. A daily total, so the long-term statistics
+    give the energy per day (the savings card's sparkline). Only with a
+    meter whose scope is the heat pump.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "heat_pump_energy_today")
+
+    @property
+    def last_reset(self) -> Optional[datetime]:
+        return _day_start(self.runtime.optimizer.hp_cost.get("day"))
+
+    @property
+    def native_value(self) -> Optional[float]:
+        optimizer = self.runtime.optimizer
+        tally = optimizer.hp_cost
+        if not optimizer.measures_heat_pump or tally.get("day") != dt_util.now().date().isoformat():
+            return None
+        return round(float(tally.get("kwh") or 0.0), 2)
 
 
 class HouseModelSensor(_SystemSensor):

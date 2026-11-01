@@ -66,6 +66,7 @@ function makeHass() {
     hw_comfort_lease_state: "sensor.hw_comfort_lease",
     heat_pump_cost_today: "sensor.cost",
     optimiser_savings_today: "sensor.savings",
+    heat_pump_energy_today: "sensor.energy",
   };
   const states = {
     "binary_sensor.nibe_gateway": {
@@ -104,7 +105,8 @@ function makeHass() {
     "sensor.hw_draw": { state: iso(now + 6 * H), attributes: { confidence: 0.8 } },
     "sensor.hw_opt": { state: "unknown", attributes: { enabled: false, blocks: [] } },
     "sensor.hw_comfort_lease": { state: "error", attributes: { error: "refused" } },
-    "sensor.cost": { state: "12.34", attributes: { unit_of_measurement: "SEK", predicted_cost: 11.5, cost_vs_predicted_pct: 7.3, plan_applied_share: 0.95, yesterday: { cost: 20.1, cost_vs_predicted_pct: -2, plan_applied_share: 0.4 } } },
+    "sensor.cost": { state: "12.34", attributes: { unit_of_measurement: "SEK", predicted_cost: 11.5, cost_vs_predicted_pct: 7.3, plan_applied_share: 0.95, yesterday: { cost: 20.1, kwh: 14.25, cost_vs_predicted_pct: -2, plan_applied_share: 0.4 } } },
+    "sensor.energy": { state: "8.37", attributes: { unit_of_measurement: "kWh" } },
     "sensor.savings": { state: "3.5", attributes: { unit_of_measurement: "SEK", s1: 3.0, hot_water: 0.5, day: "x", applied: { s1: true, hot_water: false } } },
   };
   const calls = [];
@@ -116,7 +118,10 @@ function makeHass() {
     devices: { d1: { name: "Nibe F1255", config_entries: ["e1"] } },
     states,
     callService: (...args) => calls.push(args),
-    callWS: () => Promise.resolve({ "sensor.cost": [{ start: now - 3 * 86400000, change: 10 }, { start: now - 2 * 86400000, change: 12 }] }),
+    callWS: () => Promise.resolve({
+      "sensor.cost": [{ start: now - 3 * 86400000, change: 10 }, { start: now - 2 * 86400000, change: 12 }],
+      "sensor.energy": [{ start: now - 3 * 86400000, change: 9.5 }, { start: now - 2 * 86400000, change: 11.25 }],
+    }),
   };
 }
 
@@ -359,8 +364,12 @@ test("plan, hot water, gateway and savings cards in Swedish", async () => {
   assert.match(sav, /planen styrde inte pumpen/);
   assert.doesNotMatch(sav, /Ingen besparing räknas/);
   assert.match(sav, /Varmvatten 0,50/);
+  assert.match(sav, /Energi idag<\/span><span class="value">8,4 kWh/);
+  assert.match(sav, /Energi igår<\/span><span class="value">14,3 kWh/);
   await new Promise((r) => setTimeout(r, 0));
   assert.match(card.shadowRoot.innerHTML, /Kostnad per dag, 2 dagar/);
+  assert.match(card.shadowRoot.innerHTML, /Energi per dag, 2 dagar/);
+  assert.match(card.shadowRoot.innerHTML, /totalt 20,8 kWh/);
 });
 
 test("the integration's texts follow the viewer's language", () => {

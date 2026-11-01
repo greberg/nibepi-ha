@@ -951,7 +951,7 @@ class NibePiSavingsCard extends NibePiCard {
 
   watched() {
     const ids = this._ids || {};
-    return [ids.heat_pump_cost_today, ids.optimiser_savings_today].filter(Boolean);
+    return [ids.heat_pump_cost_today, ids.optimiser_savings_today, ids.heat_pump_energy_today].filter(Boolean);
   }
 
   getCardSize() {
@@ -959,7 +959,7 @@ class NibePiSavingsCard extends NibePiCard {
   }
 
   _maybeFetchStats(now) {
-    const ids = [this._ids?.optimiser_savings_today, this._ids?.heat_pump_cost_today].filter(Boolean);
+    const ids = [this._ids?.optimiser_savings_today, this._ids?.heat_pump_cost_today, this._ids?.heat_pump_energy_today].filter(Boolean);
     if (!ids.length || !this._hass?.callWS) return;
     const key = ids.join(",");
     if (this._statsKey === key && now - (this._statsAt || 0) < STATS_REFRESH_MS) return;
@@ -1001,7 +1001,8 @@ class NibePiSavingsCard extends NibePiCard {
     if (!cost && !savings) {
       return `<div class="content"><div class="empty">${esc(this.t("sav.no_sensors"))}</div></div>`;
     }
-    const m = savingsModel(cost, savings, this.loc);
+    const energy = this.st("heat_pump_energy_today");
+    const m = savingsModel(cost, savings, this.loc, energy);
     const cur = esc(m.currency);
     const money = (v) => (v === null ? "–" : `${this.n(v, 2)} ${cur}`);
     const bigMoney = (v) => (v === null ? "–" : `${this.n(v, 2)}<span class="unit">${cur}</span>`);
@@ -1019,15 +1020,17 @@ class NibePiSavingsCard extends NibePiCard {
 
     const costHist = this._history("heat_pump_cost_today", now);
     const saveHist = this._history("optimiser_savings_today", now);
-    const spark = (hist, labelKey, stroke) => {
+    const energyHist = this._history("heat_pump_energy_today", now);
+    const kwh = (v) => (v === null ? "–" : `${this.n(v, 1)} kWh`);
+    const spark = (hist, labelKey, stroke, unit = m.currency, digits = 2) => {
       const d = sparkline(hist.map((h) => h.value), 120, 32);
       if (!d) return "";
       const total = hist.reduce((acc, h) => acc + h.value, 0);
       return `<div class="stat"><span class="label">${esc(this.t("sav.days", { label: this.t(labelKey), count: hist.length }))}</span>
         <svg viewBox="0 0 120 32" style="max-width:160px" preserveAspectRatio="none"><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5" vector-effect="non-scaling-stroke"><title>${esc(
-          hist.map((h) => `${dateText(h.start, this.loc)}: ${this.n(h.value, 2)}`).join("\n"),
+          hist.map((h) => `${dateText(h.start, this.loc)}: ${this.n(h.value, digits)} ${unit}`).join("\n"),
         )}</title></path></svg>
-        <span class="muted small">${esc(this.t("sav.total", { value: this.n(total, 2), currency: m.currency }))}</span></div>`;
+        <span class="muted small">${esc(this.t("sav.total", { value: this.n(total, digits), currency: unit }))}</span></div>`;
     };
     const savedYesterday = saveHist.length ? saveHist[saveHist.length - 1] : null;
     const yesterdayDate = new Date(now);
@@ -1043,13 +1046,15 @@ class NibePiSavingsCard extends NibePiCard {
       ${cost ? `<div class="stat">${label("sav.predicted")}<span class="value">${money(m.predictedCost)}${gap(m.gapPct, m.appliedShare)}</span></div>` : ""}
       ${m.yesterday ? `<div class="stat">${label("sav.cost_yesterday")}<span class="value">${money(m.yesterday.cost)}${gap(m.yesterday.gapPct, m.yesterday.appliedShare)}</span></div>` : ""}
       ${isYesterday ? `<div class="stat">${label("sav.saved_yesterday")}<span class="value">${money(savedYesterday.value)}</span></div>` : ""}
+      ${m.energyToday !== null ? `<div class="stat">${label("sav.energy_today")}<span class="value">${kwh(m.energyToday)}</span></div>` : ""}
+      ${m.yesterday && m.yesterday.kwh !== null ? `<div class="stat">${label("sav.energy_yesterday")}<span class="value">${kwh(m.yesterday.kwh)}</span></div>` : ""}
     </div>`;
     const parts = m.savingsParts.length
       ? `<div class="sub">${esc(
           this.t("sav.parts", { parts: m.savingsParts.map((p) => `${p.label} ${this.n(p.value, 2)}`).join(" · "), currency: m.currency }),
         )}</div>`
       : "";
-    const sparks = `${spark(costHist, "sav.cost_per_day", "var(--warning-color, #ffa600)")}${spark(saveHist, "sav.savings_per_day", "var(--success-color, #43a047)")}`;
+    const sparks = `${spark(costHist, "sav.cost_per_day", "var(--warning-color, #ffa600)")}${spark(saveHist, "sav.savings_per_day", "var(--success-color, #43a047)")}${spark(energyHist, "sav.energy_per_day", "var(--info-color, #039be5)", "kWh", 1)}`;
     const costNote = cost && m.costToday === null ? `<div class="sub">${esc(this.t("sav.cost_note"))}</div>` : "";
     const savingsNote =
       savings && m.savingsApplied === false

@@ -492,6 +492,9 @@
       "heat_pump_cost_today": {
         "name": "Heat pump cost today"
       },
+      "heat_pump_energy_today": {
+        "name": "Heat pump energy today"
+      },
       "optimiser_savings_today": {
         "name": "Expected savings today"
       },

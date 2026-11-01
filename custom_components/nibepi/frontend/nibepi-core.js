@@ -755,13 +755,15 @@ export function sparkline(values, width = 120, height = 32) {
 }
 
 /** The savings card's figures from the cost and savings entities. */
-export function savingsModel(cost, savings, loc) {
+export function savingsModel(cost, savings, loc, energy = null) {
   const ca = cost?.attributes || {};
   const sa = savings?.attributes || {};
   const y = ca.yesterday && typeof ca.yesterday === "object" ? ca.yesterday : null;
   return {
     currency: ca.unit_of_measurement || sa.unit_of_measurement || "",
     costToday: num(cost),
+    // Today's kWh: the energy sensor, else the cost tally's kwh attribute.
+    energyToday: energy ? num(energy) : toNumber(ca.kwh),
     savingsToday: num(savings),
     predictedCost: toNumber(ca.predicted_cost),
     gapPct: toNumber(ca.cost_vs_predicted_pct),
@@ -778,6 +780,7 @@ export function savingsModel(cost, savings, loc) {
     yesterday: y
       ? {
           cost: toNumber(y.cost),
+          kwh: toNumber(y.kwh),
           predictedCost: toNumber(y.predicted_cost),
           gapPct: toNumber(y.cost_vs_predicted_pct),
           appliedShare: toNumber(y.plan_applied_share),

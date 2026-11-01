@@ -492,6 +492,9 @@
       "heat_pump_cost_today": {
         "name": "Värmepumpens kostnad idag"
       },
+      "heat_pump_energy_today": {
+        "name": "Värmepumpens energi idag"
+      },
       "optimiser_savings_today": {
         "name": "Förväntad besparing idag"
       },

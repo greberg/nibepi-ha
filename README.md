@@ -687,7 +687,10 @@ Shared:
   `predicted_hot_water_cost`, `baseline_heating_cost`,
   `cost_vs_predicted_pct` (only when the plans steered the pump for at
   least 90 % of the measured time), `plan_applied_share`,
-  `hours_measured`, `unpriced_kwh` and `yesterday`.
+  `hours_measured`, `unpriced_kwh` and `yesterday` (with its `kwh`).
+- `sensor` Heat pump energy today (kWh), with a heat pump meter only: the
+  same meter's kWh since midnight, a daily total, so the statistics (and
+  the cost card's sparkline) give the energy per day.
 
   Both are daily totals (state class `total`, reset at local midnight),
   so the long-term statistics give the savings and the cost per day.
