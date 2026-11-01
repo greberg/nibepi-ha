@@ -863,6 +863,20 @@ state of the 47041, 47134, 48132 and 47047 leases as dots.
 type: custom:nibepi-hotwater-card
 ```
 
+**Hot water history**: BT7 and BT6 over the last `history_hours` (default
+24, from the recorder's history, refreshed every 5 minutes and live in
+between), with reference lines for the min-temp floor, the pump's normal
+and luxury stop temperatures and the legionella temperature, red shading
+where the pump made hot water (the *Priority* sensor), the lowest BT7 and
+the hours of hot water production, and the next `ahead_hours` (default 6,
+0 for history only) with the planned charges and legionella cycle.
+
+```yaml
+type: custom:nibepi-hotwater-graph-card
+history_hours: 24
+ahead_hours: 6
+```
+
 **Gateway**: online and version, core state, last data from the pump,
 raw writes (`raw_set`), bus errors per minute (the *Bus errors*
 sensor), the last message, every lease with its state, value and time

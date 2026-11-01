@@ -26,7 +26,10 @@ const {
   formatClock,
   formatNumber,
   formatSigned,
+  historyPoints,
+  historyRows,
   hotwaterAlerts,
+  hotwaterChart,
   hotwaterWindows,
   isMissing,
   leaseColor,
@@ -40,6 +43,7 @@ const {
   savingsModel,
   sparkline,
   stateOf,
+  stateSpans,
   sysKey,
   versionLine,
   toNumber,
@@ -839,6 +843,188 @@ class NibePiHotWaterCard extends NibePiCard {
 }
 
 // --------------------------------------------------------------------------
+// Hot water graph
+// --------------------------------------------------------------------------
+
+// Between history fetches; the latest values are added live in between.
+const HISTORY_REFRESH_MS = 5 * 60000;
+
+// Reference lines: [key, colour, dash].
+const HW_REFS = [
+  ["floor", "var(--error-color, #db4437)", ""],
+  ["normal", "#8e5bd0", ""],
+  ["luxury", "#00897b", "4 3"],
+  ["legionella", "#e2b100", ""],
+];
+
+class NibePiHotWaterGraphCard extends NibePiCard {
+  static cardType = "nibepi-hotwater-graph-card";
+  static defaultIcon = "mdi:chart-bell-curve-cumulative";
+  static perSystem = false;
+  tickMs = 60000;
+
+  static extraSchema() {
+    return [
+      { name: "history_hours", selector: { number: { min: 6, max: 72, step: 1, mode: "slider" } } },
+      { name: "ahead_hours", selector: { number: { min: 0, max: 24, step: 1, mode: "slider" } } },
+    ];
+  }
+
+  defaultTitle() {
+    return this.t("hwg.title");
+  }
+
+  watched() {
+    const ids = this._ids || {};
+    return ["bt7_hw_top", "bt6_hw_load", "priority", "hw_planned_action", "hw_optimiser_plan", "hw_legionella_next_due"].map((k) => ids[k]).filter(Boolean);
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    if (!this._resize && "ResizeObserver" in window) {
+      this._resize = new ResizeObserver((entries) => {
+        const w = Math.round(entries[0]?.contentRect?.width || 0);
+        if (w && Math.abs(w - (this._width || 0)) > 8) {
+          this._width = w;
+          this._render();
+        }
+      });
+      this._resize.observe(this);
+    }
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._resize?.disconnect();
+    this._resize = undefined;
+  }
+
+  getCardSize() {
+    return 6;
+  }
+
+  _maybeFetchHistory(now, hours) {
+    const ids = ["bt7_hw_top", "bt6_hw_load", "priority"].map((k) => this._ids?.[k]).filter(Boolean);
+    if (!ids.length || !this._hass?.callWS) return;
+    const key = `${ids.join(",")}|${hours}`;
+    if (this._histKey === key && now - (this._histAt || 0) < HISTORY_REFRESH_MS) return;
+    this._histKey = key;
+    this._histAt = now;
+    this._hass
+      .callWS({
+        type: "history/history_during_period",
+        start_time: new Date(now - hours * 3600000).toISOString(),
+        end_time: new Date(now).toISOString(),
+        entity_ids: ids,
+        minimal_response: true,
+        no_attributes: true,
+        significant_changes_only: false,
+      })
+      .then((result) => {
+        this._hist = result || {};
+        this._render();
+      })
+      .catch(() => {
+        // Recorder off or no access: the card says there is no history.
+        this._hist = {};
+        this._render();
+      });
+  }
+
+  // History rows of a key, with the current state added (it arrives live).
+  _rows(key) {
+    const id = this._ids?.[key];
+    if (!id) return [];
+    const rows = historyRows(this._hist?.[id]);
+    const cur = this.st(key);
+    const t = parseTime(cur?.last_updated);
+    if (cur && t !== null && (!rows.length || t > rows[rows.length - 1].t)) rows.push({ t, state: cur.state });
+    return rows;
+  }
+
+  renderBody(now) {
+    const hours = toNumber(this._config.history_hours) || 24;
+    const aheadCfg = toNumber(this._config.ahead_hours);
+    const ahead = aheadCfg === null ? 6 : aheadCfg;
+    this._maybeFetchHistory(now, hours);
+    if (!this._ids?.bt7_hw_top && !this._ids?.bt6_hw_load) {
+      return `<div class="content"><div class="empty">${esc(this.t("hwg.no_sensors"))}</div></div>`;
+    }
+    if (this._hist === undefined) {
+      return `<div class="content"><div class="empty">${esc(this.t("hwg.loading"))}</div></div>`;
+    }
+    const start = now - hours * 3600000;
+    const action = this.st("hw_planned_action")?.attributes || {};
+    const stops = action.inputs?.stop_temperatures || {};
+    const floor = action.floor && action.floor.enabled ? action.floor.temperature : null;
+    const leg = legionellaModel(this.st("hw_legionella_next_due"), this.st("hw_legionella_last_done"), this.loc);
+    const refValues = { floor, normal: stops.normal, luxury: stops.luxury, legionella: leg?.temperature ?? null };
+    const whole = (v) => this.n(v, Number.isInteger(toNumber(v)) ? 0 : 1);
+    const refs = HW_REFS.map(([key]) => ({ key, value: refValues[key], label: this.t(`hwg.ref_${key}`, { value: whole(refValues[key]) }) }));
+    const opt = this.st("hw_optimiser_plan")?.attributes || {};
+    const windows = ahead
+      ? hotwaterWindows({ vvPlan: action.plan_24h, blocks: opt.blocks, blockTexts: opt.i18n?.blocks, legionella: leg?.window, now, hours: ahead, loc: this.loc })
+      : [];
+    const width = Math.max(280, Math.min(1200, (this._width || this.clientWidth || 600) - 32));
+    const height = width < 420 ? 200 : 230;
+    const chart = hotwaterChart({
+      bt7: historyPoints(this._rows("bt7_hw_top"), start, now),
+      bt6: historyPoints(this._rows("bt6_hw_load"), start, now),
+      producing: stateSpans(this._rows("priority"), start, now, "hot_water"),
+      windows,
+      refs,
+      now,
+      hours,
+      ahead,
+      width,
+      height,
+      loc: this.loc,
+    });
+    if (chart.empty) {
+      return `<div class="content"><div class="empty">${esc(this.t("hwg.empty", { hours }))}</div></div>`;
+    }
+    const p = chart.plot;
+    const color = Object.fromEntries(HW_REFS.map(([k, c, d]) => [k, { c, d }]));
+    const bt7c = "var(--primary-color)";
+    const bt6c = "var(--warning-color, #ffa600)";
+    const svg = `<svg viewBox="0 0 ${chart.width} ${chart.height}" role="img" aria-label="${esc(this.t("hwg.aria"))}">
+      ${chart.producing
+        .map((s) => `<rect x="${s.x}" y="${p.y0}" width="${s.w}" height="${p.y1 - p.y0}" fill="var(--error-color, #db4437)" fill-opacity="0.10"><title>${esc(this.t("hwg.producing_at", { span: s.label }))}</title></rect>`)
+        .join("")}
+      ${chart.futureW > 0 ? `<rect x="${chart.nowX}" y="${p.y0}" width="${chart.futureW}" height="${p.y1 - p.y0}" fill="var(--secondary-text-color)" fill-opacity="0.05" />` : ""}
+      ${chart.windows
+        .map((w) => {
+          const c = w.kind === "legionella" ? "var(--error-color, #db4437)" : w.kind === "charge" ? "var(--warning-color, #ffa600)" : "var(--info-color, var(--primary-color))";
+          return `<rect x="${w.x}" y="${p.y0}" width="${w.w}" height="${p.y1 - p.y0}" fill="${c}" fill-opacity="0.22"><title>${esc(w.label)}</title></rect>`;
+        })
+        .join("")}
+      ${chart.temps.map((t) => `<line x1="${p.x0}" x2="${p.x1}" y1="${t.y}" y2="${t.y}" stroke="var(--divider-color)" stroke-opacity="0.5" /><text x="${p.x0 - 4}" y="${t.y + 3}" text-anchor="end">${esc(t.label)}</text>`).join("")}
+      ${chart.timeTicks.map((t) => `<text x="${t.x}" y="${p.y1 + 14}" text-anchor="middle">${esc(t.label)}</text>`).join("")}
+      ${chart.bt7.area ? `<path d="${chart.bt7.area}" fill="${bt7c}" fill-opacity="0.08" stroke="none" />` : ""}
+      ${chart.refs
+        .map((r) => `<line x1="${p.x0}" x2="${p.x1}" y1="${r.y}" y2="${r.y}" stroke="${color[r.key].c}" stroke-width="1.5" ${color[r.key].d ? `stroke-dasharray="${color[r.key].d}"` : ""}><title>${esc(r.label)}</title></line>`)
+        .join("")}
+      ${chart.bt6.path ? `<path d="${chart.bt6.path}" fill="none" stroke="${bt6c}" stroke-width="2" stroke-linejoin="round" />` : ""}
+      ${chart.bt7.path ? `<path d="${chart.bt7.path}" fill="none" stroke="${bt7c}" stroke-width="2" stroke-linejoin="round" />` : ""}
+      ${chart.lowest ? `<circle cx="${chart.lowest.x}" cy="${chart.lowest.y}" r="3" fill="${bt7c}"><title>${esc(this.t("hwg.lowest_at", { value: this.n(chart.lowest.v), at: this.clock(chart.lowest.t) }))}</title></circle>` : ""}
+      ${ahead ? `<line x1="${chart.nowX}" x2="${chart.nowX}" y1="${p.y0 - 4}" y2="${p.y1}" stroke="var(--primary-text-color)" stroke-dasharray="2 3" /><text x="${chart.nowX + 3}" y="${p.y0 + 2}">${esc(this.t("plan.now"))}</text>` : ""}
+    </svg>`;
+    const item = (c, text, dash = "", h = 3) => `<span><i style="background: ${c}; height: ${h}px${dash ? "; opacity:.7" : ""}"></i>${esc(text)}</span>`;
+    const legend = `<div class="legend">
+      ${item(bt7c, this.t("hwg.bt7"))}${item(bt6c, this.t("hwg.bt6"))}
+      ${chart.refs.map((r) => item(color[r.key].c, r.label, color[r.key].d, 2)).join("")}
+      ${chart.producing.length ? `<span><i style="background: var(--error-color, #db4437); opacity:.25; height: 8px"></i>${esc(this.t("hwg.producing"))}</span>` : ""}
+      ${chart.windows.length ? `<span><i style="background: var(--warning-color, #ffa600); opacity:.45; height: 8px"></i>${esc(this.t("hwg.planned"))}</span>` : ""}
+    </div>`;
+    const stats = `<div class="grid">
+      ${this.stat("bt7_hw_top", this.t("hwg.lowest", { hours }), chart.lowest ? `${this.n(chart.lowest.v)} °C <span class="muted small">${esc(this.clock(chart.lowest.t))}</span>` : "–")}
+      ${this._ids?.priority ? this.stat("priority", this.t("hwg.produced", { hours }), `${this.n(chart.producedHours, 1)} h`) : ""}
+    </div>`;
+    return `<div class="content">${svg}${legend}${stats}</div>`;
+  }
+}
+
+// --------------------------------------------------------------------------
 // Gateway
 // --------------------------------------------------------------------------
 
@@ -1152,7 +1338,7 @@ class NibePiCardEditor extends HTMLElement {
 // Registration
 // --------------------------------------------------------------------------
 
-const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiGatewayCard, NibePiSavingsCard];
+const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiHotWaterGraphCard, NibePiGatewayCard, NibePiSavingsCard];
 
 // The card picker's names and descriptions: there is no hass yet, so the
 // page's (or the browser's) language.

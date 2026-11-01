@@ -11,8 +11,12 @@ import {
   formatAge,
   formatDuration,
   formatSigned,
+  historyPoints,
+  historyRows,
   hotwaterAlerts,
+  hotwaterChart,
   hotwaterWindows,
+  stateSpans,
   leaseRows,
   legionellaModel,
   versionLine,
@@ -441,3 +445,57 @@ test("legionellaModel gives the guard's reason in the viewer's language", () => 
   assert.equal(legionellaModel(nextDue, null).reason, "due: would run now (hot water mode shadow)");
   assert.equal(legionellaModel({ state: iso(NOW), attributes: {} }, null, "sv").reason, null);
 });
+
+test("hot water history: rows, points carried to the edge, spans", () => {
+  const H = 3600000;
+  const now = Date.UTC(2026, 10, 1, 12);
+  const sec = (t) => t / 1000;
+  const rows = historyRows([
+    { s: "50.5", lu: sec(now - 30 * H) },
+    { s: "unavailable", lu: sec(now - 20 * H) },
+    { s: "45", lu: sec(now - 10 * H) },
+    { s: "38.5", lu: sec(now - 2 * H) },
+  ]);
+  assert.equal(rows.length, 4);
+  const pts = historyPoints(rows, now - 24 * H, now);
+  // The value before the window starts the line at its edge; non-numbers are skipped.
+  assert.deepEqual(pts.map((p) => p.v), [50.5, 45, 38.5]);
+  assert.equal(pts[0].t, now - 24 * H);
+  const prio = historyRows([
+    { s: "heating", lu: sec(now - 5 * H) },
+    { s: "hot_water", lu: sec(now - 4 * H) },
+    { s: "heating", lu: sec(now - 3 * H) },
+    { s: "hot_water", lu: sec(now - 0.5 * H) },
+  ]);
+  const spans = stateSpans(prio, now - 24 * H, now, "hot_water");
+  assert.deepEqual(spans, [{ start: now - 4 * H, end: now - 3 * H }, { start: now - 0.5 * H, end: now }]);
+});
+
+test("hot water chart geometry", () => {
+  const H = 3600000;
+  const now = Date.UTC(2026, 10, 1, 12);
+  const chart = hotwaterChart({
+    bt7: [{ t: now - 20 * H, v: 50 }, { t: now - 3 * H, v: 36.3 }, { t: now - H, v: 48 }],
+    bt6: [{ t: now - 20 * H, v: 47 }, { t: now - 3 * H, v: 29.9 }],
+    producing: [{ start: now - 2 * H, end: now - H }],
+    windows: [{ kind: "charge", start: now + H, end: now + 2 * H, label: "x" }],
+    refs: [{ key: "floor", value: 44, label: "Min" }, { key: "legionella", value: null, label: "-" }],
+    now,
+    hours: 24,
+    ahead: 6,
+    width: 600,
+    height: 230,
+    loc: { lang: "en" },
+  });
+  assert.equal(chart.empty, false);
+  assert.equal(chart.refs.length, 1, "a reference without a value is left out");
+  assert.equal(chart.lowest.v, 36.3);
+  assert.equal(chart.producedHours, 1);
+  assert.equal(chart.windows.length, 1);
+  assert.ok(chart.nowX > chart.plot.x0 && chart.nowX < chart.plot.x1);
+  // BT6's last value is held to now.
+  assert.match(chart.bt6.path, new RegExp(`L${chart.nowX} `));
+  assert.ok(chart.temps.every((t) => !t.label.includes("NaN")));
+  assert.equal(hotwaterChart({ now, loc: { lang: "en" } }).empty, true);
+});
+

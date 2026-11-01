@@ -537,6 +537,121 @@ export function hotwaterWindows({ vvPlan, blocks, blockTexts, legionella, now, h
   return out.sort((a, b) => a.start - b.start);
 }
 
+/** History rows of one entity from ``history/history_during_period``
+ * (minimal response: {s, lu} with lu in seconds; the first row may carry
+ * lc instead) as [{t, state}] in [start, end], oldest first. */
+export function historyRows(raw) {
+  const out = [];
+  for (const row of Array.isArray(raw) ? raw : []) {
+    const sec = toNumber(row?.lu ?? row?.lc);
+    const t = sec !== null ? sec * 1000 : parseTime(row?.last_updated ?? row?.last_changed);
+    if (t === null) continue;
+    out.push({ t, state: row?.s ?? row?.state });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+/** Numeric points of history rows inside [start, end]; the last value
+ * before ``start`` is carried to ``start`` so the line starts at the edge. */
+export function historyPoints(rows, start, end) {
+  const pts = [];
+  let before = null;
+  for (const r of rows) {
+    const v = toNumber(r.state);
+    if (v === null) continue;
+    if (r.t < start) before = v;
+    else if (r.t <= end) pts.push({ t: r.t, v });
+  }
+  if (before !== null && (!pts.length || pts[0].t > start)) pts.unshift({ t: start, v: before });
+  return pts;
+}
+
+/** Spans in [start, end] where the state of history rows is ``match``. */
+export function stateSpans(rows, start, end, match) {
+  const spans = [];
+  let open = null;
+  for (const r of rows) {
+    const t = Math.max(start, Math.min(end, r.t));
+    if (r.state === match) {
+      if (open === null) open = t;
+    } else if (open !== null) {
+      if (t > open) spans.push({ start: open, end: t });
+      open = null;
+    }
+  }
+  if (open !== null && end > open) spans.push({ start: open, end });
+  return spans;
+}
+
+/**
+ * The hot water graph's geometry: BT7 and BT6 history over the last
+ * ``hours`` and ``ahead`` hours of plan after now, in a ``width`` x
+ * ``height`` viewBox.
+ * Input: {bt7, bt6: [{t, v}], producing: [{start, end}] (the pump making
+ * hot water), windows: hotwaterWindows() output, refs: [{key, value,
+ * label}], now, hours, ahead}. Returns {empty} without any BT7/BT6 point.
+ */
+export function hotwaterChart({ bt7 = [], bt6 = [], producing = [], windows = [], refs = [], now, hours = 24, ahead = 6, width = 600, height = 220, loc, clock = (time) => formatClock(time, loc) }) {
+  const start = now - hours * 3600000;
+  const end = now + Math.max(0, ahead) * 3600000;
+  if (!bt7.length && !bt6.length) return { empty: true, width, height };
+  const plot = { x0: 34, x1: width - 10, y0: 10, y1: height - 22 };
+  const x = (t) => r1(plot.x0 + ((t - start) / (end - start)) * (plot.x1 - plot.x0));
+  const shown = refs.filter((r) => toNumber(r.value) !== null);
+  const values = [...bt7, ...bt6].map((p) => p.v).concat(shown.map((r) => toNumber(r.value)));
+  const [lo0, hi0] = niceRange(Math.min(...values), Math.max(...values), 2, 10);
+  const lo = Math.floor(lo0 / 5) * 5;
+  const hi = Math.ceil(hi0 / 5) * 5;
+  const y = (v) => r1(plot.y1 - ((v - lo) / (hi - lo)) * (plot.y1 - plot.y0));
+
+  const line = (pts) => {
+    if (!pts.length) return { path: "", area: "" };
+    let path = "";
+    for (const p of pts) path += `${path ? " L" : "M"}${x(p.t)} ${y(p.v)}`;
+    // Held to now: the sensor reports on change only.
+    const last = pts[pts.length - 1];
+    if (last.t < now) path += ` L${x(now)} ${y(last.v)}`;
+    const xEnd = last.t < now ? x(now) : x(last.t);
+    return { path, area: `${path} L${xEnd} ${plot.y1} L${x(pts[0].t)} ${plot.y1} Z` };
+  };
+  const span = (s, e) => ({ x: x(Math.max(s, start)), w: r1(x(Math.min(e, end)) - x(Math.max(s, start))) });
+
+  const temps = [];
+  const tStep = hi - lo > 30 ? 10 : 5;
+  for (let v = lo; v <= hi + 1e-9; v += tStep) temps.push({ y: y(v), label: formatNumber(v, 0, loc) });
+  const timeTicks = [];
+  const total = (end - start) / 3600000;
+  const every = total > 48 ? 12 : total > 24 || width < 420 ? 6 : 3;
+  const first = new Date(start);
+  first.setMinutes(0, 0, 0);
+  for (let at = first.getTime() + 3600000; at < end; at += 3600000) {
+    if (new Date(at).getHours() % every === 0 && Math.abs(at - now) > 0.6 * 3600000) timeTicks.push({ x: x(at), label: clock(at) });
+  }
+  const minOf = (pts) => {
+    const past = pts.filter((p) => p.t <= now);
+    if (!past.length) return null;
+    return past.reduce((m, p) => (p.v < m.v ? p : m));
+  };
+  const lowest = minOf(bt7);
+  return {
+    empty: false,
+    width,
+    height,
+    plot,
+    bt7: line(bt7),
+    bt6: line(bt6),
+    producing: producing.filter((s) => s.end > start && s.start < now).map((s) => ({ ...span(s.start, Math.min(s.end, now)), label: `${clock(s.start)}–${clock(Math.min(s.end, now))}` })),
+    windows: windows.filter((w) => w.end > now && w.start < end).map((w) => ({ ...span(w.start, w.end), kind: w.kind, label: w.label })),
+    refs: shown.map((r) => ({ key: r.key, y: y(toNumber(r.value)), value: toNumber(r.value), label: r.label })),
+    temps,
+    timeTicks,
+    nowX: x(now),
+    futureW: r1(plot.x1 - x(now)),
+    lowest: lowest ? { t: lowest.t, v: lowest.v, x: x(lowest.t), y: y(lowest.v) } : null,
+    producedHours: producing.reduce((sum, s) => sum + Math.max(0, Math.min(s.end, now) - Math.max(s.start, start)), 0) / 3600000,
+  };
+}
+
 /** The legionella guard from its two sensors (Legionella next due, with
  * the plan in its attributes, and Legionella last done): null without
  * them, else {state, running, lastDone, lastBy, due, temperature,

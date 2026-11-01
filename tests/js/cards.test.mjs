@@ -67,6 +67,7 @@ function makeHass() {
     heat_pump_cost_today: "sensor.cost",
     optimiser_savings_today: "sensor.savings",
     heat_pump_energy_today: "sensor.energy",
+    priority: "sensor.prio",
   };
   const states = {
     "binary_sensor.nibe_gateway": {
@@ -107,6 +108,7 @@ function makeHass() {
     "sensor.hw_comfort_lease": { state: "error", attributes: { error: "refused" } },
     "sensor.cost": { state: "12.34", attributes: { unit_of_measurement: "SEK", predicted_cost: 11.5, cost_vs_predicted_pct: 7.3, plan_applied_share: 0.95, yesterday: { cost: 20.1, kwh: 14.25, cost_vs_predicted_pct: -2, plan_applied_share: 0.4 } } },
     "sensor.energy": { state: "8.37", attributes: { unit_of_measurement: "kWh" } },
+    "sensor.prio": { state: "heating", attributes: {} },
     "sensor.savings": { state: "3.5", attributes: { unit_of_measurement: "SEK", s1: 3.0, hot_water: 0.5, day: "x", applied: { s1: true, hot_water: false } } },
   };
   const calls = [];
@@ -134,7 +136,7 @@ function render(type, config, hass = makeHass()) {
 
 test("all cards are registered for the card picker", () => {
   const types = window.customCards.map((c) => c.type);
-  for (const t of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-gateway-card", "nibepi-savings-card"]) {
+  for (const t of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-hotwater-graph-card", "nibepi-gateway-card", "nibepi-savings-card"]) {
     assert.ok(types.includes(t), t);
     assert.ok(customElements.get(t), t);
     assert.ok(window.customCards.find((c) => c.type === t).preview);
@@ -449,3 +451,35 @@ test("savings card when no plan steers the pump", () => {
   // An unknown share (older integration): neither the gap nor the note.
   assert.doesNotMatch(sav, /mot planen/);
 });
+
+test("hot water graph card", async () => {
+  const hass = swedish();
+  const sec = (t) => t / 1000;
+  hass.states["sensor.hw_action"].attributes.inputs = { stop_temperatures: { economy: 44, normal: 47, luxury: 50 } };
+  hass.states["sensor.hw_action"].attributes.floor = { enabled: true, temperature: 44 };
+  let asked = null;
+  hass.callWS = (msg) => {
+    asked = msg;
+    return Promise.resolve({
+      "sensor.bt7": [{ s: "50", lu: sec(now - 20 * H) }, { s: "36.3", lu: sec(now - 3 * H) }, { s: "48", lu: sec(now - H) }],
+      "sensor.bt6": [{ s: "47", lu: sec(now - 20 * H) }, { s: "29.9", lu: sec(now - 3 * H) }],
+      "sensor.prio": [{ s: "heating", lu: sec(now - 5 * H) }, { s: "hot_water", lu: sec(now - 2 * H) }, { s: "heating", lu: sec(now - H) }],
+    });
+  };
+  const { card } = render("nibepi-hotwater-graph-card", { history_hours: 24 }, hass);
+  assert.match(card.shadowRoot.innerHTML, /Hämtar historik/);
+  assert.equal(asked.type, "history/history_during_period");
+  assert.deepEqual(asked.entity_ids, ["sensor.bt7", "sensor.bt6", "sensor.prio"]);
+  await new Promise((r) => setTimeout(r, 0));
+  const html = card.shadowRoot.innerHTML;
+  assert.match(html, /Varmvatten, historik/);
+  assert.match(html, /<svg viewBox/);
+  assert.match(html, /Lägsta 44 °C/);
+  assert.match(html, /Stopp normal 47 °C/);
+  assert.match(html, /Stopp lyx 50 °C/);
+  assert.match(html, /Pumpen gör varmvatten/);
+  assert.match(html, /Lägsta BT7, 24 h<\/span><span class="value ">36,3 °C/);
+  assert.match(html, /Varmvattenproduktion, 24 h<\/span><span class="value ">1,0 h/);
+  assert.doesNotMatch(html, /NaN|undefined|\{\w+\}/);
+});
+

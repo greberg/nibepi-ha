@@ -17,10 +17,19 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import NibePiConfigEntry
-from .const import COMPONENTS, OPT_HW_PEAK, PRICE_SOURCE_TIBBER, price_source, signal_reading
+from .const import (
+    COMPONENTS,
+    OPT_HW_MIN_TEMP,
+    OPT_HW_MIN_TEMP_ENABLE,
+    OPT_HW_PEAK,
+    PRICE_SOURCE_TIBBER,
+    price_source,
+    signal_reading,
+)
 from .entity import I18N, NibePiEntity
 from .logic.gateway import gateway_version
 from .logic.hwcontrol import REG_COMFORT, REG_PERIOD, REG_TEMP_LUX, STATES
+from .logic.inputs import to_float
 from .logic.legionella import REG_LUX_STOP, result_text
 from .logic.lease import MODE_ACTIVE, LeaseManager
 from .logic.optcost import summary as cost_summary
@@ -357,7 +366,7 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = list(STATES)
-    _unrecorded_attributes = frozenset({"plan_24h", "reasons", "inputs", I18N})
+    _unrecorded_attributes = frozenset({"plan_24h", "reasons", "inputs", "floor", I18N})
 
     def __init__(self, runtime: NibePiRuntime) -> None:
         super().__init__(runtime, "hw_planned_action")
@@ -379,6 +388,11 @@ class HotWaterActionSensor(NibePiEntity, SensorEntity):
             "healthy": hw.healthy,
             "error": hw.error,
             "last_tick": _iso(hw.last_tick),
+            # The min-temp floor (BT7): the hot water graph card's reference line.
+            "floor": {
+                "enabled": bool(self.runtime.opt(OPT_HW_MIN_TEMP_ENABLE)),
+                "temperature": to_float(self.runtime.opt(OPT_HW_MIN_TEMP)),
+            },
         }
         if decision is None:
             return self.localised(attrs)
