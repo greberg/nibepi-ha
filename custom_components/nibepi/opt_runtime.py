@@ -1025,6 +1025,7 @@ class OptimizerRuntime:
             t_brine=self._fresh(readings.get(REG_BRINE_IN), now),
             legionella=legionella_pin(guard.status),
             price_status=rt.price_status,
+            charging_now=value(REG_PRIO) == PRIO_HW,
         )
 
     def hw_plan_windows(self, now: datetime):

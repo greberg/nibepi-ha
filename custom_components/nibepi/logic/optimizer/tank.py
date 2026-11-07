@@ -23,10 +23,21 @@ from the VV learning profile (``draws_from_week_profile`` takes its 168
 hour-of-week values as a plain list, no import of that module).
 
 Planner: dynamic programming over a 0.5 °C tank grid with actions
-hold/charge and the previous action in the state (a charge start costs
-``start_cost``); a slot below ``floor`` costs ``floor_weight`` per K·h,
+hold/charge and the previous action in the state; a slot below ``floor`` costs ``floor_weight`` per K·h,
 which outweighs any price. The baseline is the pump on its own in normal
 mode (start/stop at the normal temperatures).
+
+Few, full charges: every start costs more than its kWh show (the switching
+valve takes the compressor off the house, the hot water circuit and the
+condenser heat up before the tank gains anything, the compressor ramps), so
+a start costs ``start_cost`` plus ``start_kwh`` at the slot's price, and a
+charge may only start when the tank is at least ``min_lift`` below its
+target (or half the room between the floor and the target, when that is
+less), like the pump's own start/stop hysteresis. Without these the plan
+topped the tank up by 1-2 K at every cheap dip (6-7 starts a day). A
+charge still running (``charging_now`` at the start, otherwise below its
+target) continues without that check; one that reached its target has
+stopped, and going on is a new start.
 
 Pinned charges (``PinnedCharge``): a legionella cycle planned by the
 legionella guard is a fixed charge to its temperature in its window, in
@@ -119,7 +130,9 @@ class TankSettings:
     normal_stop: float = 50.0  # 47048
     lux_stop: float = 55.0  # 47047
     charge_target: Optional[float] = None  # None: normal_stop, or lux when that is needed
-    start_cost: float = 0.3
+    start_cost: float = 0.1  # per start, wear
+    start_kwh: float = 0.3  # electricity lost per start, at the slot's price
+    min_lift: float = 5.0  # K below the target to start a charge
     floor_weight: float = 50.0  # per K h
     risk: float = 0.5
     grid_step: float = 0.5
@@ -246,6 +259,8 @@ def _simulate_pump(slots, draws_kwh, t0, tank, start_temp, stop_temp, pins=None)
 
 
 HOLD, NORMAL, LUX = 0, 1, 2
+NO_START = 1e6  # a start the minimum lift rules out
+DONE_MARGIN = 0.25  # K: a charge this close to its target has stopped
 
 
 def plan_hot_water(
@@ -256,6 +271,7 @@ def plan_hot_water(
     settings: TankSettings = TankSettings(),
     tz: tzinfo = timezone.utc,
     pinned: Sequence[PinnedCharge] = (),
+    charging_now: bool = False,
 ) -> HotWaterPlan:
     """Cheapest hold / charge-to-normal / charge-to-lux schedule.
 
@@ -313,8 +329,20 @@ def plan_hot_water(
             cost += settings.floor_weight * (settings.floor - t_end) * slot.hours
         return t_end, cost, heat, el, forced
 
-    def start_cost(prev, act):
-        return settings.start_cost if act != HOLD and prev == HOLD else 0.0
+    # Low stop temperatures leave little room above the floor: there the lift
+    # is half of that room, so a charge can still start before the floor.
+    lift = {act: min(settings.min_lift, 0.5 * max(0.0, targets[act] - settings.floor)) for act in acts}
+
+    def start_cost(i, t, prev, act):
+        if act == HOLD:
+            return 0.0
+        if prev != HOLD and t < targets[prev] - DONE_MARGIN:
+            return 0.0  # the charge is still running
+        # A new start: from hold, or after the previous charge reached its
+        # target (the pump stopped; idling "in charge" is no way round this).
+        if t > targets[act] - lift[act]:
+            return NO_START
+        return settings.start_cost + settings.start_kwh * slots[i].price
 
     terminal = [(ref - t) * heat_value for t in grid]
     values = [None] * (len(slots) + 1)
@@ -327,17 +355,17 @@ def plan_hot_water(
                 t_end, cost, _, _, _ = stage(i, t, act)
                 w[act][g] = cost + interp(nxt[act], t_end)
         values[i] = [
-            [min(w[act][g] + start_cost(prev, act) for act in acts) for g in range(n)] for prev in acts
+            [min(w[act][g] + start_cost(i, grid[g], prev, act) for act in acts) for g in range(n)] for prev in acts
         ]
 
     plan: List[int] = []
     t = t_tank0
-    prev = HOLD
+    prev = LUX if charging_now else HOLD  # the highest target: running until it
     for i in range(len(slots)):
         best = None
         for act in acts:
             t_end, cost, _, _, _ = stage(i, t, act)
-            v = cost + start_cost(prev, act) + interp(values[i + 1][act], t_end)
+            v = cost + start_cost(i, t, prev, act) + interp(values[i + 1][act], t_end)
             if best is None or v < best[0] - 1e-9:
                 best = (v, act, t_end)
         plan.append(best[1])

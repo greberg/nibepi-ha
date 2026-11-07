@@ -125,6 +125,52 @@ class TankTest(unittest.TestCase):
         self.assertEqual(draws[0].temperature_drop, 6.0)
         self.assertEqual(draws_from_week_profile([1.0] * 10, START, START + timedelta(days=1), tz), [])
 
+    @staticmethod
+    def _starts(plan):
+        out = []
+        prev = False
+        for step in plan.steps:
+            planned = step.charging and not step.forced and not step.pinned
+            if planned and not prev:
+                out.append(step)
+            prev = planned
+        return out
+
+    def test_no_small_top_ups(self) -> None:
+        # Live case: BT6 48.3 °C and a charge to 50 at the next cheap slot,
+        # 6-7 starts a day. A charge now starts at least min_lift below its
+        # target, or half the room between the floor and the target.
+        def wavy(hour: int) -> float:
+            return 3.2 if hour % 3 == 0 else 4.0
+        draws = [DrawForecast(START + timedelta(hours=h), START + timedelta(hours=h, minutes=30), temperature_drop=2.0)
+                 for h in (2, 7, 10, 13, 18, 21)]
+        for settings in (
+            TankSettings(floor=44.0),
+            # The user's pump: normal 47, luxury 50, floor 44.
+            TankSettings(floor=44.0, economy_stop=45.0, normal_start=42.0, normal_stop=47.0, lux_stop=50.0,
+                         economy_start=-50.0),
+        ):
+            plan = plan_hot_water(day(wavy), 48.3, draws, TankModel(), settings)
+            starts = self._starts(plan)
+            self.assertTrue(starts)
+            for step in starts:
+                lift = min(settings.min_lift, 0.5 * (step.target - settings.floor))
+                self.assertLessEqual(step.t_start, step.target - lift + 0.05, step)
+            self.assertGreaterEqual(plan.min_temp, settings.floor - 0.05)
+        # The original planner topped up from 50.3 and 51.9 °C here: 4 starts.
+        self.assertLessEqual(len(self._starts(plan_hot_water(day(wavy), 48.3, draws, TankModel(),
+                                                             TankSettings(floor=44.0)))), 2)
+
+    def test_running_charge_continues(self) -> None:
+        settings = TankSettings()
+        cheap_now = day(lambda h: 0.5 if h < 2 else 2.0)
+        running = plan_hot_water(cheap_now, 47.0, [MORNING], TankModel(), settings, charging_now=True)
+        self.assertTrue(running.steps[0].charging)
+        fresh = plan_hot_water(cheap_now, 47.0, [MORNING], TankModel(), settings)
+        first = fresh.steps[0]
+        # Not running: no new start to the normal stop only 3 K up.
+        self.assertFalse(first.charging and first.target == settings.normal_stop)
+
     def test_performance(self) -> None:
         slots = day(se3, hours=36)
         started = time.perf_counter()

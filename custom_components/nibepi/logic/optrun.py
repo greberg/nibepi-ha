@@ -827,6 +827,8 @@ class TankInputs:
     confidence: float = 0.7
     t_brine: Optional[float] = None
     pump_starts_itself: bool = False
+    # The pump is making hot water now: a running charge continues (no new start).
+    charging_now: bool = False
     # A planned (or running) legionella cycle: (start, end, temperature).
     legionella: Optional[Tuple[datetime, datetime, float]] = None
     # The price source's status (for the problem when no prices cover now).
@@ -875,7 +877,8 @@ def plan_tank(inputs: TankInputs) -> TankResult:
         list(inputs.profile), slots[0].start, slots[-1].end, inputs.tz, inputs.confidence
     )
     pinned = [PinnedCharge(*inputs.legionella)] if inputs.legionella is not None else []
-    result.plan = plan_hot_water(slots, inputs.bt6, draws, TankModel(), settings, inputs.tz, pinned)
+    result.plan = plan_hot_water(slots, inputs.bt6, draws, TankModel(), settings, inputs.tz, pinned,
+                                 charging_now=inputs.charging_now)
     return result
 
 
