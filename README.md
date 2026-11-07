@@ -206,6 +206,29 @@ Assistant 2024.3+), so a steady temperature is not taken for a stale one.
 `unavailable` and `unknown` count as missing: the indoor part, and the
 price guard that needs it, contribute 0 until the sensor is back.
 
+### Several room sensors
+
+One sensor in one room is the largest source of noise in the house model
+(a sunny window, a door left open, cooking). Two to four sensors in the
+main rooms, averaged, give the model a much steadier indoor value. Make
+the average a Home Assistant **sensor group** (Settings -> Devices &
+services -> Helpers -> Create helper -> Group -> Sensor group, type
+*Mean*, *Ignore non-numeric* on) and pick the group as *Indoor temperature
+sensor*. NibePi then:
+
+- counts its members as the *Indoor sensors averaged* of the house
+  profile (two or more halve the safety margin, so confidence comes
+  sooner); the option still sets a minimum;
+- imports the members' recorder history averaged, so the group's 28 days
+  are there even when the group itself is new;
+- drops the old indoor sensor's history when the indoor sensor changes:
+  another sensor is another measurement, and mixing the two levels would
+  bias the fit. The model relearns on the new sensor's (or the members')
+  history.
+
+Keep the sensors out of direct sun and away from the heat pump, radiators
+and the kitchen.
+
 ## Room temperature to the pump (RMU40)
 
 The pump can take the room temperature from an RMU40 room unit. The
@@ -494,6 +517,19 @@ return BT3 (40012), whether the heating medium pump GP1 runs (43437 > 0)
 and the meter, and keeps 10-minute means for 35 days in
 `.storage/nibepi_optimizer_<entry id>` (saved hourly and at shutdown).
 These registers are added to the gateway's polling.
+
+What survives a restart: the 10-minute history, the fitted models, the
+savings and cost tallies (`.storage/nibepi_optimizer_<entry id>`), the
+hot water learning profile (`.storage/nibepi_vv_profile_<entry id>`) and
+Away (`.storage/nibepi_away_<entry id>`). After an unclean stop (power
+cut, crash) up to an hour of history was not saved; at the next start it
+is filled from the recorder. Restarting or redeploying the gateway on the
+Pi touches none of this: all learning lives in Home Assistant. Home
+Assistant backups include `.storage`. Removing the integration and adding
+it again starts with a new entry id and empty stores (the models refit
+from the recorder's last 28 days, the hot water profile starts over), so
+update it in place instead. Not kept: which plan was applied (savings
+after a restart count from the restart) and a skipped learning step.
 
 At the first start (and when the indoor sensor or the meter is changed)
 it imports the last 28 days from Home Assistant's **recorder**, so the

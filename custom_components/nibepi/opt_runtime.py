@@ -78,6 +78,9 @@ from .logic.opthistory import (
     PRIO_HW,
     RETENTION_DAYS,
     STEP_S,
+    group_members,
+    is_indoor_column,
+    mean_series,
     BinAccumulator,
     SampleLog,
     bin_meter_energy,
@@ -278,6 +281,7 @@ class OptimizerRuntime:
         self.learn_steps = LearnSteps()
         # Heat pump electricity today, measured (heat pump meter) vs planned.
         self.hp_cost: Dict[str, Any] = {}
+        self.saved_until: Optional[int] = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -326,6 +330,9 @@ class OptimizerRuntime:
             data = None
         data = data if isinstance(data, dict) else {}
         self.log = SampleLog.from_dict(data.get("log"))
+        span = self.log.span()
+        # The last bin saved before this start: the history import fills the gap after it.
+        self.saved_until = span[1] if span is not None else None
         imported = data.get("imported")
         self.imported = {str(k): str(v) for k, v in imported.items()} if isinstance(imported, dict) else {}
         self.bootstrap_at = data.get("bootstrap_at") if isinstance(data.get("bootstrap_at"), str) else None
@@ -545,6 +552,53 @@ class OptimizerRuntime:
             self._logged.add(key)
             _LOGGER.info(message, *args)
 
+    async def _async_import_item(
+        self, item: ImportItem, start: datetime, end: datetime
+    ) -> Tuple[int, List[str]]:
+        """Import ``item`` over [start, end) into empty bins: (bins added, one report per source)."""
+        from homeassistant.components.recorder import get_instance
+
+        # The own sensor first; a fallback only fills the bins left empty.
+        report = []
+        total = 0
+
+        async def fetch(entity_id: str) -> Tuple[Dict[int, float], int]:
+            state = self.hass.states.get(entity_id)
+            convert = None
+            if item.kind == "mean" and state is not None and state.attributes.get("device_class") == "temperature":
+                convert = _celsius(state.attributes.get("unit_of_measurement"))
+            rows = await get_instance(self.hass).async_add_executor_job(
+                _fetch_history, self.hass, entity_id, start, end
+            )
+            series = await self.hass.async_add_executor_job(
+                import_series,
+                rows,
+                item.kind,
+                start.timestamp(),
+                end.timestamp(),
+                convert,
+                self.meter_config if item.kind == "meter" else None,
+                item.wanted,
+                item.states,
+            )
+            return series, len(rows)
+
+        for entity_id in item.sources:
+            state = self.hass.states.get(entity_id)
+            members = group_members(state.attributes if state is not None else None)
+            if members and is_indoor_column(item.column):
+                # A sensor group of room thermometers: its members' history
+                # reaches back before the group existed; averaged like the group.
+                fetched = [await fetch(member) for member in members]
+                series = mean_series([one for one, _ in fetched])
+                rows_n = sum(n for _, n in fetched)
+            else:
+                series, rows_n = await fetch(entity_id)
+            added = self.log.fill(item.column, series)
+            total += added
+            report.append("%s: %d of %d bins imported (%d rows)" % (entity_id, added, len(series), rows_n))
+        return total, report
+
     def import_plan(self) -> List[ImportItem]:
         """What to import from the recorder and from which entity."""
         items: List[ImportItem] = []
@@ -593,8 +647,6 @@ class OptimizerRuntime:
             self.bootstrap_running = False
 
     async def _async_bootstrap(self) -> None:
-        from homeassistant.components.recorder import get_instance
-
         end = dt_util.utcnow()
         start = end - timedelta(days=BOOTSTRAP_DAYS)
         missing = []
@@ -605,34 +657,36 @@ class OptimizerRuntime:
                 missing.append(item.column)
                 continue
             key = ",".join(item.sources)
-            if self.imported.get(item.column) == key:
+            previous = self.imported.get(item.column)
+            if previous == key:
                 continue
-            # The own sensor first; a fallback only fills the bins left empty.
-            report = []
-            for entity_id in item.sources:
-                state = self.hass.states.get(entity_id)
-                convert = None
-                if item.kind == "mean" and state is not None and state.attributes.get("device_class") == "temperature":
-                    convert = _celsius(state.attributes.get("unit_of_measurement"))
-                rows = await get_instance(self.hass).async_add_executor_job(
-                    _fetch_history, self.hass, entity_id, start, end
+            if previous and is_indoor_column(item.column) and previous.split(",")[0] != item.sources[0]:
+                # Another room sensor (or a group of them) is another measurement:
+                # mixing its level with the old sensor's would bias the house fit.
+                dropped = self.log.drop(item.column)
+                _LOGGER.info(
+                    "NibePi optimiser: indoor sensor for %s changed (%s -> %s); %d bins of the old one dropped",
+                    item.column, previous.split(",")[0], item.sources[0], dropped,
                 )
-                series = await self.hass.async_add_executor_job(
-                    import_series,
-                    rows,
-                    item.kind,
-                    start.timestamp(),
-                    end.timestamp(),
-                    convert,
-                    self.meter_config if item.kind == "meter" else None,
-                    item.wanted,
-                    item.states,
-                )
-                added = self.log.fill(item.column, series)
-                report.append("%s: %d of %d bins imported (%d rows)" % (entity_id, added, len(series), len(rows)))
+            _added, report = await self._async_import_item(item, start, end)
             self.imported[item.column] = key
             self.bootstrap_report[item.column] = "; ".join(report)
             changed = True
+        # After a restart: the bins between the last save and the stop (up to an
+        # hour of live values) are back from the recorder; live values still win.
+        last = self.saved_until
+        self.saved_until = None
+        if last is not None and last < end.timestamp() - 2 * STEP_S:
+            gap_start = datetime.fromtimestamp(last, timezone.utc) - timedelta(hours=1)
+            filled = 0
+            for item in self.import_plan():
+                if item.entity_id is None or item.problem:
+                    continue
+                added, _report = await self._async_import_item(item, gap_start, end)
+                filled += added
+            if filled:
+                _LOGGER.info("NibePi optimiser: %d bins since %s filled from the recorder", filled, gap_start)
+                changed = True
         if missing:
             self._log_once(
                 "missing",
@@ -659,6 +713,10 @@ class OptimizerRuntime:
         emitter = rt.opt(OPT_HOUSE_EMITTER)
         sensors = to_float(rt.opt(OPT_HOUSE_SENSORS)) or 1
         sys = rt.systems.get(system)
+        # A sensor group as the indoor sensor counts its thermometers.
+        indoor = rt.opt(OPT_INDOOR_ENTITY, system) if sys is not None else None
+        state = self.hass.states.get(indoor) if indoor else None
+        sensors = max(sensors, len(group_members(state.attributes if state is not None else None)))
         target = rt._setpoint(sys) if sys is not None else None
         return HouseProfile(
             floor_area_m2=to_float(rt.opt(OPT_HOUSE_AREA)) or 150.0,

@@ -9,6 +9,9 @@ from context import utc
 from logic.opthistory import (
     BinAccumulator,
     SampleLog,
+    group_members,
+    is_indoor_column,
+    mean_series,
     bin_meter_energy,
     discovery_device_id,
     gateway_ids,
@@ -239,6 +242,31 @@ class ModelInputsTest(unittest.TestCase):
         self.assertAlmostEqual(first["t_out"], -5.0)
         rows[T0 + 4200].pop("meter_kwh")
         self.assertEqual([h for h, _ in hourly(rows, ["meter_kwh"])], [T0])
+
+
+class IndoorSourceTest(unittest.TestCase):
+    def test_drop_a_column(self) -> None:
+        log = SampleLog()
+        log.put(0, {"s1_t_in": 21.0, "s1_supply": 30.0})
+        log.put(600, {"s1_t_in": 21.1})
+        self.assertEqual(log.drop("s1_t_in"), 2)
+        self.assertEqual(log.count("s1_t_in"), 0)
+        self.assertEqual(log.count("s1_supply"), 1)
+        self.assertEqual(len(log), 1)  # the empty bin is gone
+
+    def test_indoor_columns(self) -> None:
+        self.assertTrue(is_indoor_column("s1_t_in"))
+        self.assertTrue(is_indoor_column("s2_t_in"))
+        self.assertFalse(is_indoor_column("s1_supply"))
+        self.assertFalse(is_indoor_column("t_out"))
+
+    def test_group_members_and_mean(self) -> None:
+        self.assertEqual(group_members({"entity_id": ["sensor.a", "sensor.b"]}), ["sensor.a", "sensor.b"])
+        self.assertEqual(group_members({"entity_id": "sensor.a"}), [])
+        self.assertEqual(group_members(None), [])
+        mean = mean_series([{0: 20.0, 600: 21.0}, {0: 22.0}])
+        self.assertEqual(mean, {0: 21.0, 600: 21.0})
+
 
 
 if __name__ == "__main__":

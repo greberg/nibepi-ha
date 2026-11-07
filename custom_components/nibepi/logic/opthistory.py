@@ -78,6 +78,33 @@ def column(name: str, system: Optional[str] = None) -> str:
     return "%s_%s" % (system, name) if system else name
 
 
+def group_members(attributes: Optional[Mapping[str, Any]]) -> List[str]:
+    """The member entities of a Home Assistant group (its ``entity_id``
+    attribute: a sensor group averaging several room thermometers); [] for
+    a plain sensor."""
+    members = (attributes or {}).get("entity_id")
+    if isinstance(members, (list, tuple)):
+        return [str(m) for m in members if isinstance(m, str) and m]
+    return []
+
+
+def mean_series(series: Sequence[Mapping[int, float]]) -> Dict[int, float]:
+    """Per bin, the mean of the series that have a value there (the group's
+    own rule: the mean of the members available)."""
+    sums: Dict[int, List[float]] = {}
+    for one in series:
+        for start, value in one.items():
+            acc = sums.setdefault(start, [0.0, 0.0])
+            acc[0] += value
+            acc[1] += 1
+    return {start: total / count for start, (total, count) in sums.items()}
+
+
+def is_indoor_column(name: str) -> bool:
+    """The indoor temperature column of a system (``s1_t_in``, ``s2_t_in``)."""
+    return name == "t_in" or name.endswith("_t_in")
+
+
 def bin_start(ts: float, step: int = STEP_S) -> int:
     return int(ts // step) * step
 
@@ -388,6 +415,17 @@ class SampleLog:
                 row[name] = float(value)
                 added += 1
         return added
+
+    def drop(self, name: str) -> int:
+        """Remove a column everywhere (another source for it); the bins dropped."""
+        dropped = 0
+        for start in list(self.rows):
+            row = self.rows[start]
+            if row.pop(name, None) is not None:
+                dropped += 1
+                if not row:
+                    del self.rows[start]
+        return dropped
 
     def trim(self, oldest: float) -> None:
         for start in [s for s in self.rows if s < oldest]:
