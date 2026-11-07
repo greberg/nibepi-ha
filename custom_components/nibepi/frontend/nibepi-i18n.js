@@ -110,6 +110,7 @@ const en = {
   "part.price": "Price",
   "part.weather": "Forecast",
   "part.away": "Away",
+  "part.learn": "Learning",
   "part.optimiser": "Optimiser",
   "part.comfort_floor": "Comfort floor",
   "part.rules": "Rules would be",
@@ -130,6 +131,7 @@ const en = {
   "plan.cost_baseline": "Plan cost / baseline",
   "plan.planned": "Planned",
   "plan.not_applied": "(not applied)",
+  "plan.unlearned": "Sketch from the starting values: the house model isn't learned yet, so this plan doesn't steer and its numbers aren't reliable.",
   "plan.why": "Why ({count})",
   "plan.segment": "{from}–{to}: offset {offset}, indoor {indoor} °C",
 
@@ -361,6 +363,7 @@ const sv = {
   "part.price": "Elpris",
   "part.weather": "Prognos",
   "part.away": "Borta",
+  "part.learn": "Inlärning",
   "part.optimiser": "Optimerare",
   "part.comfort_floor": "Komfortgolv",
   "part.rules": "Regler skulle ge",
@@ -380,6 +383,7 @@ const sv = {
   "plan.cost_baseline": "Kostnad plan / referens",
   "plan.planned": "Planerad",
   "plan.not_applied": "(ej tillämpad)",
+  "plan.unlearned": "Skiss från startvärdena: husmodellen är inte inlärd än, så planen styr inte och siffrorna är inte tillförlitliga.",
   "plan.why": "Varför ({count})",
   "plan.segment": "{from}–{to}: kurvjustering {offset}, inomhus {indoor} °C",
 

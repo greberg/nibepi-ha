@@ -97,6 +97,7 @@ from .const import (
     OPT_METER_ENTITY,
     OPT_METER_SCOPE,
     OPT_OPT_MIN_LEVEL,
+    OPT_LEARN_STEPS,
     OPT_PRICE_ENTITY,
     OPT_PRICE_GUARD,
     OPT_PRICE_MIN_SPREAD,
@@ -487,6 +488,7 @@ class _NibePiSteps:
             _optional(OPT_METER_ENTITY, current): METER_SENSOR,
             _required(OPT_METER_SCOPE, current, SHARED_DEFAULTS): _choice(METER_SCOPES, "meter_scope"),
             _required(OPT_OPT_MIN_LEVEL, current, SHARED_DEFAULTS): _choice(CONFIDENCE_LEVELS, "confidence_level"),
+            _required(OPT_LEARN_STEPS, current, SHARED_DEFAULTS): BOOL,
         }
         return self.async_show_form(  # type: ignore[attr-defined]
             step_id="house",

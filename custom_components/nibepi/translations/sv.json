@@ -86,7 +86,8 @@
           "house_sensors": "Antal inomhusgivare i medelvärdet",
           "meter_entity": "Elmätare (valfri)",
           "meter_scope": "Mätaren mäter",
-          "optimizer_min_level": "Lägsta modellsäkerhet för att styra"
+          "optimizer_min_level": "Lägsta modellsäkerhet för att styra",
+          "optimizer_learning_steps": "Inlärningssteg på natten"
         },
         "data_description": {
           "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
@@ -95,7 +96,8 @@
           "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
           "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh). Kalibrerar värmepumpens verkningsgrad; styr aldrig.",
           "meter_scope": "Bara värmepumpen: värdena är värmepumpens el, kalibrerar verkningsgraden direkt och ger värmepumpens faktiska kostnad per dag. Hela huset: värmepumpens andel uppskattas från dess aktivitet, vilket kräver veckor av data.",
-          "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
+          "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos).",
+          "optimizer_learning_steps": "Så länge husmodellen är under den säkerheten stegas kurvjusteringen +2/-2 några timmar på natten (inom komfortintervallet) så att modellen lär sig hur huset reagerar."
         }
       }
     },
@@ -232,7 +234,8 @@
           "house_sensors": "Antal inomhusgivare i medelvärdet",
           "meter_entity": "Elmätare (valfri)",
           "meter_scope": "Mätaren mäter",
-          "optimizer_min_level": "Lägsta modellsäkerhet för att styra"
+          "optimizer_min_level": "Lägsta modellsäkerhet för att styra",
+          "optimizer_learning_steps": "Inlärningssteg på natten"
         },
         "data_description": {
           "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
@@ -241,7 +244,8 @@
           "house_sensors": "Hur många rumsgivare inomhusvärdet är ett medelvärde av. En givare i ett hus med flera våningar ger en säkerhetsmarginal.",
           "meter_entity": "En effektgivare (W, kW) eller en uppräknande energimätare (Wh, kWh, MWh). Kalibrerar värmepumpens verkningsgrad; styr aldrig.",
           "meter_scope": "Bara värmepumpen: värdena är värmepumpens el, kalibrerar verkningsgraden direkt och ger värmepumpens faktiska kostnad per dag. Hela huset: värmepumpens andel uppskattas från dess aktivitet, vilket kräver veckor av data.",
-          "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos)."
+          "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos).",
+          "optimizer_learning_steps": "Så länge husmodellen är under den säkerheten stegas kurvjusteringen +2/-2 några timmar på natten (inom komfortintervallet) så att modellen lär sig hur huset reagerar."
         }
       },
       "hotwater": {

@@ -705,7 +705,7 @@ export function contributions(planned, optimiserOffset, loc) {
     ];
   } else {
     const components = attrs.components || {};
-    const keys = "away" in components ? [...COMPONENTS, "away"] : COMPONENTS;
+    const keys = [...COMPONENTS, ...["away", "learn"].filter((k) => k in components)];
     items = keys.map((c) => ({
       key: c,
       label: t(loc, `part.${c}`),

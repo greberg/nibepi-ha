@@ -86,7 +86,8 @@
           "house_sensors": "Indoor sensors averaged",
           "meter_entity": "Electricity meter (optional)",
           "meter_scope": "The meter measures",
-          "optimizer_min_level": "Minimum model confidence to steer"
+          "optimizer_min_level": "Minimum model confidence to steer",
+          "optimizer_learning_steps": "Learning steps at night"
         },
         "data_description": {
           "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
@@ -95,7 +96,8 @@
           "house_sensors": "How many room sensors the indoor value is an average of. One sensor in a house with several floors gets a safety margin.",
           "meter_entity": "A power sensor (W, kW) or an energy meter counting up (Wh, kWh, MWh). Calibrates the heat pump's efficiency; never used to steer.",
           "meter_scope": "The heat pump only: its readings are the heat pump's electricity, calibrate the efficiency directly and give the actual heat pump cost per day. The whole house: the heat pump's share is estimated from its activity, which needs weeks of data.",
-          "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do."
+          "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do.",
+          "optimizer_learning_steps": "While the house model is below that confidence, step the curve offset +2/-2 for a few hours at night (within the comfort band) so the model can learn how the house responds."
         }
       }
     },
@@ -232,7 +234,8 @@
           "house_sensors": "Indoor sensors averaged",
           "meter_entity": "Electricity meter (optional)",
           "meter_scope": "The meter measures",
-          "optimizer_min_level": "Minimum model confidence to steer"
+          "optimizer_min_level": "Minimum model confidence to steer",
+          "optimizer_learning_steps": "Learning steps at night"
         },
         "data_description": {
           "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
@@ -241,7 +244,8 @@
           "house_sensors": "How many room sensors the indoor value is an average of. One sensor in a house with several floors gets a safety margin.",
           "meter_entity": "A power sensor (W, kW) or an energy meter counting up (Wh, kWh, MWh). Calibrates the heat pump's efficiency; never used to steer.",
           "meter_scope": "The heat pump only: its readings are the heat pump's electricity, calibrate the efficiency directly and give the actual heat pump cost per day. The whole house: the heat pump's share is estimated from its activity, which needs weeks of data.",
-          "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do."
+          "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do.",
+          "optimizer_learning_steps": "While the house model is below that confidence, step the curve offset +2/-2 for a few hours at night (within the comfort band) so the model can learn how the house responds."
         }
       },
       "hotwater": {

@@ -265,6 +265,13 @@ test("contributions: rules components or the optimiser", () => {
   assert.equal(contributions(undefined).length, 3);
 });
 
+test("contributions: the learning step shows as its own bar", () => {
+  const items = contributions({ attributes: { source: "rules", components: { indoor: 0, price: 0, weather: -1, learn: 2 } } }, null, "sv");
+  assert.deepEqual(items.map((c) => c.key), ["indoor", "price", "weather", "learn"]);
+  assert.equal(items[3].label, "Inlärning");
+  assert.equal(items[3].value, 2);
+});
+
 test("climate alerts", () => {
   const ids = {
     gateway_online: "g",

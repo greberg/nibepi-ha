@@ -623,7 +623,9 @@ class NibePiPlanCard extends NibePiCard {
       return `<div class="content"><div class="empty">${esc(text)}</div></div>`;
     }
     const p = chart.plot;
-    const svg = `<svg viewBox="0 0 ${chart.width} ${chart.height}" role="img" aria-label="${esc(this.t("plan.aria"))}">
+    // Planned on the profile's starting values, not a learned house: a sketch, not a forecast.
+    const unlearned = a.model_level === "prior";
+    const svg = `<svg viewBox="0 0 ${chart.width} ${chart.height}" role="img" aria-label="${esc(this.t("plan.aria"))}"${unlearned ? ' style="opacity: .45"' : ""}>
       ${chart.priceBands
         .map((b) => {
           const c = PRICE_COLORS[b.level] || PRICE_COLORS.normal;
@@ -695,8 +697,9 @@ class NibePiPlanCard extends NibePiCard {
           .join("")}</ul></details>`
       : "";
     const summary = this.text(a, "summary");
+    const unlearnedNote = unlearned ? `<div class="sub">${esc(this.t("plan.unlearned"))}</div>` : "";
     return `<div class="content">
-      ${svg}${legend}
+      ${unlearnedNote}${svg}${legend}
       ${summary ? `<div class="small">${esc(summary)}</div>` : ""}
       <div class="grid">${savings}${cost}${status}</div>
       ${explanation}

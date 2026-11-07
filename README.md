@@ -121,6 +121,7 @@ Shared:
 | Electricity meter | - | optional power or energy sensor; calibration and the heat pump's cost, never steering |
 | The meter measures | the heat pump only | or the whole house |
 | Minimum model confidence to steer | high | low / medium / high |
+| Learning steps at night | on | +2/-2 offset steps while the house model is below that confidence |
 | Optimiser hot water floor (hot water step) | 45 °C | BT6, for the optimiser's tank plan |
 | Away: setback, lowest indoor, curve offset, hot water, heat back, return lead | 3 °C, 16 °C, -3, economy, on, 0 h | see [Away mode](#away-mode) |
 
@@ -438,6 +439,7 @@ values ("priors"); the optimiser learns the real ones from the history.
 | Electricity meter | none | calibrates the pump's efficiency; see below |
 | The meter measures (the heat pump only, the whole house) | the heat pump only | see below |
 | Minimum model confidence to steer | high | the gate, see below |
+| Learning steps at night | on | see below |
 
 The location (sun position, design outdoor temperature) and the time zone
 are Home Assistant's own (Settings -> System -> General); the step shows
@@ -523,8 +525,9 @@ meter is shared), the floor loop's water flow from the heat meter and
 BT2 − BT3 (a check of the slab's coasting time), the compressor's efficiency (Carnot fraction, from the
 heat meter and the heat pump meter, or the compressor power with a
 whole-house meter) and, with a whole-house meter, the heat pump's share
-of it. A fit that is
-implausible is rejected and the priors are used. The *House model* sensor
+of it. Solar and internal gains that land just outside their range
+(within one range width) are pinned at its edge and the rest refitted; a
+fit that is still implausible is rejected and the priors are used. The *House model* sensor
 shows the result; its state is the confidence (`prior`, `low`, `medium`,
 `high`), from the amount of data, how well the model predicts the indoor
 temperature 24 h ahead and how certain the emitter gain is.
@@ -532,8 +535,20 @@ temperature 24 h ahead and how certain the emitter gain is.
 The confidence only becomes high with offset movement in the history:
 the supply follows the outdoor temperature through the curve, so without
 the offset changing, heat loss and emitter gain can't be told apart. The
-price and indoor components, and the optimiser in shadow mode, provide
-that movement.
+price and indoor components give some movement, often too little: a
+house where the rules hold -1 day after day never learns, and the
+optimiser never steers.
+
+**Learning steps** provide it. With the strategy *Optimiser*, while the
+model is below *Minimum model confidence to steer* and the rules steer,
+the offset is stepped at night: +2 for 3 hours from 23:00, then -2 for 3
+hours (the order alternates night by night), on top of the rules. What the
+warm half costs, the cool half saves. A warming step is skipped when the
+room is within 0.3 °C of the band's upper edge, a cooling step within
+0.3 °C of its lower edge, and without an indoor temperature; a skipped
+slot stays skipped until it ends. The climate card shows the step as its
+own bar, *Learning*. Once the model reaches the level, the steps stop.
+Turn them off in the options (House step).
 
 ### How it decides
 

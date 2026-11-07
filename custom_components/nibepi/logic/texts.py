@@ -125,6 +125,23 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
         "borta: fast kurvjustering {offset:+g} (inomhusreglering inte aktiv)",
     ),
     "away.no_charges": ("away: no planned charges", "borta: inga planerade laddningar"),
+    # -- Learning steps (logic/learnstep.py) ----------------------------------
+    "learn.step": (
+        "learning step {offset:+g} until {end} so the house model can learn",
+        "inlärningssteg {offset:+g} till {end} så att husmodellen kan lära sig",
+    ),
+    "learn.skip_warm": (
+        "learning step skipped: indoor {t_in:.1f} °C is already warm",
+        "inlärningssteget hoppas över: inomhus {t_in:.1f} °C är redan varmt",
+    ),
+    "learn.skip_cold": (
+        "learning step skipped: indoor {t_in:.1f} °C is already cool",
+        "inlärningssteget hoppas över: inomhus {t_in:.1f} °C är redan svalt",
+    ),
+    "learn.no_indoor": (
+        "learning step skipped: no indoor temperature",
+        "inlärningssteget hoppas över: ingen inomhustemperatur",
+    ),
     # -- RMU40 room temperature feed (logic/rmu.py) ---------------------------
     "rmu.room_missing": ("room temperature missing", "rumstemperatur saknas"),
     "rmu.room_stale": ("room temperature stale", "rumstemperaturen är inaktuell"),

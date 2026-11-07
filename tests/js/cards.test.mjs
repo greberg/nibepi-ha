@@ -169,6 +169,16 @@ test("plan card escapes text and draws the chart", () => {
   assert.doesNotMatch(html, /<b>1<\/b>/);
 });
 
+test("plan card marks a plan from the unlearned prior", () => {
+  const hass = makeHass();
+  const learned = render("nibepi-plan-card", { system: "s1" }, hass).html;
+  assert.doesNotMatch(learned, /learned yet/);
+  hass.states["sensor.plan_s1"].attributes = { ...hass.states["sensor.plan_s1"].attributes, model_level: "prior" };
+  const { html } = render("nibepi-plan-card", { system: "s1" }, hass);
+  assert.match(html, /house model isn&#39;t learned yet/);
+  assert.match(html, /<svg[^>]*opacity: \.45/);
+});
+
 test("plan card empty state", () => {
   const hass = makeHass();
   hass.states["sensor.plan_s1"] = { state: "unknown", attributes: { problem: "no prices" } };

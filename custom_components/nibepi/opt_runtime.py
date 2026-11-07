@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -45,6 +45,7 @@ from .const import (
     OPT_METER_ENTITY,
     OPT_METER_SCOPE,
     OPT_OPT_MIN_LEVEL,
+    OPT_LEARN_STEPS,
     OPT_PRICE_UNIT_FACTOR,
     OPT_SENSOR_TIMEOUT,
     OPT_STORE_SAVE_DELAY,
@@ -63,7 +64,8 @@ from .const import (
     opt_store_key,
     signal_update,
 )
-from .logic.curve import CurvePlan
+from .logic.curve import TOTAL_LIMIT, CurvePlan, clamp, target_value
+from .logic.learnstep import LearnSteps, learning_needed
 from .logic.hotwater import START_REGISTERS, STOP_REGISTERS
 from .logic.hwcontrol import REG_BT6, REG_PRIO
 from .logic.legionella import REG_LUX_STOP, legionella_pin
@@ -120,6 +122,7 @@ from .logic.optrun import (
 )
 from .logic.optstrategy import (
     SOURCE_RULES,
+    STRATEGY_OPTIMISER,
     STRATEGY_RULES,
     STRATEGIES,
     StrategyChoice,
@@ -272,6 +275,7 @@ class OptimizerRuntime:
         # When each plan (a system, or hot water) actually steered the pump:
         # savings and the plan-vs-measured gap only count that time.
         self.applied = AppliedLog()
+        self.learn_steps = LearnSteps()
         # Heat pump electricity today, measured (heat pump meter) vs planned.
         self.hp_cost: Dict[str, Any] = {}
 
@@ -825,11 +829,40 @@ class OptimizerRuntime:
         ``active``: the system's mode writes to the pump (not shadow/off).
         """
         decision = self.live_gate(system, now)
-        choice = choose_total(self.strategy.get(system, STRATEGY_RULES), rules.total, decision)
+        strategy = self.strategy.get(system, STRATEGY_RULES)
+        choice = choose_total(strategy, rules.total, decision)
         self.gates[system] = decision
         self.choices[system] = choice
         self.applied.mark(system, now, active and choice.source != SOURCE_RULES)
+        if choice.source == SOURCE_RULES and strategy == STRATEGY_OPTIMISER:
+            rules = self._learning_step(system, now, rules, current)
         return apply_choice(rules, choice, current)
+
+    def _learning_step(self, system: str, now: datetime, rules: CurvePlan, current: Optional[float]) -> CurvePlan:
+        """The rules plan with tonight's learning step (logic/learnstep.py) added
+        while the house model is below the gate's level."""
+        models = self.models.get(system)
+        if models is None or not self.rt.opt(OPT_LEARN_STEPS):
+            return rules
+        min_level = str(self.rt.opt(OPT_OPT_MIN_LEVEL) or "high")
+        if not learning_needed(models.fit.ok, models.fit.level, min_level):
+            return rules
+        comfort = self.comfort(system, now)
+        t_in, _problem, _reason = self._indoor(system, now)
+        step = self.learn_steps.at(system, dt_util.as_local(now), t_in, comfort.lower, comfort.upper)
+        if step is None:
+            return rules
+        total = clamp(rules.total + step.offset, -TOTAL_LIMIT, TOTAL_LIMIT)
+        target = target_value(total, current)
+        return replace(
+            rules,
+            total=total,
+            target=target,
+            write=current is None or target != current,
+            components={**rules.components, "learn": step.offset},
+            reasons={**rules.reasons, "learn": step.reason},
+            inputs_ok={**rules.inputs_ok, "learn": True},
+        )
 
     def mark_hot_water(self, now: datetime, applied: bool) -> None:
         """Whether the hot water controller follows the optimiser's plan this tick."""
