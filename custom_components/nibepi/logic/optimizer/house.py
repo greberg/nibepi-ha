@@ -696,13 +696,19 @@ def _clamp01(x: float) -> float:
 
 
 def _solve(bins, hours: float, prior: HouseModel, prior_hours: float, lagged: bool,
-           c_max: Optional[float] = None):
+           bounds: Optional["FitBounds"] = None):
     """Ridge regression of a..d; (theta, normal equations, ridge) or None.
 
     ``c`` (solar) also soaks up daytime effects the model does not have:
     a sensor in the sun, cooking, people at home, past cloud cover. Above
-    ``c_max`` it is pinned there and a, b, d refitted, rather than letting
-    it reject the whole fit."""
+    its bound it is pinned there and a, b, d refitted, rather than letting
+    it reject the whole fit.
+
+    ``d`` (internal gains) is pinned the same way when it lands just
+    outside its bound (within one bound width): a house whose fit says
+    "slightly below zero" (ventilation losses, a sensor reading a bit low)
+    is a usable house, not a failed fit. Far outside, it is left for the
+    plausibility check to reject."""
     eq = NormalEquations(4)
     for x, y in _rows(bins, hours, lagged):
         eq.add(x, y)
@@ -711,18 +717,51 @@ def _solve(bins, hours: float, prior: HouseModel, prior_hours: float, lagged: bo
     prior_theta = [prior.a, prior.b, prior.c, prior.d]
     ridge = [prior_hours / hours * s * s * 0.25 for s in _SCALES]
     theta = eq.solve(ridge, prior_theta)
-    if theta is not None and theta[2] < 0:
-        # Solar must not cool the house: pin c to 0 and refit.
-        pinned = list(ridge)
-        pinned[2] = 1e9
-        theta = eq.solve(pinned, prior_theta[:2] + [0.0, prior_theta[3]]) or theta
-        theta[2] = max(0.0, theta[2])
-    elif theta is not None and c_max is not None and theta[2] > c_max:
-        pinned = list(ridge)
-        pinned[2] = 1e9
-        theta = eq.solve(pinned, prior_theta[:2] + [c_max, prior_theta[3]]) or theta
-        theta[2] = min(c_max, theta[2])
+    if theta is None:
+        return theta, eq, ridge
+    pins = {}  # index -> pinned value
+    c_max = bounds.c[1] if bounds is not None else None
+    if theta[2] < 0:
+        pins[2] = 0.0  # solar must not cool the house
+    elif c_max is not None and theta[2] > c_max:
+        pins[2] = c_max
+    d_pin = _near_bound(theta[3], bounds.d) if bounds is not None else None
+    if d_pin is not None:
+        pins[3] = d_pin
+    if pins:
+        theta = _refit(eq, ridge, prior_theta, pins) or theta
+        # Pinning c can push d out (and the other way round is pinned already).
+        d_pin = _near_bound(theta[3], bounds.d) if bounds is not None and 3 not in pins else None
+        if d_pin is not None:
+            pins[3] = d_pin
+            theta = _refit(eq, ridge, prior_theta, pins) or theta
     return theta, eq, ridge
+
+
+def _near_bound(value: float, bound: Tuple[float, float]) -> Optional[float]:
+    """The bound ``value`` is just outside (within one bound width), else None."""
+    lo, hi = bound
+    width = hi - lo
+    if lo - width <= value < lo:
+        return lo
+    if hi < value <= hi + width:
+        return hi
+    return None
+
+
+def _refit(eq, ridge, prior_theta, pins):
+    """Solve with the ``pins`` (index -> value) held fixed by a huge ridge."""
+    pinned = list(ridge)
+    target = list(prior_theta)
+    for i, value in pins.items():
+        pinned[i] = 1e9
+        target[i] = value
+    theta = eq.solve(pinned, target)
+    if theta is None:
+        return None
+    for i, value in pins.items():
+        theta[i] = value
+    return theta
 
 
 def _plausible(theta: Sequence[float], bounds: FitBounds) -> bool:
@@ -772,7 +811,7 @@ def fit_house_model(
         for tau in (lag_grid if lag_grid is not None else LAG_GRID_H):
             slab = slab_filter(ordered, tau, tau * ratio)
             cand_bins = resample(ordered, step_minutes, slab)
-            theta, eq, ridge = _solve(cand_bins, hours, prior, prior_hours, True, bounds.c[1])
+            theta, eq, ridge = _solve(cand_bins, hours, prior, prior_hours, True, bounds)
             if theta is None or theta[0] <= 0 or theta[1] <= 0:
                 continue
             cand = HouseModel(theta[0], theta[1], theta[2], theta[3], tau, tau * ratio)
@@ -784,7 +823,7 @@ def fit_house_model(
         if best is None:
             # Nothing usable: report why with the prior's lag.
             bins = resample(ordered, step_minutes, slab_filter(ordered, prior.tau_f, prior.drain_h))
-            theta, eq, ridge = _solve(bins, hours, prior, prior_hours, True, bounds.c[1])
+            theta, eq, ridge = _solve(bins, hours, prior, prior_hours, True, bounds)
             tau_f, tau_d = prior.tau_f, prior.drain_h
         else:
             _, tau_f, theta, eq, ridge, bins, bt2_rmse = best
@@ -803,7 +842,7 @@ def fit_house_model(
             })
             track = slab_track(ordered, slab_fit.tau_f, slab_fit.tau_d, slab_fit.kappa)
             bins3 = resample(ordered, step_minutes, track)
-            theta3, eq3, ridge3 = _solve(bins3, hours, prior, prior_hours, True, bounds.c[1])
+            theta3, eq3, ridge3 = _solve(bins3, hours, prior, prior_hours, True, bounds)
             if theta3 is not None and _plausible(theta3, bounds):
                 cand = HouseModel(theta3[0], theta3[1], theta3[2], theta3[3], slab_fit.tau_f, slab_fit.tau_d,
                                   slab_fit.kappa)
@@ -820,7 +859,7 @@ def fit_house_model(
                 extra["bt3"]["reason"] = "room fit on the BT3 slab implausible"
     else:
         bins = resample(ordered, step_minutes)
-        theta, eq, ridge = _solve(bins, hours, prior, prior_hours, False, bounds.c[1])
+        theta, eq, ridge = _solve(bins, hours, prior, prior_hours, False, bounds)
         tau_f = tau_d = 0.0
     n = eq.rows
     if n < 24:
@@ -844,7 +883,7 @@ def fit_house_model(
     rel_se_b = se_b / abs(b) if b else float("inf")
     sim_rmse, _ = simulate_bins(model, bins, hours, chunk) if a > 0 and b > 0 else (0.0, 0)
     details = {"a": a, "b": b, "c": c, "d": d, "tau_h": (1.0 / (a + b)) if a + b > 0 else None,
-               "c_pinned": c >= bounds.c[1] - 1e-9}
+               "c_pinned": c >= bounds.c[1] - 1e-9, "d_pinned": d in bounds.d}
     if prior.lagged:
         details.update({"tau_f": tau_f, "tau_d": tau_d, "lag_grid": grid_scores, **extra})
 

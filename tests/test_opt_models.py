@@ -100,6 +100,25 @@ class HouseFitTest(unittest.TestCase):
         # closer than the prior the rejected fit fell back to.
         self.assertAlmostEqual(fit.model.steady_supply(21, -5), TRUE.steady_supply(21, -5), delta=1.0)
 
+    def test_gains_just_outside_bound_are_pinned_not_rejected(self) -> None:
+        # The live house: d fitted at -0.0156 against a bound of -0.0154 threw
+        # the whole fit away. Just outside, d is pinned and the rest refitted.
+        from logic.optimizer.house import FitBounds
+        true = HouseModel(0.012, 0.02, 0.1, -0.01)
+        bounds = FitBounds(d=(0.0, 0.2))
+        fit = fit_house_model(history(2, model=true), PRIOR, bounds)
+        self.assertTrue(fit.ok, fit.reason)
+        self.assertEqual(fit.model.d, 0.0)
+        self.assertTrue(fit.details["d_pinned"])
+        self.assertAlmostEqual(fit.model.steady_supply(21, -5), true.steady_supply(21, -5), delta=1.0)
+
+    def test_gains_far_outside_bound_still_reject(self) -> None:
+        from logic.optimizer.house import FitBounds
+        true = HouseModel(0.012, 0.02, 0.1, -0.2)
+        fit = fit_house_model(history(2, model=true), PRIOR, FitBounds(d=(0.0, 0.05)))
+        self.assertFalse(fit.ok)
+        self.assertIn("d ", fit.reason)
+
     def test_rejects_outside_bounds(self) -> None:
         fast = HouseModel(0.2, 0.3, 0.0, 0.0)  # time constant 2 h
         fit = fit_house_model(history(5, model=fast), PRIOR)
