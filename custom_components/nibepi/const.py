@@ -8,7 +8,7 @@ DOMAIN = "nibepi"
 MANUFACTURER = "NIBE"
 OWNER = "ha"
 
-PLATFORMS = ["binary_sensor", "button", "select", "sensor", "switch"]
+PLATFORMS = ["binary_sensor", "button", "number", "select", "sensor", "switch"]
 
 # Config entry data
 CONF_PREFIX = "prefix"

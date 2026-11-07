@@ -125,6 +125,15 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
         "borta: fast kurvjustering {offset:+g} (inomhusreglering inte aktiv)",
     ),
     "away.no_charges": ("away: no planned charges", "borta: inga planerade laddningar"),
+    # -- Pump settings (logic/settings.py) ------------------------------------
+    "setting.order": (
+        "hot water stop temperatures must be economy ≤ normal ≤ luxury: {value:g} °C conflicts with {other:g} °C",
+        "varmvattnets stopptemperaturer måste vara ekonomi ≤ normal ≤ lyx: {value:g} °C krockar med {other:g} °C",
+    ),
+    "setting.unsupported": (
+        "the gateway does not take settings yet: update it (build e19a814 or later)",
+        "gatewayen tar inte emot inställningar än: uppdatera den (build e19a814 eller senare)",
+    ),
     # -- Learning steps (logic/learnstep.py) ----------------------------------
     "learn.step": (
         "learning step {offset:+g} until {end} so the house model can learn",

@@ -328,6 +328,17 @@
         "name": "Kör legionellacykel nu"
       }
     },
+    "number": {
+      "hw_stop_economy": {
+        "name": "Varmvatten stopptemperatur ekonomi"
+      },
+      "hw_stop_normal": {
+        "name": "Varmvatten stopptemperatur normal"
+      },
+      "hw_stop_luxury": {
+        "name": "Varmvatten stopptemperatur lyx"
+      }
+    },
     "select": {
       "mode": {
         "name": "Läge {system}",

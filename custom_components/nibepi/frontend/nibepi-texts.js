@@ -64,6 +64,8 @@ export const TEXTS = {
   "away.indoor": ["away: indoor control works on the lowered setpoint", "borta: inomhusregleringen styr mot det sänkta börvärdet"],
   "away.fixed": ["away: fixed curve offset {offset:+g} (indoor control not active)", "borta: fast kurvjustering {offset:+g} (inomhusreglering inte aktiv)"],
   "away.no_charges": ["away: no planned charges", "borta: inga planerade laddningar"],
+  "setting.order": ["hot water stop temperatures must be economy ≤ normal ≤ luxury: {value:g} °C conflicts with {other:g} °C", "varmvattnets stopptemperaturer måste vara ekonomi ≤ normal ≤ lyx: {value:g} °C krockar med {other:g} °C"],
+  "setting.unsupported": ["the gateway does not take settings yet: update it (build e19a814 or later)", "gatewayen tar inte emot inställningar än: uppdatera den (build e19a814 eller senare)"],
   "learn.step": ["learning step {offset:+g} until {end} so the house model can learn", "inlärningssteg {offset:+g} till {end} så att husmodellen kan lära sig"],
   "learn.skip_warm": ["learning step skipped: indoor {t_in:.1f} °C is already warm", "inlärningssteget hoppas över: inomhus {t_in:.1f} °C är redan varmt"],
   "learn.skip_cold": ["learning step skipped: indoor {t_in:.1f} °C is already cool", "inlärningssteget hoppas över: inomhus {t_in:.1f} °C är redan svalt"],

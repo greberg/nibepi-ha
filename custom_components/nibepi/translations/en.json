@@ -328,6 +328,17 @@
         "name": "Run legionella cycle now"
       }
     },
+    "number": {
+      "hw_stop_economy": {
+        "name": "Hot water stop temperature economy"
+      },
+      "hw_stop_normal": {
+        "name": "Hot water stop temperature normal"
+      },
+      "hw_stop_luxury": {
+        "name": "Hot water stop temperature luxury"
+      }
+    },
     "select": {
       "mode": {
         "name": "Mode {system}",

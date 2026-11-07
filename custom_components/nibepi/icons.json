@@ -13,6 +13,17 @@
         "default": "mdi:water-thermometer"
       }
     },
+    "number": {
+      "hw_stop_economy": {
+        "default": "mdi:water-thermometer-outline"
+      },
+      "hw_stop_normal": {
+        "default": "mdi:water-thermometer"
+      },
+      "hw_stop_luxury": {
+        "default": "mdi:water-thermometer"
+      }
+    },
     "select": {
       "mode": {
         "default": "mdi:cog-transfer-outline",

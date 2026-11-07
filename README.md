@@ -1077,6 +1077,15 @@ Hot water:
 - `select` Hot water mode
 - `switch` Hot water learning, VV-AI control, automatic luxury, priority,
   comfort mode by price, optimise hot water charges
+- `number` Hot water stop temperature economy (47049, 35–55 °C), normal
+  (47048, 40–60 °C) and luxury (47047, 45–65 °C): the pump's own settings,
+  changed for good through the gateway's settings channel (not a lease, so
+  they stay when Home Assistant stops). They must stay economy ≤ normal ≤
+  luxury. During a legionella cycle 47047 shows the value it returns to
+  (attribute `pump_value`: what the pump holds now), and a change is
+  written when the cycle ends. Unavailable until the gateway supports
+  settings (build `e19a814` or later). Attributes: register, leased,
+  pump_value, last_result.
 - `sensor` Hot water planned action (off / fault / idle / heat_now /
   block / economy / normal / luxury / legionella; attributes: reasons per feature,
   reason_codes, targets per register, next_heat_start, closed_until, plan_24h, inputs,

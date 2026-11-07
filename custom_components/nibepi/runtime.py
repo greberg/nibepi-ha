@@ -12,13 +12,13 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceNotFound
+from homeassistant.exceptions import HomeAssistantError, ServiceNotFound, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import sun as sun_helper
@@ -183,6 +183,7 @@ from .logic.legionella import (
 from .logic.legionella import TOLERANCE as LEGIONELLA_TOLERANCE
 from .logic.opthistory import parse_states
 from .logic.pump import BUS_HEALTH, parse_bus_health, pump_registers
+from .logic.settings import SETTINGS, Setting, gateway_supports, order_problem, setting_payload, setting_value
 from .logic.vvlearn import VvProfile
 from .logic.vvplan import PlanSettings
 from .logic.weather import WeatherSettings, compute_weather
@@ -258,6 +259,8 @@ class NibePiRuntime:
         self.readings: Dict[int, Reading] = {}
         self.base_adjust: Dict[str, float] = {}
         self.gateway_state: Dict[str, Any] = {}
+        # The gateway's last answer per setting register (setting/<reg>/result).
+        self.setting_results: Dict[int, Dict[str, Any]] = {}
         # The integration's own version (manifest), set before the platforms.
         self.integration_version: Optional[str] = None
         self._sw_version: Optional[str] = None
@@ -499,6 +502,9 @@ class NibePiRuntime:
         self._unsubs.append(
             await mqtt.async_subscribe(self.hass, self.prefix + BUS_HEALTH, self._on_bus_health)
         )
+        self._unsubs.append(
+            await mqtt.async_subscribe(self.hass, self.prefix + "setting/+/result", self._on_setting_result)
+        )
         leases = [lease for sys in self.systems.values() for lease in (sys.lease, sys.rmu_lease)]
         leases.extend(self.hotwater.leases.leases.values())
         for lease in leases:
@@ -540,6 +546,36 @@ class NibePiRuntime:
                 self.base_adjust[system] = value
 
         return _cb
+
+    @callback
+    def _on_setting_result(self, msg: Any) -> None:
+        parts = str(msg.topic)[len(self.prefix):].split("/")
+        data = _json(msg.payload)
+        if data is None or len(parts) != 3 or not parts[1].isdigit():
+            return
+        reg = int(parts[1])
+        self.setting_results[reg] = data
+        if data.get("ok") is not True:
+            _LOGGER.warning("Gateway refused setting %s: %s", reg, data.get("error"))
+        self._notify()
+
+    def setting_lease(self, reg: int) -> Optional[Mapping[str, Any]]:
+        """The gateway's lease state for ``reg`` when one of ours tracks it."""
+        lease = self.hotwater.leases.leases.get(reg)
+        return lease.remote if lease is not None else None
+
+    async def async_write_setting(self, setting: Setting, value: float) -> None:
+        """Change a pump setting for good through the gateway (logic/settings.py)."""
+        if not gateway_supports(self.gateway_state, setting.register):
+            raise ServiceValidationError(_sentence(msg("setting.unsupported").render(lang_of(self.hass.config.language))))
+        current = {s.register: self.setting_now(s) for s in SETTINGS if s is not setting}
+        problem = order_problem(setting, float(value), current)
+        if problem is not None:
+            raise ServiceValidationError(_sentence(problem.render(lang_of(self.hass.config.language))))
+        await self._publish("setting/%d/set" % setting.register, setting_payload(setting, value))
+
+    def setting_now(self, setting: Setting) -> Optional[float]:
+        return setting_value(self._value(setting.register), self.setting_lease(setting.register))
 
     def _make_lease_cb(self, lease: LeaseManager) -> Callable[[Any], None]:
         @callback
@@ -1404,6 +1440,10 @@ class NibePiRuntime:
             self.forecast_fetched = dt_util.utcnow()
         else:
             _LOGGER.warning("Forecast from %s had no usable hourly points", entity_id)
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:] + ("" if text.endswith(".") else ".")
 
 
 def _json(payload: Any) -> Optional[Dict[str, Any]]:
