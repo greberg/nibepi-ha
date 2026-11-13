@@ -1,4 +1,4 @@
-// NibePi Lovelace cards: climate, plan, hot water, gateway and savings.
+// NibePi Lovelace cards: climate, plan, hot water, gateway, savings and settings.
 //
 // Served by the integration (frontend_cards.py) and loaded on every
 // dashboard; plain custom elements, no build step and no external imports.
@@ -147,6 +147,21 @@ const STYLES = `
   svg text { font-size: 10px; fill: var(--secondary-text-color); font-family: inherit; }
   a { color: var(--primary-color); }
   .divider { height: 1px; background: var(--divider-color); }
+  .section { display: flex; flex-direction: column; gap: 8px; }
+  .section-title { font-size: 14px; font-weight: 500; color: var(--primary-text-color); }
+  .steppers { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .stepper { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .stepper .ctl { display: flex; align-items: center; gap: 4px; }
+  .stepper .ctl .value { flex: 1; text-align: center; font-variant-numeric: tabular-nums; cursor: pointer; }
+  .step { font: inherit; width: 32px; height: 32px; border-radius: 50%; flex: none; padding: 0;
+    border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color);
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .step:hover { border-color: var(--primary-color); }
+  .step:disabled { opacity: 0.4; cursor: default; border-color: var(--divider-color); }
+  .step ha-icon { --mdc-icon-size: 18px; }
+  .stepper .pending { opacity: 0.6; }
+  .stepper .note { font-size: 11px; color: var(--secondary-text-color); text-align: center; }
+  .stepper .note.err { color: var(--error-color, #db4437); }
 `;
 
 // --------------------------------------------------------------------------
@@ -1258,6 +1273,213 @@ class NibePiSavingsCard extends NibePiCard {
 }
 
 // --------------------------------------------------------------------------
+// Settings
+// --------------------------------------------------------------------------
+
+const SETTING_PARTS = [
+  ["indoor_enabled", "indoor", "mdi:home-thermometer-outline"],
+  ["price_enabled", "price", "mdi:cash"],
+  ["weather_enabled", "weather", "mdi:weather-partly-cloudy"],
+  ["rmu_feed", "rmu_feed", "mdi:thermostat"],
+];
+const HW_FEATURES = [
+  ["learning", "mdi:school-outline"],
+  ["vv_control", "mdi:water-boiler-auto"],
+  ["autoluxury", "mdi:water-plus-outline"],
+  ["priority", "mdi:priority-high"],
+  ["price_comfort", "mdi:cash-clock"],
+  ["optimiser", "mdi:chart-timeline-variant-shimmer"],
+];
+// Lowest to highest: economy <= normal <= luxury (as logic/settings.py).
+const HW_STOPS = ["economy", "normal", "luxury"];
+// A burst of taps becomes one write: the gateway takes a setting once per
+// 30 s per register, and each write is a permanent write in the pump.
+const SETTING_DEBOUNCE_MS = 1500;
+
+class NibePiSettingsCard extends NibePiCard {
+  static cardType = "nibepi-settings-card";
+  static defaultIcon = "mdi:tune-variant";
+  static perSystem = false;
+
+  static getStubConfig() {
+    return {};
+  }
+
+  constructor() {
+    super();
+    this._pending = new Map(); // card key -> value not yet sent
+    this._timers = new Map();
+    this._sending = new Set();
+    this._errors = new Map(); // card key -> message of the failed write
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    // Leaving the page sends what the viewer set, not drops it.
+    for (const key of [...this._timers.keys()]) this._send(key);
+  }
+
+  defaultTitle() {
+    return this.t("set.title");
+  }
+
+  getCardSize() {
+    return 6;
+  }
+
+  watched() {
+    const ids = this._ids || {};
+    const keys = ["hw_mode", ...HW_FEATURES.map(([f]) => `hw_${f}`), ...HW_STOPS.map((k) => `hw_stop_${k}`)];
+    for (const s of this._systems || []) keys.push(sysKey("mode", s), sysKey("strategy", s), ...SETTING_PARTS.map(([k]) => sysKey(k, s)));
+    return keys.map((k) => ids[k]).filter(Boolean);
+  }
+
+  // A switch as a toggle chip; "" without the entity.
+  toggleChip(key, label, icon) {
+    const s = this.st(key);
+    if (!s) return "";
+    const on = s.state === "on";
+    return `<button class="chip toggle ${on ? "on" : ""}" ${isMissing(s) ? "disabled" : ""} data-toggle="${esc(key)}" aria-pressed="${on}" title="${esc(
+      s.attributes?.friendly_name || label,
+    )}"><ha-icon icon="${esc(icon)}"></ha-icon>${esc(label)}</button>`;
+  }
+
+  toggleRow(label, chips) {
+    const inner = chips.filter(Boolean).join("");
+    return inner ? `<div class="chips"><span class="label">${esc(label)}</span>${inner}</div>` : "";
+  }
+
+  // The stop temperature's value (a pending one first) and its limits,
+  // the neighbours' values included.
+  stopModel(name) {
+    const key = `hw_stop_${name}`;
+    const s = this.st(key);
+    if (!s) return null;
+    const a = s.attributes || {};
+    const value = this._pending.has(key) ? this._pending.get(key) : toNumber(s.state);
+    const step = toNumber(a.step) || 0.5;
+    let min = toNumber(a.min) ?? -Infinity;
+    let max = toNumber(a.max) ?? Infinity;
+    const i = HW_STOPS.indexOf(name);
+    const at = (n) => {
+      const k = `hw_stop_${n}`;
+      return this._pending.has(k) ? this._pending.get(k) : toNumber(this.st(k)?.state);
+    };
+    const lower = i > 0 ? at(HW_STOPS[i - 1]) : null;
+    const upper = i < HW_STOPS.length - 1 ? at(HW_STOPS[i + 1]) : null;
+    if (lower !== null) min = Math.max(min, lower);
+    if (upper !== null) max = Math.min(max, upper);
+    return { key, s, value, step, min, max, available: !isMissing(s) && value !== null };
+  }
+
+  stepper(name) {
+    const m = this.stopModel(name);
+    if (!m) return "";
+    const label = this.t(`set.stop.${name}`);
+    const pending = this._pending.has(m.key) || this._sending.has(m.key);
+    const a = m.s.attributes || {};
+    let note = "";
+    if (pending) note = this.t("set.sending");
+    else if (this._errors.has(m.key)) note = this.t("set.failed", { name: label, error: this._errors.get(m.key) });
+    else if (a.leased && toNumber(a.pump_value) !== null) note = this.t("set.leased", { value: this.n(a.pump_value) });
+    const can = (v) => m.available && v >= m.min - 1e-9 && v <= m.max + 1e-9;
+    const btn = (dir, icon, textKey) =>
+      `<button class="step" data-step="${esc(m.key)}" data-dir="${dir}" ${can(m.value + dir * m.step) ? "" : "disabled"} aria-label="${esc(
+        this.t(textKey, { name: label }),
+      )}" title="${esc(this.t(textKey, { name: label }))}"><ha-icon icon="${icon}"></ha-icon></button>`;
+    const text = m.available ? `${this.n(m.value)} °C` : "–";
+    return `<div class="stepper">
+      <span class="label">${esc(label)}</span>
+      <div class="ctl">${btn(-1, "mdi:minus", "set.lower")}<span class="value ${pending ? "pending" : ""}" data-more="${esc(
+        m.key,
+      )}" role="button" tabindex="0">${text}</span>${btn(1, "mdi:plus", "set.raise")}</div>
+      ${note ? `<span class="note ${this._errors.has(m.key) && !pending ? "err" : ""}">${esc(note)}</span>` : ""}
+    </div>`;
+  }
+
+  _onClick(ev) {
+    const target = ev.composedPath().find((el) => el.dataset && el.dataset.step);
+    if (target) {
+      if (!target.disabled) this._step(target.dataset.step, Number(target.dataset.dir));
+      return;
+    }
+    super._onClick(ev);
+  }
+
+  _step(key, dir) {
+    const name = key.replace(/^hw_stop_/, "");
+    const m = this.stopModel(name);
+    if (!m || !m.available) return;
+    const next = Math.round((m.value + dir * m.step) / m.step) * m.step;
+    if (next < m.min - 1e-9 || next > m.max + 1e-9) return;
+    this._pending.set(key, next);
+    this._errors.delete(key);
+    clearTimeout(this._timers.get(key));
+    this._timers.set(key, setTimeout(() => this._send(key), SETTING_DEBOUNCE_MS));
+    this._render();
+  }
+
+  _send(key) {
+    clearTimeout(this._timers.get(key));
+    this._timers.delete(key);
+    if (!this._pending.has(key)) return;
+    const value = this._pending.get(key);
+    this._pending.delete(key);
+    const s = this.st(key);
+    if (!s || !this._hass) return;
+    if (toNumber(s.state) === value) {
+      this._render();
+      return;
+    }
+    this._sending.add(key);
+    this._render();
+    Promise.resolve(this._hass.callService("number", "set_value", { entity_id: s.entity_id || this._ids[key], value }))
+      .catch((err) => this._errors.set(key, err?.message || String(err)))
+      .finally(() => {
+        this._sending.delete(key);
+        this._render();
+      });
+  }
+
+  renderBody() {
+    const systems = (this._systems || []).filter((s) => this.st(sysKey("mode", s)) || this.st(sysKey("strategy", s)));
+    const heating = systems
+      .map((s) => {
+        const parts = this.toggleRow(
+          this.t("set.parts"),
+          SETTING_PARTS.map(([k, part, icon]) => this.toggleChip(sysKey(k, s), this.t(`set.part.${part}`), icon)),
+        );
+        return `<div class="section">
+          <div class="section-title">${esc(this.t("set.heating", { system: SYSTEM_LABEL(s) }))}</div>
+          ${this.chips(sysKey("mode", s), this.t("set.mode"))}
+          ${this.chips(sysKey("strategy", s), this.t("set.strategy"))}
+          ${parts}
+        </div>`;
+      })
+      .join('<div class="divider"></div>');
+
+    const features = this.toggleRow(
+      this.t("set.features"),
+      HW_FEATURES.map(([f, icon]) => this.toggleChip(`hw_${f}`, this.t(`set.feature.${f}`), icon)),
+    );
+    const steppers = HW_STOPS.map((n) => this.stepper(n)).join("");
+    const stops = HW_STOPS.map((n) => this.st(`hw_stop_${n}`)).filter(Boolean);
+    const unsupported = stops.length && stops.every((x) => x.state === "unavailable") ? `<div class="sub">${esc(this.t("set.unsupported"))}</div>` : "";
+    const hwMode = this.chips("hw_mode", this.t("set.mode"));
+    const hotWater =
+      hwMode || features || steppers
+        ? `<div class="section">
+          <div class="section-title">${esc(this.t("set.hot_water"))}</div>
+          ${hwMode}${features}
+          ${steppers ? `<div class="label">${esc(this.t("set.stops"))}</div><div class="steppers">${steppers}</div>${unsupported}` : ""}
+        </div>`
+        : "";
+    if (!heating && !hotWater) return `<div class="content"><div class="empty">${esc(this.t("set.nothing"))}</div></div>`;
+    return `<div class="content">${heating}${heating && hotWater ? '<div class="divider"></div>' : ""}${hotWater}</div>`;
+  }
+}
+
+// --------------------------------------------------------------------------
 // Editor (ha-form)
 // --------------------------------------------------------------------------
 
@@ -1341,7 +1563,7 @@ class NibePiCardEditor extends HTMLElement {
 // Registration
 // --------------------------------------------------------------------------
 
-const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiHotWaterGraphCard, NibePiGatewayCard, NibePiSavingsCard];
+const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiHotWaterGraphCard, NibePiGatewayCard, NibePiSavingsCard, NibePiSettingsCard];
 
 // The card picker's names and descriptions: there is no hass yet, so the
 // page's (or the browser's) language.

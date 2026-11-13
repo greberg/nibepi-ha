@@ -852,7 +852,7 @@ but heating mode S1 is shadow: nothing is written to the pump").
 
 ## Cards
 
-The integration ships five custom cards for your own dashboards; nothing
+The integration ships seven custom cards for your own dashboards; nothing
 to install besides the integration. Edit a dashboard -> **Add card** ->
 search for **NibePi**: each card shows a preview, and its editor has the
 options below (or switch it to YAML). The cards follow your theme, light
@@ -951,6 +951,25 @@ the long-term statistics (left out until there are two days).
 
 ```yaml
 type: custom:nibepi-savings-card
+```
+
+**Settings**: the integration's settings (the configuration entities)
+in the cards' design, in one place. Per system the mode and the
+strategy as buttons and the indoor, price and forecast parts and the
+RMU40 feed as toggles; for hot water its mode, its features (learning,
+VV-AI, automatic luxury, priority, comfort by price, optimiser) as
+toggles, and the pump's stop temperatures (economy, normal, luxury)
+with − and + buttons. The buttons keep economy ≤ normal ≤ luxury, and a
+quick series of taps is sent as one write after 1.5 s (each is a
+permanent write in the pump; the gateway takes one per register every
+30 s). While a lease holds a stop temperature (luxury during a
+legionella cycle), the card shows the setting and the pump's current
+value under it. A refused write shows its reason under the value.
+Switching a mode to `active` asks first. Tap a temperature for its
+history.
+
+```yaml
+type: custom:nibepi-settings-card
 ```
 
 The cards find the entities through the Gateway entity's `entities`

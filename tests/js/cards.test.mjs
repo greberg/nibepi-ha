@@ -136,7 +136,7 @@ function render(type, config, hass = makeHass()) {
 
 test("all cards are registered for the card picker", () => {
   const types = window.customCards.map((c) => c.type);
-  for (const t of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-hotwater-graph-card", "nibepi-gateway-card", "nibepi-savings-card"]) {
+  for (const t of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-hotwater-graph-card", "nibepi-gateway-card", "nibepi-savings-card", "nibepi-settings-card"]) {
     assert.ok(types.includes(t), t);
     assert.ok(customElements.get(t), t);
     assert.ok(window.customCards.find((c) => c.type === t).preview);
@@ -292,7 +292,7 @@ function swedish(hass = makeHass()) {
 }
 
 test("every card renders in Swedish and in English", () => {
-  for (const type of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-gateway-card", "nibepi-savings-card"]) {
+  for (const type of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-gateway-card", "nibepi-savings-card", "nibepi-settings-card"]) {
     for (const hass of [makeHass(), swedish()]) {
       const { html } = render(type, { system: "s1" }, hass);
       assert.match(html, /<ha-card>/, type);
@@ -493,3 +493,81 @@ test("hot water graph card", async () => {
   assert.doesNotMatch(html, /NaN|undefined|\{\w+\}/);
 });
 
+
+function settingsHass() {
+  const hass = makeHass();
+  const map = hass.states["binary_sensor.nibe_gateway"].attributes.entities;
+  const add = (key, id, state, attributes = {}) => {
+    map[key] = id;
+    hass.states[id] = { entity_id: id, state, attributes };
+  };
+  add("indoor_enabled_s1", "switch.indoor_s1", "on");
+  add("price_enabled_s1", "switch.price_s1", "off");
+  add("weather_enabled_s1", "switch.weather_s1", "on");
+  add("rmu_feed_s1", "switch.rmu_s1", "off");
+  add("hw_learning", "switch.hw_learning", "on");
+  add("hw_optimiser", "switch.hw_optimiser", "off");
+  const num = { min: 35, max: 65, step: 0.5, unit_of_measurement: "°C" };
+  add("hw_stop_economy", "number.hw_stop_economy", "44.0", num);
+  add("hw_stop_normal", "number.hw_stop_normal", "47.0", num);
+  add("hw_stop_luxury", "number.hw_stop_luxury", "55.0", { ...num, leased: true, pump_value: 65 });
+  return hass;
+}
+
+test("settings card shows modes, switches and stop temperatures", () => {
+  const { html } = render("nibepi-settings-card", {}, settingsHass());
+  assert.match(html, /Settings/);
+  assert.match(html, /Heating S1/);
+  assert.match(html, /data-select="mode_s1" data-option="active"/);
+  assert.match(html, /data-select="hw_mode"/);
+  assert.match(html, /chip toggle on" +data-toggle="indoor_enabled_s1"/);
+  assert.match(html, /chip toggle " +data-toggle="price_enabled_s1"/);
+  assert.match(html, /data-toggle="hw_optimiser"/);
+  assert.match(html, /47\.0 °C/);
+  assert.match(html, /pump now 65\.0 °C \(lease\)/);
+  assert.doesNotMatch(html, /undefined|NaN/);
+});
+
+test("settings card keeps the stop temperatures in order and debounces writes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const hass = settingsHass();
+  hass.states["number.hw_stop_normal"].state = "55.0";
+  const { card } = render("nibepi-settings-card", {}, hass);
+  const step = (key, dir) => card._onClick({ composedPath: () => [{ dataset: { step: key, dir: String(dir) } }] });
+  // Normal is at luxury: raising is refused, the button is disabled.
+  assert.match(card.shadowRoot.innerHTML, /data-step="hw_stop_normal" data-dir="1" disabled/);
+  step("hw_stop_normal", 1);
+  step("hw_stop_normal", -1);
+  step("hw_stop_normal", -1);
+  assert.match(card.shadowRoot.innerHTML, /54\.0 °C/);
+  assert.match(card.shadowRoot.innerHTML, /sending…/);
+  assert.equal(hass.calls.length, 0);
+  t.mock.timers.tick(1600);
+  assert.deepEqual(hass.calls, [["number", "set_value", { entity_id: "number.hw_stop_normal", value: 54 }]]);
+});
+
+test("settings card toggles a switch and shows a refused write", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const hass = settingsHass();
+  const { card } = render("nibepi-settings-card", {}, hass);
+  card._onClick({ composedPath: () => [{ dataset: { toggle: "price_enabled_s1" } }] });
+  assert.deepEqual(hass.calls[0], ["switch", "turn_on", { entity_id: "switch.price_s1" }]);
+  hass.callService = () => Promise.reject(new Error("must be at most 47"));
+  card._onClick({ composedPath: () => [{ dataset: { step: "hw_stop_economy", dir: "1" } }] });
+  t.mock.timers.tick(1600);
+  await new Promise((r) => setImmediate(r));
+  assert.match(card.shadowRoot.innerHTML, /note err">Economy: must be at most 47/);
+});
+
+test("settings card in Swedish and without settings", () => {
+  const hass = settingsHass();
+  hass.language = "sv";
+  hass.locale = { language: "sv" };
+  const { html } = render("nibepi-settings-card", {}, hass);
+  assert.match(html, /Inställningar/);
+  assert.match(html, /Värme S1/);
+  assert.match(html, /47,0 °C/);
+  const empty = makeHass();
+  for (const k of ["mode_s1", "strategy_s1", "hw_mode"]) delete empty.states["binary_sensor.nibe_gateway"].attributes.entities[k];
+  assert.match(render("nibepi-settings-card", {}, empty).html, /No NibePi settings found/);
+});
