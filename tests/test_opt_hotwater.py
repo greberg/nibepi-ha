@@ -90,7 +90,7 @@ class ControllerTest(unittest.TestCase):
         rig = Rig(local(2026, 10, 6, 12, 0))  # no VV-AI window at noon
         rig.windows = hw_windows([block(rig.now - timedelta(minutes=10), 1)], rig.now, STHLM)
         decision = rig.decide(optimiser=True)
-        self.assertEqual(decision.targets[REG_PERIOD], 0)
+        self.assertIsNone(decision.targets[REG_PERIOD], "released for the charge")
         self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
         self.assertEqual(decision.details["plan_source"], "optimiser")
         self.assertTrue(decision.details["plan_applied"])

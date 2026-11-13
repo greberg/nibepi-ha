@@ -461,6 +461,12 @@ class HotWaterController:
 
         if sources:
             targets[REG_TEMP_LUX] = TEMP_LUX_START
+            # 47134 = 0 gives hot water no time while the house needs heat,
+            # and temporary lux does not override it: with heating demand a
+            # charge never started (13 Nov: BT6 15 °C, BT7 32 °C, 48132 = 4
+            # for 1.5 h, priority heat). Released for the charge, the pump's
+            # own period applies and it alternates; held again afterwards.
+            targets[REG_PERIOD] = None
 
         # 47134 = 0 only holds hot water back while there is heating demand;
         # without it the pump starts charges itself at the comfort mode's

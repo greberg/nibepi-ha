@@ -326,7 +326,7 @@ class HotWaterAwayTest(unittest.TestCase):
         rig.values[REG_BT7] = 30.0
         decision = rig.decide(MODE_ACTIVE, vv_control=True)
         self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
-        self.assertEqual(decision.targets[REG_PERIOD], 0)
+        self.assertIsNone(decision.targets[REG_PERIOD], "released for the floor charge")
 
     def test_minimum_falls_back_to_economy(self) -> None:
         # VV-AI control off: never takes 47134 (the pump's periodic increase runs).

@@ -108,7 +108,9 @@ class DecisionTest(unittest.TestCase):
     def test_vv_control_heats_in_the_window(self) -> None:
         rig = Rig(local(2026, 10, 6, 5, 30))
         decision = rig.decide(vv_control=True)
-        self.assertEqual(decision.targets[REG_PERIOD], 0)
+        # Released for the charge: 47134 = 0 would give hot water no time
+        # while the house needs heat, temporary lux or not.
+        self.assertIsNone(decision.targets[REG_PERIOD])
         self.assertEqual(decision.targets[REG_TEMP_LUX], 4)
         self.assertEqual(decision.state, "heat_now")
         self.assertEqual(decision.details["heat_sources"], ["vv_control"])
@@ -163,8 +165,12 @@ class DecisionTest(unittest.TestCase):
         decision = rig.decide(vv_control=True)
         self.assertIsNone(decision.targets[REG_PERIOD])
         self.assertIsNone(decision.targets[REG_TEMP_LUX])
-        # Held by us (the 0 is ours): keep going.
+        # Held by us (the 0 is ours): keep going; released while charging.
         rig.held[REG_PERIOD] = True
+        decision = rig.decide(vv_control=True)
+        self.assertEqual(decision.state, "heat_now")
+        self.assertIsNone(decision.targets[REG_PERIOD])
+        rig.now = local(2026, 10, 6, 3, 0)
         self.assertEqual(rig.decide(vv_control=True).targets[REG_PERIOD], 0)
 
     def test_nothing_learned_without_floor_leaves_it_to_the_pump(self) -> None:
@@ -222,11 +228,12 @@ class LeaseTest(unittest.TestCase):
         decision = self.rig.decide(vv_control=True, price_comfort=True)
         self.assertEqual(decision.reasons["price_comfort"].code, "hw.economy_in_charge")
         actions = self.apply(MODE_ACTIVE, decision)
+        # A charge: 47134 is not held (0 would give hot water no time
+        # while the house needs heat).
         self.assertEqual(
             actions,
             {
                 REG_COMFORT: LeaseAction("set", 0),
-                REG_PERIOD: LeaseAction("set", 0),
                 REG_TEMP_LUX: LeaseAction("set", 4),
             },
         )
@@ -237,14 +244,15 @@ class LeaseTest(unittest.TestCase):
         self.clock.advance(60)
         self.assertEqual(self.apply(MODE_ACTIVE, decision), {})
         self.clock.advance(300)
-        self.assertEqual(len(self.apply(MODE_ACTIVE, decision)), 3)
+        self.assertEqual(len(self.apply(MODE_ACTIVE, decision)), 2)
 
     def test_target_reached_releases_temporary_lux_only(self) -> None:
         self.apply(MODE_ACTIVE, self.rig.decide(vv_control=True))
         self.rig.values[REG_BT7] = 48.0
         self.rig.held = self.leases.held()
         actions = self.apply(MODE_ACTIVE, self.rig.decide(vv_control=True))
-        self.assertEqual(actions, {REG_TEMP_LUX: LeaseAction("release")})
+        # Charge done: temporary lux off, 47134 held at 0 again.
+        self.assertEqual(actions, {REG_TEMP_LUX: LeaseAction("release"), REG_PERIOD: LeaseAction("set", 0)})
         self.assertTrue(self.leases.leases[REG_PERIOD].held)
 
     def test_shadow_never_sets_and_releases_held(self) -> None:
@@ -256,7 +264,6 @@ class LeaseTest(unittest.TestCase):
             actions,
             {
                 REG_COMFORT: LeaseAction("release"),
-                REG_PERIOD: LeaseAction("release"),
                 REG_TEMP_LUX: LeaseAction("release"),
             },
         )
@@ -265,7 +272,7 @@ class LeaseTest(unittest.TestCase):
         decision = self.rig.decide(vv_control=True)
         self.apply(MODE_ACTIVE, decision)
         actions = self.apply(MODE_ACTIVE, decision, healthy=False)
-        self.assertEqual(set(actions), {REG_COMFORT, REG_PERIOD, REG_TEMP_LUX})
+        self.assertEqual(set(actions), {REG_COMFORT, REG_TEMP_LUX})
         self.assertEqual({a.kind for a in actions.values()}, {"release"})
 
     def test_stale_input_releases(self) -> None:
@@ -278,7 +285,6 @@ class LeaseTest(unittest.TestCase):
             actions,
             {
                 REG_COMFORT: LeaseAction("release"),
-                REG_PERIOD: LeaseAction("release"),
                 REG_TEMP_LUX: LeaseAction("release"),
             },
         )
@@ -287,22 +293,22 @@ class LeaseTest(unittest.TestCase):
         decision = self.rig.decide(vv_control=True)
         self.assertEqual(self.apply(MODE_ACTIVE, decision, in_grace=True), {})
         self.assertEqual(self.apply(MODE_ACTIVE, decision), {
-            REG_COMFORT: LeaseAction("set", 0), REG_PERIOD: LeaseAction("set", 0), REG_TEMP_LUX: LeaseAction("set", 4)
+            REG_COMFORT: LeaseAction("set", 0), REG_TEMP_LUX: LeaseAction("set", 4)
         })
 
     def test_release_all(self) -> None:
         self.apply(MODE_ACTIVE, self.rig.decide(vv_control=True))
         released = {lease.register for lease, _ in self.leases.release_all()}
-        self.assertEqual(released, {REG_COMFORT, REG_PERIOD, REG_TEMP_LUX})
+        self.assertEqual(released, {REG_COMFORT, REG_TEMP_LUX})
 
     def test_limits(self) -> None:
         lease = self.leases.leases[REG_COMFORT]
         self.assertEqual(lease.decide(MODE_ACTIVE, 7, True), LeaseAction("set", 2))
 
     def test_economy_only_while_in_charge(self) -> None:
-        # In charge (holding 47134): economy, also during a charge.
+        # In charge: economy, also during a charge (47134 released for it).
         decision = self.rig.decide(vv_control=True)
-        self.assertEqual(decision.targets[REG_PERIOD], 0)
+        self.assertIsNone(decision.targets[REG_PERIOD])
         self.assertEqual(decision.targets[REG_COMFORT], 0)
         # Blocked by the pump's period 0: not in charge, 47041 left alone.
         self.rig.values[REG_PERIOD] = 0.0
