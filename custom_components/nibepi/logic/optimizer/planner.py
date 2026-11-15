@@ -184,10 +184,17 @@ class PlannerSettings:
     hold_slots: int = 1  # lagged planner: offsets change only every this many slots
     lag_grid_step: float = 0.2  # lagged planner: indoor grid, °C
     slab_grid_step: float = 0.5  # lagged planner: slab grid, °C
+    # Absolute limits on top of base ± max (the rules' range, optrun);
+    # when they leave nothing of that range, they alone apply.
+    lowest: Optional[int] = None
+    highest: Optional[int] = None
 
     def offsets(self) -> List[int]:
         lo = max(-OFFSET_LIMIT, self.base_offset - self.max_down)
         hi = min(OFFSET_LIMIT, self.base_offset + self.max_up)
+        if self.lowest is not None and self.highest is not None:
+            lo2, hi2 = max(-OFFSET_LIMIT, self.lowest), min(OFFSET_LIMIT, self.highest)
+            lo, hi = (max(lo, lo2), min(hi, hi2)) if max(lo, lo2) <= min(hi, hi2) else (lo2, hi2)
         return list(range(lo, hi + 1))
 
     def switch_cost(self, prev: Optional[int], new: int) -> float:

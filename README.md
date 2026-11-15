@@ -597,7 +597,8 @@ plans in the background:
   BT1 now), and the sun.
 - **Heating**: for each slot the curve offset, within ±3 of the offset
   that would hold the setpoint at the horizon's mean outdoor temperature
-  (the *base offset*), that minimises electricity cost (price ×
+  (the *base offset*) and within ±2 (model confidence medium) or ±3
+  (high) of what the rules would set now, that minimises electricity cost (price ×
   heat / COP) plus a comfort penalty for leaving the band, and a small
   cost for each change. It stores heat in cheap slots and coasts through
   expensive ones as far as the band allows, and counts the heat left in
@@ -611,8 +612,12 @@ plans in the background:
 - **Savings** are the plan's cost against holding the base offset on the
   same model, heat left at the end included.
 - **Hot water**: charges are planned against a tank model and the draws
-  the hot water learning expects, keeping BT6 above the optimiser's hot
-  water floor (default 45 °C).
+  the hot water learning expects, keeping the tank above the optimiser's
+  hot water floor (default 45 °C). The tank is planned in BT6 terms but
+  taken as at least BT7 − 3 °C: after a shower BT6 at the bottom drops
+  20-30 °C while BT7 at the top stays hot, and planned on BT6 alone every
+  shower forced a charge at once, at any price. The hot water control's
+  BT7 floor still charges at once when the top really runs low.
 
 Without a plan the `problem` attribute says why, e.g. *"indoor sensor
 sensor.netatmo is unavailable"*, *"indoor temperature from BT50 is 75
@@ -639,6 +644,25 @@ old. Whenever the indoor temperature is below the hard floor, the gate
 heats at the base offset + 3 whatever the price or the confidence. When
 the gate refuses, the rules are used and the *Planned curve offset*
 sensor's `strategy_reason` says why.
+
+A model never steers, whatever its confidence, when:
+
+- a parameter sits at its bound (`pinned` on the *House model* sensor):
+  the data did not decide it, and the others bent around it. The level
+  shows as `low`, and the night learning steps resume;
+- its neutral offset disagrees with history (`neutral_check`): over the
+  last 14 days, on days when the room ended where it started, the mean
+  offset is what held it; when the model's offset for the same days is
+  more than 1.5 steps off, it is biased;
+- it was wrong while steering: when the room stays 0.3 °C or more below
+  what the plan made two hours earlier predicted, for 30 minutes, the
+  optimiser pauses for 12 hours (kept over a restart) and the rules steer.
+
+While it steers, its offset is guarded: at most 2 steps (medium) or 3
+(high) from what the rules would set now; with the room below the
+comfort band never colder than the rules; and lowered at most one step
+per 15 minutes (raised at once). The `strategy_reason` names the guard
+that held it.
 
 The **Mode** select still decides whether anything is written: optimiser
 in `shadow` mode only computes and shows, and the lease, its TTL and the

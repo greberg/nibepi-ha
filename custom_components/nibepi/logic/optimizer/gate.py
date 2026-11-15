@@ -6,6 +6,10 @@ offset lease (TTL, renewals, gateway fall-back), and the mode switch
 
 - The house model must be fitted with at least ``min_level`` confidence
   (default high); otherwise use the ported Phase 1 price-level offset.
+  A fit with a parameter held at its bound (``pinned``) or whose neutral
+  offset disagrees with the offsets that held the room
+  (``neutral_check``, optimizer/neutral.py) never steers, whatever its
+  confidence.
 - The horizon must cover at least ``min_horizon_h`` hours of prices.
 - The indoor reading must be usable (the runtime passes the reason).
 - Hard comfort floor: below the floor the optimiser's own value is
@@ -52,6 +56,14 @@ def gate(
         return GateDecision(True, base_offset + max_up, msg("gate.floor", floor=floor))
     if fit is None or not fit.ok:
         return GateDecision(False, None, msg("gate.not_fitted", why=fit.reason if fit else msg("gate.no_data")))
+    pinned = fit.details.get("pinned")
+    if pinned:
+        return GateDecision(False, None, msg("gate.pinned", params=", ".join(pinned)))
+    check = fit.details.get("neutral_check")
+    if isinstance(check, dict) and check.get("ok") is False:
+        return GateDecision(False, None, msg(
+            "gate.biased", model=check.get("model"), actual=check.get("actual"), days=check.get("days"),
+        ))
     if LEVELS.index(fit.level) < LEVELS.index(min_level):
         return GateDecision(False, None, msg(
             "gate.low_confidence", level=term("model_level", fit.level), confidence=fit.confidence,

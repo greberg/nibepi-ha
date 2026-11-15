@@ -68,6 +68,9 @@ def _systems(runtime: NibePiRuntime) -> Dict[str, Any]:
             "rules_plan": sys.rules_plan,
             "choice": optimizer.choices.get(system),
             "gate": optimizer.gates.get(system),
+            "watch": {"last": optimizer.watch.last.get(system),
+                      "pause": optimizer.watch.to_dict().get(system),
+                      "steering": optimizer.steering.get(system)},
             "decisions": {k: {"offset": d.offset, "reason": d.reason, "inputs_ok": d.inputs_ok}
                           for k, d in sys.decisions.items()},
             "base_adjust": runtime.base_adjust.get(system),

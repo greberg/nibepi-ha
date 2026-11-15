@@ -67,7 +67,7 @@ from .const import (
 from .logic.curve import TOTAL_LIMIT, CurvePlan, clamp, target_value
 from .logic.learnstep import LearnSteps, learning_needed
 from .logic.hotwater import START_REGISTERS, STOP_REGISTERS
-from .logic.hwcontrol import REG_BT6, REG_PRIO
+from .logic.hwcontrol import REG_BT6, REG_BT7, REG_PRIO
 from .logic.legionella import REG_LUX_STOP, legionella_pin
 from .logic.lease import MODE_OFF
 from .logic.indoor import MIN_VALID_INDOOR
@@ -123,7 +123,9 @@ from .logic.optrun import (
     scale_prices,
     should_replan,
 )
+from .logic.optwatch import ForecastWatch
 from .logic.optstrategy import (
+    SOURCE_OPTIMISER,
     SOURCE_RULES,
     STRATEGY_OPTIMISER,
     STRATEGY_RULES,
@@ -131,6 +133,7 @@ from .logic.optstrategy import (
     StrategyChoice,
     apply_choice,
     choose_total,
+    guard_choice,
     hours_left,
     hw_windows,
     offset_at,
@@ -279,6 +282,12 @@ class OptimizerRuntime:
         # savings and the plan-vs-measured gap only count that time.
         self.applied = AppliedLog()
         self.learn_steps = LearnSteps()
+        # The reality check (logic/optwatch.py), the guards' state and the
+        # rules' total per system (the planner keeps its range near it).
+        self.watch = ForecastWatch()
+        self.steering: Dict[str, bool] = {}
+        self.last_down: Dict[str, datetime] = {}
+        self.rules_total: Dict[str, float] = {}
         # Heat pump electricity today, measured (heat pump meter) vs planned.
         self.hp_cost: Dict[str, Any] = {}
         self.saved_until: Optional[int] = None
@@ -346,6 +355,7 @@ class OptimizerRuntime:
         self.savings = savings if isinstance(savings, dict) else {}
         hp_cost = data.get("hp_cost")
         self.hp_cost = hp_cost if isinstance(hp_cost, dict) else {}
+        self.watch.load(data.get("watch"))
 
     def _store_data(self) -> Dict[str, Any]:
         return {
@@ -355,6 +365,7 @@ class OptimizerRuntime:
             "fits": self.fits,
             "savings": self.savings,
             "hp_cost": self.hp_cost,
+            "watch": self.watch.to_dict(),
         }
 
     def save_soon(self) -> None:
@@ -877,6 +888,12 @@ class OptimizerRuntime:
         if code_of(decision.reason) == "opt.no_plan" and result is not None:
             why = result.problem or _plan_too_old()
             decision = GateDecision(False, None, msg("opt.no_plan_why", why=why))
+        pause = self.watch.paused(system, now)
+        if pause is not None and code_of(decision.reason) == "gate.optimiser":
+            decision = GateDecision(False, None, msg(
+                "gate.paused", until=dt_util.as_local(pause.until).strftime("%H:%M"),
+                measured=pause.measured, predicted=pause.predicted,
+            ))
         return decision
 
     def decide(
@@ -886,9 +903,23 @@ class OptimizerRuntime:
 
         ``active``: the system's mode writes to the pump (not shadow/off).
         """
+        t_in, _problem, _reason = self._indoor(system, now)
+        # The reality check on the plans that steered until this tick.
+        if self.watch.check(system, now, t_in, self.steering.get(system, False)) is not None:
+            _LOGGER.warning("NibePi optimiser %s: the room fell below the plan's forecast; paused", system)
+            self.save_soon()
+        self.rules_total[system] = rules.total
         decision = self.live_gate(system, now)
         strategy = self.strategy.get(system, STRATEGY_RULES)
         choice = choose_total(strategy, rules.total, decision)
+        models = self.models.get(system)
+        choice, last_down = guard_choice(
+            choice, rules.total, current, t_in, self.comfort(system, now).lower,
+            models.fit.level if models is not None else "low", self.last_down.get(system), now,
+        )
+        if last_down is not None:
+            self.last_down[system] = last_down
+        self.steering[system] = active and choice.source == SOURCE_OPTIMISER
         self.gates[system] = decision
         self.choices[system] = choice
         self.applied.mark(system, now, active and choice.source != SOURCE_RULES)
@@ -1047,6 +1078,7 @@ class OptimizerRuntime:
                     comfort_ramp_h=ramp,
                     t_in_problem=t_in_problem,
                     price_status=rt.price_status,
+                    rules_offset=self.rules_total.get(system),
                 )
             )
         return out
@@ -1073,6 +1105,7 @@ class OptimizerRuntime:
             now=now,
             tz=_tz(),
             bt6=value(REG_BT6),
+            bt7=value(REG_BT7),
             economy_stop=value(STOP_REGISTERS[0]),
             normal_start=value(START_REGISTERS[1]),
             normal_stop=value(STOP_REGISTERS[1]),
@@ -1113,6 +1146,8 @@ class OptimizerRuntime:
                 del self.heating[system]
         for result in results:
             self.heating[result.system] = result
+            if result.plan is not None and self.steering.get(result.system):
+                self.watch.record(result.system, result.planned_at, result.plan.plan.steps)
         if not any(input_problem(r.problem) for r in results) and not (tank is not None and input_problem(tank.problem)):
             self.planned_ok = True
         self.save_soon()

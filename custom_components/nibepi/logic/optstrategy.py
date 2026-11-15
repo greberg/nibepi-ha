@@ -9,7 +9,10 @@ Per climate system the user picks a strategy:
   accounts for price, forecast and indoor temperature, and its offsets are
   absolute register values. Below the hard comfort floor the gate gives
   ``base + max_up`` whatever the price or the model confidence. When the
-  gate refuses, the rules sum is used and the reason is shown.
+  gate refuses, the rules sum is used and the reason is shown. The
+  optimiser's offset is guarded (``guard_choice``): near the rules, not
+  colder than them while the room is below the band, and lowered one
+  step at a time.
 
 The off/shadow/active mode and the lease still decide whether anything is
 written; ``optimiser`` in shadow mode only computes and shows.
@@ -23,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, tzinfo
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from .curve import TOTAL_LIMIT, CurvePlan, clamp, target_value
 from .optimizer.gate import GateDecision
@@ -58,6 +61,63 @@ def choose_total(strategy: str, rules_total: float, gate: Optional[GateDecision]
         total = clamp(float(gate.offset), -TOTAL_LIMIT, TOTAL_LIMIT)
         return StrategyChoice(strategy, source, total, gate.reason)
     return StrategyChoice(strategy, SOURCE_RULES, rules_total, msg("strategy.not_used", reason=gate.reason))
+
+
+# The optimiser's offset stays within this many steps of what the rules
+# would set now, by the house model's level (a model is trusted further
+# from the rules only when it has earned it).
+RANGE_STEPS = {"high": 3, "medium": 2}
+DEFAULT_RANGE_STEPS = 2
+# Lowering the offset: at most one step per this long (raising is not
+# limited: that only costs energy).
+DOWN_EVERY = timedelta(minutes=15)
+
+
+def range_steps(level: str) -> int:
+    return RANGE_STEPS.get(level, DEFAULT_RANGE_STEPS)
+
+
+def guard_choice(
+    choice: StrategyChoice,
+    rules_total: float,
+    current: Optional[float],
+    t_in: Optional[float],
+    lower: float,
+    level: str,
+    last_down: Optional[datetime],
+    now: datetime,
+) -> Tuple[StrategyChoice, Optional[datetime]]:
+    """The optimiser's total held to the guards; (choice, when the offset
+    last went down). Only the optimiser's own offset is guarded: the rules
+    and the comfort floor pass unchanged.
+
+    - range: within ``range_steps(level)`` of the rules' total;
+    - comfort: with the room below the band's lower edge, never colder
+      than the rules (the floor further down is the gate's);
+    - rate: down by at most one step per ``DOWN_EVERY``.
+
+    The reason names the last guard that changed the total.
+    """
+    if choice.source != SOURCE_OPTIMISER:
+        return choice, last_down
+    total = choice.total
+    reason = choice.reason
+    k = range_steps(level)
+    held = clamp(total, rules_total - k, rules_total + k)
+    if held != total:
+        total, reason = held, msg("guard.range", steps=k)
+    if t_in is not None and t_in < lower and total < rules_total:
+        total, reason = rules_total, msg("guard.comfort", t_in=t_in, lower=lower)
+    if current is not None and target_value(total, current) < current:
+        if last_down is not None and now - last_down < DOWN_EVERY:
+            total, reason = float(current), msg("guard.rate")
+        else:
+            if total < current - 1:
+                total, reason = float(current - 1), msg("guard.rate")
+            last_down = now
+    if total == choice.total:
+        return choice, last_down
+    return replace(choice, total=total, reason=reason), last_down
 
 
 def apply_choice(rules: CurvePlan, choice: StrategyChoice, current: Optional[float]) -> CurvePlan:

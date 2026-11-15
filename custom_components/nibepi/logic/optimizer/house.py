@@ -910,7 +910,29 @@ def fit_house_model(
     se_factor = _clamp01(1.0 - rel_se_b / 0.5)
     confidence = data_factor * sim_factor * se_factor
     level = "high" if confidence >= HIGH else "medium" if confidence >= MEDIUM else "low"
+    # A parameter held at its bound means the data did not decide it: the
+    # fit matches the past with the others bent around it (13 Nov: solar at
+    # its maximum, internal gains at their negative minimum, "medium", and an
+    # offset 3-4 steps too low). Such a model may show, never steer.
+    pinned = pinned_parameters(model, bounds)
+    if pinned:
+        details["pinned"] = pinned
+        level = "low"
     return HouseFit(model, True, "ok", n, r2, rmse_rate, sim_rmse, rel_se_b, confidence, level, details)
+
+
+def pinned_parameters(model: HouseModel, bounds: Optional[FitBounds]) -> List[str]:
+    """The fitted parameters held at a bound by ``_solve``: solar at its
+    maximum (0 is a real answer: no sun effect), internal gains at either."""
+    if bounds is None:
+        return []
+    out = []
+    tol = 1e-9
+    if model.c >= bounds.c[1] - tol:
+        out.append("c")
+    if model.d <= bounds.d[0] + tol or model.d >= bounds.d[1] - tol:
+        out.append("d")
+    return out
 
 
 def synthetic_history(

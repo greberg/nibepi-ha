@@ -177,6 +177,30 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
         "model confidence {level} ({confidence:.2f}) below {min_level}",
         "modellens säkerhet är {level} ({confidence:.2f}), lägre än {min_level}",
     ),
+    "gate.pinned": (
+        "house model at its limits ({params}): the data did not decide it",
+        "husmodellen ligger på sina gränser ({params}): datan avgjorde den inte",
+    ),
+    "gate.biased": (
+        "house model off: it says offset {model:.1f} holds the room, {actual:.1f} did ({days} days)",
+        "husmodellen stämmer inte: den säger att förskjutning {model:.1f} håller rummet, {actual:.1f} gjorde det ({days} dagar)",
+    ),
+    "gate.paused": (
+        "optimiser paused until {until}: the room was {measured:.1f} °C where its plan said {predicted:.1f} °C",
+        "optimeraren pausad till {until}: rummet var {measured:.1f} °C där planen sa {predicted:.1f} °C",
+    ),
+    "guard.range": (
+        "optimiser, kept within {steps} steps of the rules",
+        "optimeraren, hållen inom {steps} steg från reglerna",
+    ),
+    "guard.comfort": (
+        "optimiser, but indoor {t_in:.1f} °C is below the band ({lower:.1f} °C): not colder than the rules",
+        "optimeraren, men inomhus {t_in:.1f} °C är under intervallet ({lower:.1f} °C): inte kallare än reglerna",
+    ),
+    "guard.rate": (
+        "optimiser, lowering one step per 15 minutes",
+        "optimeraren, sänker ett steg per 15 minuter",
+    ),
     "gate.short_horizon": ("only {hours:.1f} h of prices", "bara {hours:.1f} h med priser"),
     # -- optimiser plans (optrun.py, opt_runtime.py) --------------------------
     "opt.no_plan": ("no plan", "ingen plan"),

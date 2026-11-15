@@ -39,6 +39,7 @@ offsets may go as far above the lowered base as the normal base needs.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -54,12 +55,14 @@ from .optimizer.house import (
     HouseFit,
     HouseModel,
     fit_house_model,
+    pinned_parameters,
     slab_filter,
     slab_observable,
     slab_temp,
     slab_track,
 )
 from .optimizer.meter import fit_hp_share
+from .optimizer.neutral import check_neutral
 from .optimizer.planner import (
     LAG_PLANNER_MIN_H,
     ComfortSettings,
@@ -78,6 +81,7 @@ from .optimizer.tank import (
     draws_from_week_profile,
     plan_hot_water,
 )
+from .optstrategy import range_steps
 from .texts import Msg, code_of, msg
 
 HEATING_SHARE = 0.5  # an hour counts as heating when prio was 30 this much
@@ -129,6 +133,8 @@ def house_fit_dict(fit: HouseFit) -> Dict[str, Any]:
         "slab_source": fit.details.get("slab_source"),
         "bt2_sim_rmse": fit.details.get("bt2_sim_rmse"),
         "bt3": fit.details.get("bt3"),
+        "pinned": fit.details.get("pinned") or None,
+        "neutral_check": fit.details.get("neutral_check"),
     }
 
 
@@ -154,7 +160,8 @@ def house_fit_from(data: Any, prior: HouseModel) -> HouseFit:
             if ok
             else prior
         )
-        details = {k: data[k] for k in ("slab_source", "bt3", "bt2_sim_rmse") if data.get(k) is not None}
+        details = {k: data[k] for k in ("slab_source", "bt3", "bt2_sim_rmse", "pinned", "neutral_check")
+                   if data.get(k) is not None}
         rel = data.get("rel_se_b")
         return HouseFit(
             model,
@@ -206,6 +213,12 @@ def fit_system(
             continue
         curve_rows.append((v["t_out"], v[offset], v[supply]))
     curve_fit = fit_heat_curve(curve_rows, base_curve)
+    if fit.ok:
+        # The model's neutral offset against the offsets that held the room.
+        check = check_neutral(rows, system, fit.model, curve_fit.curve if curve_fit.ok else base_curve,
+                              profile.latitude, profile.longitude)
+        details = {**fit.details, "neutral_check": check.as_dict()}
+        fit = replace(fit, details=details, level=fit.level if check.ok else "low")
 
     if single_system:
         # The planner's energy model: the slab's for a lagged house, else the supply's.
@@ -517,6 +530,10 @@ def models_for(setup: SystemSetup, fits: Optional[Mapping[str, Any]]) -> Models:
     data = (fits or {}).get("systems", {}).get(setup.system) if isinstance(fits, Mapping) else None
     data = data if isinstance(data, Mapping) else {}
     fit = house_fit_from(data.get("house"), prior.model)
+    pinned = pinned_parameters(fit.model, prior.bounds) if fit.ok else []
+    if pinned:
+        # Also a fit stored before pinning capped the level.
+        fit = replace(fit, level="low", details={**fit.details, "pinned": pinned})
     curve = base_curve
     stored = data.get("curve")
     if isinstance(stored, Mapping) and stored.get("ok") and stored.get("curve") == base_curve.curve:
@@ -571,6 +588,8 @@ def models_summary(models: Models) -> Dict[str, Any]:
         "sim_rmse": round(fit.sim_rmse, 3),
         "rel_se_b": round(fit.rel_se_b, 3) if fit.rel_se_b != float("inf") else None,
         "data_hours": fit.samples,
+        "pinned": fit.details.get("pinned") or None,
+        "neutral_check": fit.details.get("neutral_check"),
     }
 
 
@@ -617,6 +636,9 @@ class HeatingInputs:
     # status (for the problem when no prices cover now).
     t_in_problem: Optional[str] = None
     price_status: Optional[str] = None
+    # What the rules would set now: the plan's offsets stay within
+    # ``range_steps(level)`` of it (as the live guard keeps them).
+    rules_offset: Optional[float] = None
 
 
 @dataclass
@@ -785,16 +807,23 @@ def plan_system(inputs: HeatingInputs) -> HeatingResult:
         base_after = base_offset(models, mean_out, after.target)
         baseline = [base_after if s.end >= change else result.base_offset for s in slots]
         max_up = PLAN_MAX_UP + max(0, base_after - result.base_offset)
+    lowest = highest = None
+    if inputs.rules_offset is not None:
+        k = range_steps(models.fit.level)
+        lowest = int(math.ceil(inputs.rules_offset - k - 1e-9))
+        highest = int(math.floor(inputs.rules_offset + k + 1e-9))
     if lagged:
         settings = PlannerSettings(
             base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=max_up,
             change_cost=LAG_CHANGE_COST, step_cost=LAG_STEP_COST, hold_slots=LAG_HOLD_SLOTS,
+            lowest=lowest, highest=highest,
         )
         est = slab_estimate(inputs.history or {}, inputs.system, models.house, inputs.now)
         if est is not None:
             result.slab, result.slab_temp, result.slab_source = est.state, est.temp, est.source
     else:
-        settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=max_up)
+        settings = PlannerSettings(base_offset=result.base_offset, max_down=PLAN_MAX_DOWN, max_up=max_up,
+                                   lowest=lowest, highest=highest)
     plan = plan_heating(
         slots, inputs.t_in, models.house, models.curve, models.energy, inputs.comfort, settings,
         current_offset=inputs.current_offset, t_f0=result.slab, comforts=comforts, baseline_offsets=baseline,
@@ -833,6 +862,28 @@ class TankInputs:
     legionella: Optional[Tuple[datetime, datetime, float]] = None
     # The price source's status (for the problem when no prices cover now).
     price_status: Optional[str] = None
+    # BT7 (40013), the top of the tank: what comes out of the tap.
+    bt7: Optional[float] = None
+
+
+# A charged tank at rest reads about this much lower on BT6 than on BT7.
+STRAT_GAP = 3.0
+
+
+def tank_start(bt6: float, bt7: Optional[float]) -> float:
+    """The tank temperature the plan starts from, in BT6 terms.
+
+    BT6 sits low in the tank. A draw lets cold water in at the bottom, so
+    BT6 drops 20-30 °C while BT7 at the top, the water you get, stays
+    near 50 °C. Planned on BT6 alone the tank looked far below its floor
+    after every shower and was recharged at once at any price (14 Nov:
+    about ten charges, three of them around the 3 SEK evening peak). The
+    tank is taken as at least BT7 less a charged tank's usual gap; the
+    hot water controller's BT7 floor (min-temp) still charges at once
+    when the top really runs low."""
+    if bt7 is None:
+        return bt6
+    return max(bt6, bt7 - STRAT_GAP)
 
 
 @dataclass
@@ -877,7 +928,7 @@ def plan_tank(inputs: TankInputs) -> TankResult:
         list(inputs.profile), slots[0].start, slots[-1].end, inputs.tz, inputs.confidence
     )
     pinned = [PinnedCharge(*inputs.legionella)] if inputs.legionella is not None else []
-    result.plan = plan_hot_water(slots, inputs.bt6, draws, TankModel(), settings, inputs.tz, pinned,
+    result.plan = plan_hot_water(slots, tank_start(inputs.bt6, inputs.bt7), draws, TankModel(), settings, inputs.tz, pinned,
                                  charging_now=inputs.charging_now)
     return result
 
