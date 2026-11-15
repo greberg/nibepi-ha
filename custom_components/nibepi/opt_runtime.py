@@ -123,6 +123,7 @@ from .logic.optrun import (
     scale_prices,
     should_replan,
 )
+from .logic.fireplace import without_fires
 from .logic.optwatch import ForecastWatch
 from .logic.optstrategy import (
     SOURCE_OPTIMISER,
@@ -288,6 +289,7 @@ class OptimizerRuntime:
         self.steering: Dict[str, bool] = {}
         self.last_down: Dict[str, datetime] = {}
         self.rules_total: Dict[str, float] = {}
+        self.fire_spans_fitted: Optional[int] = None
         # Heat pump electricity today, measured (heat pump meter) vs planned.
         self.hp_cost: Dict[str, Any] = {}
         self.saved_until: Optional[int] = None
@@ -356,6 +358,7 @@ class OptimizerRuntime:
         hp_cost = data.get("hp_cost")
         self.hp_cost = hp_cost if isinstance(hp_cost, dict) else {}
         self.watch.load(data.get("watch"))
+        self.rt.fireplace.load(data.get("fireplace"))
 
     def _store_data(self) -> Dict[str, Any]:
         return {
@@ -366,6 +369,7 @@ class OptimizerRuntime:
             "savings": self.savings,
             "hp_cost": self.hp_cost,
             "watch": self.watch.to_dict(),
+            "fireplace": self.rt.fireplace.to_dict(),
         }
 
     def save_soon(self) -> None:
@@ -775,6 +779,9 @@ class OptimizerRuntime:
                 await asyncio.sleep(30)
             now = dt_util.utcnow()
             rows = self.log.snapshot(since=now.timestamp() - BOOTSTRAP_DAYS * 86400)
+            # Fires near the indoor sensor are not the house: their hours are left out.
+            rows, fires = without_fires(rows, list(self.rt.systems), self.rt.fireplace.spans_until(now))
+            self.fire_spans_fitted = len(fires)
             setups = [self.setup(system) for system in self.rt.systems]
             fits = await self.hass.async_add_executor_job(fit_all, rows, setups, now, self.meter_scope)
             self.fits = fits
@@ -851,7 +858,8 @@ class OptimizerRuntime:
         )
         if why is None:
             assert reading is not None
-            return float(reading.value), None, None
+            # During a fire: the value from before it (logic/fireplace.py).
+            return float(self.rt.fireplace.effective(system, float(reading.value))), None, None
         return None, ("stale" if why[0] == "stale" else "missing"), indoor_problem(source, *why)
 
     def live_gate(self, system: str, now: datetime) -> Optional[GateDecision]:
@@ -931,7 +939,7 @@ class OptimizerRuntime:
         """The rules plan with tonight's learning step (logic/learnstep.py) added
         while the house model is below the gate's level."""
         models = self.models.get(system)
-        if models is None or not self.rt.opt(OPT_LEARN_STEPS):
+        if models is None or not self.rt.opt(OPT_LEARN_STEPS) or self.rt.fireplace.active:
             return rules
         min_level = str(self.rt.opt(OPT_OPT_MIN_LEVEL) or "high")
         if not learning_needed(models.fit.ok, models.fit.level, min_level):

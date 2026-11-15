@@ -1,4 +1,4 @@
-"""Switches: Away mode; per system the indoor, price and weather components
+"""Switches: Away mode; the fireplace; per system the indoor, price and weather components
 and the RMU40 feed; for hot water its sub-features."""
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ async def async_setup_entry(
     entities.extend(RmuFeedSwitch(runtime, system) for system in runtime.systems)
     entities.extend(HotWaterFeatureSwitch(runtime, feature) for feature in FEATURES)
     entities.append(AwaySwitch(runtime))
+    entities.append(FireplaceSwitch(runtime))
     async_add_entities(entities)
 
 
@@ -78,6 +79,32 @@ class AwaySwitch(NibePiEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.runtime.async_set_away(False)
+
+
+class FireplaceSwitch(NibePiEntity, SwitchEntity):
+    """A fire near the indoor sensor (logic/fireplace.py): on while it
+    burns (switched on, or detected); it turns itself off after a few hours.
+    Off with ``phase`` afterglow: the room is still warm from it, and the
+    temperature from before the fire is still used."""
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime, "fireplace")
+
+    @property
+    def is_on(self) -> bool:
+        return self.runtime.fireplace.burning
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        return self.runtime.fireplace.attributes(dt_util.utcnow())
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.runtime.async_set_fireplace(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.runtime.async_set_fireplace(False)
+        self.async_write_ha_state()
 
 
 class ComponentSwitch(NibePiEntity, SwitchEntity, RestoreEntity):

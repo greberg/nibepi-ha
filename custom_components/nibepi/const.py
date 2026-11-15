@@ -205,6 +205,7 @@ OPT_METER_ENTITY = "meter_entity"
 OPT_METER_SCOPE = "meter_scope"
 OPT_OPT_MIN_LEVEL = "optimizer_min_level"
 OPT_LEARN_STEPS = "optimizer_learning_steps"
+OPT_FIRE_DETECT = "fireplace_detect"
 OPT_HW_OPT_FLOOR = "hw_optimizer_floor"
 
 UNKNOWN = "unknown"
@@ -229,6 +230,7 @@ OPTIMIZER_DEFAULTS: Dict[str, Any] = {
     OPT_METER_SCOPE: METER_SCOPE_HEAT_PUMP,
     OPT_OPT_MIN_LEVEL: "high",
     OPT_LEARN_STEPS: True,
+    OPT_FIRE_DETECT: True,
     OPT_HW_OPT_FLOOR: 45.0,
 }
 

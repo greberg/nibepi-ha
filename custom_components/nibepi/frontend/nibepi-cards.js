@@ -364,6 +364,23 @@ class NibePiCard extends HTMLElement {
     )}"><ha-icon icon="${away.on ? "mdi:home-export-outline" : "mdi:home"}"></ha-icon>${esc(text)}</button></div>`;
   }
 
+  // The Fireplace toggle chip, with the temperature control uses while a
+  // fire counts; "" without the switch.
+  fireChip() {
+    const s = this.st("fireplace");
+    if (!s) return "";
+    const a = s.attributes || {};
+    const burning = s.state === "on";
+    let text = this.t("fire.label");
+    if (burning) text = `${this.t("fire.burning")}${a.source === "detected" ? ` (${this.t("fire.detected")})` : ""}`;
+    else if (a.phase === "afterglow") text = this.t("fire.afterglow");
+    const base = a.baseline && typeof a.baseline === "object" ? toNumber(a.baseline[this.system] ?? Object.values(a.baseline)[0]) : null;
+    const held = a.phase && a.phase !== "off" && base !== null ? ` <span class="muted small">${esc(this.t("fire.held", { value: this.n(base) }))}</span>` : "";
+    return `<div class="chips"><button class="chip toggle ${burning ? "on" : ""}" ${isMissing(s) ? "disabled" : ""} data-toggle="fireplace" title="${esc(
+      this.t(burning ? "fire.tap_end" : "fire.tap_start"),
+    )}"><ha-icon icon="${burning ? "mdi:fireplace" : "mdi:fireplace-off"}"></ha-icon>${esc(text)}</button>${held}</div>`;
+  }
+
   alertList(alerts) {
     return alerts
       .map(
@@ -473,6 +490,7 @@ class NibePiClimateCard extends NibePiCard {
       "gateway_online",
       "away",
       "away_until",
+      "fireplace",
       ...["planned_offset", "pump_offset", "optimiser_plan", "mode", "strategy", "lease_state", "house_model", "rmu_feed", "rmu_lease_state", "indoor_offset"].map(
         (k) => sysKey(k, s),
       ),
@@ -563,6 +581,7 @@ class NibePiClimateCard extends NibePiCard {
       ${offsets}${reason}
       ${planned ? `<div class="bars">${bars}</div>` : ""}
       ${this.awayChip(now)}
+      ${this.fireChip()}
       ${this.chips(this.sk("strategy"), this.t("climate.strategy"))}
       ${this.chips(this.sk("mode"), this.t("climate.mode"))}
     </div>`;
@@ -1329,7 +1348,7 @@ class NibePiSettingsCard extends NibePiCard {
 
   watched() {
     const ids = this._ids || {};
-    const keys = ["hw_mode", ...HW_FEATURES.map(([f]) => `hw_${f}`), ...HW_STOPS.map((k) => `hw_stop_${k}`)];
+    const keys = ["fireplace", "hw_mode", ...HW_FEATURES.map(([f]) => `hw_${f}`), ...HW_STOPS.map((k) => `hw_stop_${k}`)];
     for (const s of this._systems || []) keys.push(sysKey("mode", s), sysKey("strategy", s), ...SETTING_PARTS.map(([k]) => sysKey(k, s)));
     return keys.map((k) => ids[k]).filter(Boolean);
   }
@@ -1451,6 +1470,7 @@ class NibePiSettingsCard extends NibePiCard {
         );
         return `<div class="section">
           <div class="section-title">${esc(this.t("set.heating", { system: SYSTEM_LABEL(s) }))}</div>
+          ${s === systems[0] ? this.fireChip() : ""}
           ${this.chips(sysKey("mode", s), this.t("set.mode"))}
           ${this.chips(sysKey("strategy", s), this.t("set.strategy"))}
           ${parts}

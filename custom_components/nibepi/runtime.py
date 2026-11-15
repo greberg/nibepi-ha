@@ -84,6 +84,7 @@ from .const import (
     OPT_PRICE_UNIT_FACTOR,
     OPT_PRICE_VERY_CHEAP_BELOW,
     OPT_PRICE_VERY_EXPENSIVE_ABOVE,
+    OPT_FIRE_DETECT,
     OPT_RMU_ENTITY,
     OPT_SENSOR_TIMEOUT,
     OPT_SETPOINT,
@@ -145,6 +146,7 @@ from .logic.hwcontrol import (
     HotWaterSettings,
 )
 from .logic.indoor import compute_indoor
+from .logic.fireplace import Fireplace
 from .logic.inputs import (
     Decision,
     ForecastPoint,
@@ -155,6 +157,7 @@ from .logic.inputs import (
     state_timestamp,
     state_value,
     to_float,
+    unusable,
 )
 from .logic.lease import MODE_ACTIVE, MODE_OFF, MODE_SHADOW, LeaseAction, LeaseManager
 from .logic.price import (
@@ -302,6 +305,9 @@ class NibePiRuntime:
         self.away = AwayState()
         self.away_store: Store = Store(hass, AWAY_STORE_VERSION, away_store_key(entry.entry_id))
         self._away_end: Optional[Callable[[], None]] = None
+        # A fire near the indoor sensor (logic/fireplace.py); kept in the
+        # optimiser's store.
+        self.fireplace = Fireplace()
         self._legionella_history_task: Optional[asyncio.Task] = None
         self._legionella_history_tries = 0
         self.optimizer = OptimizerRuntime(self)
@@ -1063,6 +1069,10 @@ class NibePiRuntime:
             self._schedule_tibber_refresh(now)
         except Exception:  # noqa: BLE001 - keep the tick going on cached prices
             _LOGGER.exception("Could not schedule the Tibber price refresh")
+        try:
+            self._fireplace_step(now)
+        except Exception:  # noqa: BLE001 - control goes on with the raw reading
+            _LOGGER.exception("NibePi fireplace step failed")
         for sys in self.systems.values():
             try:
                 self._compute(sys, now)
@@ -1097,6 +1107,9 @@ class NibePiRuntime:
                 entity_id = self.opt(OPT_RMU_ENTITY, sys.system) or self.opt(OPT_INDOOR_ENTITY, sys.system)
                 sys.rmu_entity = entity_id or None
                 reading = self._entity_reading(entity_id) if entity_id else None
+                if reading is not None and entity_id == self.opt(OPT_INDOOR_ENTITY, sys.system):
+                    # The same thermometer as the control's: the fire's heat held out too.
+                    reading = self._fire_held(sys, reading)
                 action, room = rmu_decide(
                     sys.rmu_lease, sys.rmu_enabled, reading, now, self.opt(OPT_SENSOR_TIMEOUT)
                 )
@@ -1144,7 +1157,7 @@ class NibePiRuntime:
             sys.rules_plan = None
             return
         timeout = self.opt(OPT_SENSOR_TIMEOUT)
-        indoor = self._indoor_reading(sys)
+        indoor = self._indoor_control(sys)
         away = self.away_rules(now)
         # Away: the indoor component and the price guard work on the
         # lowered setpoint.
@@ -1225,6 +1238,35 @@ class NibePiRuntime:
 
     def _indoor_reading(self, sys: SystemRuntime) -> Optional[Reading]:
         return self._indoor_check(sys)[0]
+
+    def _fire_held(self, sys: SystemRuntime, reading: Reading) -> Reading:
+        value = self.fireplace.effective(sys.system, reading.value)
+        return reading if value == reading.value else Reading(value, reading.ts)
+
+    def _indoor_control(self, sys: SystemRuntime) -> Optional[Reading]:
+        """The indoor reading for control: during a fire, the value from before it."""
+        reading = self._indoor_reading(sys)
+        return self._fire_held(sys, reading) if reading is not None else None
+
+    def _fireplace_step(self, now: datetime) -> None:
+        timeout = self.opt(OPT_SENSOR_TIMEOUT)
+        raw: Dict[str, Optional[float]] = {}
+        for system, sys in self.systems.items():
+            reading = self._indoor_reading(sys)
+            raw[system] = reading.value if reading is not None and unusable(reading, now, timeout) is None else None
+        before = self.fireplace.phase
+        if self.fireplace.update(now, raw, detect=bool(self.opt(OPT_FIRE_DETECT))):
+            _LOGGER.info("NibePi fireplace: %s -> %s (%s)", before, self.fireplace.phase, self.fireplace.source)
+            self.optimizer.save_soon()
+
+    async def async_set_fireplace(self, on: bool) -> None:
+        now = dt_util.utcnow()
+        if on:
+            self.fireplace.turn_on(now)
+        else:
+            self.fireplace.turn_off(now)
+        self.optimizer.save_soon()
+        await self._async_request_adjust()
 
     def _indoor_check(self, sys: SystemRuntime) -> Tuple[Optional[Reading], Optional[Unusable], str]:
         """The indoor reading, why there is none (None: no reading yet, or

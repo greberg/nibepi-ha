@@ -571,3 +571,25 @@ test("settings card in Swedish and without settings", () => {
   for (const k of ["mode_s1", "strategy_s1", "hw_mode"]) delete empty.states["binary_sensor.nibe_gateway"].attributes.entities[k];
   assert.match(render("nibepi-settings-card", {}, empty).html, /No NibePi settings found/);
 });
+
+test("fireplace chip on the climate and settings cards", () => {
+  const hass = settingsHass();
+  const map = hass.states["binary_sensor.nibe_gateway"].attributes.entities;
+  map.fireplace = "switch.fireplace";
+  hass.states["switch.fireplace"] = { entity_id: "switch.fireplace", state: "on", attributes: { phase: "burning", source: "detected", baseline: { s1: 20.9 } } };
+  for (const type of ["nibepi-climate-card", "nibepi-settings-card"]) {
+    const { html } = render(type, { system: "s1" }, hass);
+    assert.match(html, /chip toggle on" +data-toggle="fireplace"/, type);
+    assert.match(html, /Fire burning \(detected\)/, type);
+    assert.match(html, /control uses 20\.9 °C, from before the fire/, type);
+  }
+  hass.states["switch.fireplace"] = { entity_id: "switch.fireplace", state: "off", attributes: { phase: "afterglow", baseline: { s1: 20.9 } } };
+  const { card, html } = render("nibepi-climate-card", { system: "s1" }, hass);
+  assert.match(html, /Fire: afterglow/);
+  card._onClick({ composedPath: () => [{ dataset: { toggle: "fireplace" } }] });
+  assert.deepEqual(hass.calls.at(-1), ["switch", "turn_on", { entity_id: "switch.fireplace" }]);
+  hass.states["switch.fireplace"] = { entity_id: "switch.fireplace", state: "off", attributes: { phase: "off" } };
+  const off = render("nibepi-climate-card", { system: "s1" }, hass).html;
+  assert.match(off, />Fireplace<\/button>/);
+  assert.doesNotMatch(off, /from before the fire/);
+});

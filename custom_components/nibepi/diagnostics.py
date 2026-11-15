@@ -227,6 +227,7 @@ async def async_get_config_entry_diagnostics(
         },
         "systems": _systems(runtime),
         "hot_water": _hotwater(runtime),
+        "fireplace": {**runtime.fireplace.to_dict(), "spans_left_out_of_last_fit": runtime.optimizer.fire_spans_fitted},
         "optimizer": _optimizer(runtime),
     }
     return async_redact_data(_plain(data), TO_REDACT)

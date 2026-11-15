@@ -679,6 +679,28 @@ hours; in shadow mode the pump follows the rules, so the gap includes the
 difference between the strategies, in active mode it is the model's
 error.
 
+### Fireplace
+
+A fire near the indoor sensor makes the whole house look warm: the rules
+and the RMU40 feed (which the pump uses the same way) would lower the
+heat, the rooms away from the fire would cool, and the house model would
+learn the fire as sun or internal gains. The **Fireplace** switch (and a
+chip on the climate and settings cards) tells NibePi a fire burns; with
+*Detect a fire in the fireplace* on (the house step of the options,
+default on) a room rising 0.5 °C within 30 minutes counts as one too.
+
+While the fire burns, and in its afterglow until the room is back within
+0.2 °C of where it was (at most 8 h), the indoor temperature for control
+(rules, RMU40 feed when it is the same sensor, optimiser) is the value
+from before the fire, so the heat pump keeps heating the rest of the
+house; a room colder than that is seen as it is. The switch turns itself
+off after 4 h (then the afterglow runs); a detected fire is over an hour
+after the room stopped rising. Fire hours are left out of the house
+model's history, also fires detected in the history from before. The
+learning steps pause during a fire. The switch's attributes show the
+phase (burning/afterglow), whether it was detected, the temperature held
+and the number of fires in the last 30 days.
+
 ### When to switch to the optimiser
 
 1. Leave the strategy at `rules` and the mode as it is for at least two

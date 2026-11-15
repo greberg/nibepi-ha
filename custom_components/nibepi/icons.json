@@ -83,6 +83,12 @@
       "hw_optimiser": {
         "default": "mdi:cash-check"
       },
+      "fireplace": {
+        "default": "mdi:fireplace-off",
+        "state": {
+          "on": "mdi:fireplace"
+        }
+      },
       "away": {
         "default": "mdi:home-export-outline",
         "state": {
