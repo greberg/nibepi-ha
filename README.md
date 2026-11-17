@@ -142,6 +142,27 @@ Per climate system:
 The defaults are Node-RED's. When migrating, copy your values from the
 gateway's `config.json` (`price`, `weather`, `indoor`, `home` sections).
 
+### Price boost and the compressor's capacity
+
+A positive offset at a cheap price level stores heat only while the
+compressor can go faster. When it already runs at its top and the supply
+still lags (degree minutes well below zero), a higher offset only digs
+the deficit deeper: the pump asks for its electric addition (direct
+electricity) and pays the deficit back at full speed after the cheap
+hours. So the price component's **boost is held at 0** while
+
+- the priority is heating,
+- the compressor frequency is at least 95 % of its top, the highest
+  frequency seen in the last 14 days (learned; nothing is held until a
+  top of 50 Hz or more has been seen), and
+- the degree minutes are at most −300.
+
+It is released when the frequency drops below 85 % of the top or the
+degree minutes rise above −150; during a hot water charge the state is
+kept. Lowering at expensive levels is unaffected. The price reason then
+reads "…, boost held: the compressor is at its top (90 Hz, −800 DM)";
+the state is in the diagnostics (`capacity`).
+
 ### Prices from Tibber (default)
 
 The official Tibber integration has no price-list attributes; prices are
@@ -1125,6 +1146,11 @@ receives; the registers are added to the gateway's polling):
   Compressor power 43141 (W)
 - `sensor` Priority 43086 (off / hot_water / heating / pool / pool_2 /
   transfer / cooling; unknown for another value)
+- `sensor` Electric addition power 43084 (kW; the power the pump's
+  controller asks of the addition, **also while the addition is
+  blocked**), Electric addition steps 43091 (steps actually switched on)
+  and Electric addition hours 43081 (total hours; grows only while the
+  addition heats)
 - diagnostic `sensor` Bus errors (errors per minute from the gateway's
   `<prefix>bus_health`: CHKSUM frames plus reads without a reply;
   attributes ok, chksum, no_respond)

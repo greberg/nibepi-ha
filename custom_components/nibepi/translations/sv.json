@@ -584,6 +584,15 @@
           "cooling": "Kyla"
         }
       },
+      "addition_power": {
+        "name": "Eltillsats effekt"
+      },
+      "addition_steps": {
+        "name": "Eltillsats steg"
+      },
+      "addition_hours": {
+        "name": "Eltillsats drifttid"
+      },
       "bus_health": {
         "name": "Bussfel"
       }

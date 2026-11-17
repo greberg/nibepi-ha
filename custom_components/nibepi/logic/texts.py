@@ -76,6 +76,10 @@ CATALOGUE: Dict[str, Tuple[str, str]] = {
     # -- price component (logic/price.py) ------------------------------------
     "price.no_price": ("no price for the current hour", "inget pris för den här timmen"),
     "price.level": ("{level} ({source})", "{level} ({source})"),
+    "price.capacity_held": (
+        "{reason}, boost held: the compressor is at its top ({freq:.0f} Hz, {dm:.0f} DM)",
+        "{reason}, höjningen pausad: kompressorn går på max ({freq:.0f} Hz, {dm:.0f} GM)",
+    ),
     "price.guard_needs": ("{level}, guard needs {why}", "{level}, spärren kan inte avgöra: {why}"),
     "price.guard_blocked": (
         "{level}, indoor {indoor:.1f} not above {limit:.1f}",

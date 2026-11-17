@@ -1,7 +1,7 @@
 """The integration's own read-only pump sensors.
 
 Key pump values (BT1, BT7, BT6, BT2, BT3, BT50, degree minutes, the
-compressor and the priority) become sensors of the integration, fed from
+compressor, the electric addition and the priority) become sensors of the integration, fed from
 the register values it already receives for control. The cards and the
 optimiser's history import no longer depend on the gateway's MQTT
 discovery (``mqtt.discovery``, off by default): its sensors are only a
@@ -29,6 +29,13 @@ PUMP_SENSORS: Dict[str, int] = {
     "compressor_frequency": 43136,
     "compressor_power": 43141,  # W
     "priority": 43086,
+    # The internal electric addition. 43084 is the power the pump's
+    # controller asks of it, also while the addition is blocked; 43091 the
+    # steps actually switched on and 43081 its total hours, which only
+    # grow while it heats.
+    "addition_power": 43084,  # kW
+    "addition_steps": 43091,
+    "addition_hours": 43081,  # h
 }
 # Per-system sensors: key -> {system: register}.
 SYSTEM_PUMP_SENSORS: Dict[str, Dict[str, int]] = {

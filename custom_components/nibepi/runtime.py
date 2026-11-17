@@ -108,6 +108,7 @@ from .const import (
     PRICE_LEVEL_OPTIONS,
     PRICE_SOURCE_NONE,
     PRICE_SOURCE_TIBBER,
+    REG_COMPRESSOR_FREQ,
     REG_OUTDOOR,
     REGISTERS,
     SHARED_DEFAULTS,
@@ -133,12 +134,14 @@ from .logic.away import (
     rules_away,
 )
 from .logic.away import start as away_start
+from .logic.capacity import REG_DEGREE_MINUTES, Capacity, hold_boost
 from .logic.gateway import STATUS_TIMEOUT, device_sw_version, gateway_online, gateway_version, status_hint
 from .logic.registers import came_online, registers_to_request
 from .logic.hwcontrol import (
     FEATURE_DEFAULTS,
     INPUT_REGISTERS,
     REG_BT7,
+    REG_PRIO,
     HotWaterController,
     HotWaterDecision,
     HotWaterInputs,
@@ -308,6 +311,9 @@ class NibePiRuntime:
         # A fire near the indoor sensor (logic/fireplace.py); kept in the
         # optimiser's store.
         self.fireplace = Fireplace()
+        # The compressor at its top with a heating deficit: no price boost
+        # (logic/capacity.py); its learned top frequency is in the same store.
+        self.capacity = Capacity()
         self._legionella_history_task: Optional[asyncio.Task] = None
         self._legionella_history_tries = 0
         self.optimizer = OptimizerRuntime(self)
@@ -1073,6 +1079,10 @@ class NibePiRuntime:
             self._fireplace_step(now)
         except Exception:  # noqa: BLE001 - control goes on with the raw reading
             _LOGGER.exception("NibePi fireplace step failed")
+        try:
+            self._capacity_step(now)
+        except Exception:  # noqa: BLE001 - no guard is the old behaviour
+            _LOGGER.exception("NibePi capacity step failed")
         for sys in self.systems.values():
             try:
                 self._compute(sys, now)
@@ -1174,7 +1184,7 @@ class NibePiRuntime:
 
         def price_part() -> Decision:
             offsets = {level: self.opt(key, sys.system) for level, key in PRICE_LEVEL_OPTIONS.items()}
-            return compute_price(
+            return hold_boost(self.capacity, compute_price(
                 self.price_level,
                 offsets,
                 now,
@@ -1183,7 +1193,7 @@ class NibePiRuntime:
                 indoor=indoor,
                 setpoint=setpoint,
                 sensor_timeout_min=timeout,
-            )
+            ))
 
         def weather_part() -> Decision:
             hours = to_float(self.opt(OPT_WEATHER_HOURS, sys.system)) or 0.0
@@ -1257,6 +1267,19 @@ class NibePiRuntime:
         before = self.fireplace.phase
         if self.fireplace.update(now, raw, detect=bool(self.opt(OPT_FIRE_DETECT))):
             _LOGGER.info("NibePi fireplace: %s -> %s (%s)", before, self.fireplace.phase, self.fireplace.source)
+            self.optimizer.save_soon()
+
+    def _capacity_step(self, now: datetime) -> None:
+        timeout = self.opt(OPT_SENSOR_TIMEOUT)
+
+        def value(reg: int) -> Optional[float]:
+            reading = self.readings.get(reg)
+            if reading is None or unusable(reading, now, timeout) is not None:
+                return None
+            return reading.value
+
+        if self.capacity.update(now, value(REG_COMPRESSOR_FREQ), value(REG_DEGREE_MINUTES), value(REG_PRIO)):
+            _LOGGER.info("NibePi compressor capacity: %s", "saturated" if self.capacity.saturated else "free")
             self.optimizer.save_soon()
 
     async def async_set_fireplace(self, on: bool) -> None:

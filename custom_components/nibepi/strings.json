@@ -584,6 +584,15 @@
           "cooling": "Cooling"
         }
       },
+      "addition_power": {
+        "name": "Electric addition power"
+      },
+      "addition_steps": {
+        "name": "Electric addition steps"
+      },
+      "addition_hours": {
+        "name": "Electric addition hours"
+      },
       "bus_health": {
         "name": "Bus errors"
       }

@@ -359,6 +359,7 @@ class OptimizerRuntime:
         self.hp_cost = hp_cost if isinstance(hp_cost, dict) else {}
         self.watch.load(data.get("watch"))
         self.rt.fireplace.load(data.get("fireplace"))
+        self.rt.capacity.load(data.get("capacity"))
 
     def _store_data(self) -> Dict[str, Any]:
         return {
@@ -370,6 +371,7 @@ class OptimizerRuntime:
             "hp_cost": self.hp_cost,
             "watch": self.watch.to_dict(),
             "fireplace": self.rt.fireplace.to_dict(),
+            "capacity": self.rt.capacity.to_dict(),
         }
 
     def save_soon(self) -> None:

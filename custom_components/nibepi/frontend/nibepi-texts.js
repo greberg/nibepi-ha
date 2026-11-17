@@ -39,6 +39,7 @@ export const TEXTS = {
   "indoor.ok": ["setpoint {setpoint:.1f}, indoor {indoor:.1f}, factor {factor:g}", "börvärde {setpoint:.1f} °C, inomhus {indoor:.1f} °C, faktor {factor:g}"],
   "price.no_price": ["no price for the current hour", "inget pris för den här timmen"],
   "price.level": ["{level} ({source})", "{level} ({source})"],
+  "price.capacity_held": ["{reason}, boost held: the compressor is at its top ({freq:.0f} Hz, {dm:.0f} DM)", "{reason}, höjningen pausad: kompressorn går på max ({freq:.0f} Hz, {dm:.0f} GM)"],
   "price.guard_needs": ["{level}, guard needs {why}", "{level}, spärren kan inte avgöra: {why}"],
   "price.guard_blocked": ["{level}, indoor {indoor:.1f} not above {limit:.1f}", "{level}, inomhus {indoor:.1f} °C är inte över {limit:.1f} °C"],
   "price.status_ok": ["ok", "ok"],

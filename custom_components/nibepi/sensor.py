@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfFrequency, UnitOfPower, UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfFrequency, UnitOfPower, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -954,6 +954,9 @@ PUMP_SENSOR_KINDS: Dict[str, Any] = {
     "compressor_frequency": (SensorDeviceClass.FREQUENCY, UnitOfFrequency.HERTZ, SensorStateClass.MEASUREMENT, 0),
     "compressor_power": (SensorDeviceClass.POWER, UnitOfPower.WATT, SensorStateClass.MEASUREMENT, 0),
     "priority": (SensorDeviceClass.ENUM, None, None, None),
+    "addition_power": (SensorDeviceClass.POWER, UnitOfPower.KILO_WATT, SensorStateClass.MEASUREMENT, 1),
+    "addition_steps": (None, None, SensorStateClass.MEASUREMENT, 0),
+    "addition_hours": (SensorDeviceClass.DURATION, UnitOfTime.HOURS, SensorStateClass.TOTAL_INCREASING, 1),
 }
 
 

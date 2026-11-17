@@ -269,6 +269,15 @@
           "cooling": "mdi:snowflake"
         }
       },
+      "addition_power": {
+        "default": "mdi:heating-coil"
+      },
+      "addition_steps": {
+        "default": "mdi:stairs"
+      },
+      "addition_hours": {
+        "default": "mdi:timer-outline"
+      },
       "bus_health": {
         "default": "mdi:lan-check"
       }
