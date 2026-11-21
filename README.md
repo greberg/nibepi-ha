@@ -722,6 +722,20 @@ learning steps pause during a fire. The switch's attributes show the
 phase (burning/afterglow), whether it was detected, the temperature held
 and the number of fires in the last 30 days.
 
+With a **flue gas fan** (rökgasfläkt) entity (*Flue gas fan* in the house
+step: a binary sensor, switch, input boolean or fan that is on while the
+fan runs, or a sensor above 0, e.g. its power), the fan replaces the
+temperature detection: the fire burns while the fan runs. The fan cycles
+with the fire, so a stop shorter than 45 minutes is the same fire; after
+a longer one the afterglow runs as above, from when the fan stopped. An
+unknown or unavailable fan state falls back to the detection (when on).
+Before each fit, the fan's recorded history marks the fires, each
+extended by its afterglow in the indoor series (until the room is back
+within 0.2 °C of the value before, at most 8 h); the temperature
+detection only covers the time before the fan's history begins (the
+recorder keeps 10 days by default, the fit uses 28). The chip says
+"Fire burning (flue fan)".
+
 ### When to switch to the optimiser
 
 1. Leave the strategy at `rules` and the mode as it is for at least two

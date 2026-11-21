@@ -207,6 +207,8 @@ OPT_METER_SCOPE = "meter_scope"
 OPT_OPT_MIN_LEVEL = "optimizer_min_level"
 OPT_LEARN_STEPS = "optimizer_learning_steps"
 OPT_FIRE_DETECT = "fireplace_detect"
+# A flue gas fan (on/off or a number > 0 while running): the fire signal.
+OPT_FIRE_ENTITY = "fireplace_entity"
 OPT_HW_OPT_FLOOR = "hw_optimizer_floor"
 
 UNKNOWN = "unknown"

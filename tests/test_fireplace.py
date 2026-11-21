@@ -9,10 +9,14 @@ from logic.fireplace import (
     AFTERGLOW_MAX,
     BURNING,
     DETECTED,
+    FAN,
+    FAN_GAP,
     OFF,
     SWITCH,
     Fireplace,
     detect_spans,
+    fan_spans,
+    fan_state,
     without_fires,
 )
 
@@ -113,6 +117,66 @@ class HistoryTest(unittest.TestCase):
         span = (T0, T0 + timedelta(minutes=30))
         cleaned, _ = without_fires({start: {"s1_t_in": 21.0}}, ["s1"], [span])
         self.assertNotIn("s1_t_in", cleaned[start])
+
+
+def run_fan(fire: Fireplace, start: datetime, steps, step=5 * MIN):
+    """(room, fan) every ``step``; returns the time after the last."""
+    t = start
+    for room, fan in steps:
+        fire.update(t, {"s1": room}, detect=True, fan=fan)
+        t += step
+    return t
+
+
+class FanTest(unittest.TestCase):
+    def test_the_fan_is_the_fire_and_its_stops_are_bridged(self) -> None:
+        fire = Fireplace()
+        t = run_fan(fire, T0, [(21.0, False)] * 3)
+        self.assertEqual(fire.phase, OFF)
+        t = run_fan(fire, t, [(21.0, True)])
+        self.assertEqual((fire.phase, fire.source, fire.baseline), (BURNING, FAN, {"s1": 21.0}))
+        # The fan cycles: 20 minutes off is the same fire.
+        t = run_fan(fire, t, [(21.6, True), (22.0, False), (22.2, False), (22.3, False), (22.4, False), (22.5, True)])
+        self.assertEqual(fire.phase, BURNING)
+        self.assertIsNone(fire.fan_off_since)
+        # Off for good: the afterglow from when it stopped.
+        stopped = t
+        t = run_fan(fire, t, [(22.5, False)] * 10)
+        self.assertEqual(fire.phase, AFTERGLOW)
+        self.assertEqual(fire.glow_since, stopped)
+        t = run_fan(fire, t, [(21.6, False), (21.1, False)])
+        self.assertEqual(fire.phase, OFF)
+
+    def test_with_a_fan_the_temperature_detection_is_off(self) -> None:
+        fire = Fireplace()
+        run_fan(fire, T0, [(21.0, False), (21.3, False), (21.6, False), (21.9, False)])
+        self.assertEqual(fire.phase, OFF)
+        # Unknown fan state: the detection works as before.
+        fire = Fireplace()
+        run_fan(fire, T0, [(21.0, None), (21.3, None), (21.6, None)])
+        self.assertEqual((fire.phase, fire.source), (BURNING, DETECTED))
+
+    def test_states(self) -> None:
+        self.assertEqual([fan_state(s) for s in ("on", "off", "12.5", "0", "unavailable", None)], [True, False, True, False, None, None])
+
+    def test_the_fan_history_marks_the_fires(self) -> None:
+        start = T0.timestamp()
+        series = [(start, 0.0), (start + 3600, 1.0), (start + 5400, 0.0), (start + 6600, 1.0), (start + 9000, 0.0),
+                  (start + 30 * 3600, 1.0), (start + 31 * 3600, 0.0)]
+        spans = fan_spans(series, T0 + timedelta(days=2))
+        # The 20-minute stop is bridged; the next day's fire is its own.
+        self.assertEqual(len(spans), 2)
+        self.assertEqual(spans[0], (T0 + timedelta(hours=1), T0 + timedelta(seconds=9000)))
+        # Without the fan's own afterglow, the room's: left out until it is back.
+        base = int(start)
+        values = [21.0] * 6 + [21.5, 22.2, 22.6, 22.8, 22.8, 22.7, 22.6] + [22.4 - 0.15 * i for i in range(12)] + [21.0] * 6
+        rows = {base + i * 600: {"s1_t_in": v} for i, v in enumerate(values)}
+        cleaned, found = without_fires(rows, ["s1"], [], fan=series[:5])
+        dropped = sorted(ts for ts, r in cleaned.items() if "s1_t_in" not in r)
+        self.assertEqual(dropped[0], base + 6 * 600)  # the bin that holds the start
+        self.assertGreater(dropped[-1], base + int(9000))  # the afterglow after the fan stopped
+        self.assertIn("s1_t_in", cleaned[base + (len(values) - 1) * 600])
+        self.assertEqual(len(found), 1)  # no temperature detection inside the fan's history
 
 
 if __name__ == "__main__":

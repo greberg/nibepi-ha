@@ -85,6 +85,7 @@ from .const import (
     OPT_PRICE_VERY_CHEAP_BELOW,
     OPT_PRICE_VERY_EXPENSIVE_ABOVE,
     OPT_FIRE_DETECT,
+    OPT_FIRE_ENTITY,
     OPT_RMU_ENTITY,
     OPT_SENSOR_TIMEOUT,
     OPT_SETPOINT,
@@ -149,7 +150,7 @@ from .logic.hwcontrol import (
     HotWaterSettings,
 )
 from .logic.indoor import compute_indoor
-from .logic.fireplace import Fireplace
+from .logic.fireplace import Fireplace, fan_state
 from .logic.inputs import (
     Decision,
     ForecastPoint,
@@ -1265,7 +1266,7 @@ class NibePiRuntime:
             reading = self._indoor_reading(sys)
             raw[system] = reading.value if reading is not None and unusable(reading, now, timeout) is None else None
         before = self.fireplace.phase
-        if self.fireplace.update(now, raw, detect=bool(self.opt(OPT_FIRE_DETECT))):
+        if self.fireplace.update(now, raw, detect=bool(self.opt(OPT_FIRE_DETECT)), fan=self._fan_running()):
             _LOGGER.info("NibePi fireplace: %s -> %s (%s)", before, self.fireplace.phase, self.fireplace.source)
             self.optimizer.save_soon()
 
@@ -1281,6 +1282,15 @@ class NibePiRuntime:
         if self.capacity.update(now, value(REG_COMPRESSOR_FREQ), value(REG_DEGREE_MINUTES), value(REG_PRIO)):
             _LOGGER.info("NibePi compressor capacity: %s", "saturated" if self.capacity.saturated else "free")
             self.optimizer.save_soon()
+
+    def _fan_running(self) -> Optional[bool]:
+        """The flue gas fan: running (on, or a number above 0), stopped,
+        or None without an entity or with an unknown state."""
+        entity_id = self.opt(OPT_FIRE_ENTITY)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        return fan_state(state.state if state is not None else None)
 
     async def async_set_fireplace(self, on: bool) -> None:
         now = dt_util.utcnow()

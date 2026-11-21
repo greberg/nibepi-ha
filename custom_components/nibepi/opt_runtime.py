@@ -45,6 +45,7 @@ from .const import (
     OPT_METER_ENTITY,
     OPT_METER_SCOPE,
     OPT_OPT_MIN_LEVEL,
+    OPT_FIRE_ENTITY,
     OPT_LEARN_STEPS,
     OPT_PRICE_UNIT_FACTOR,
     OPT_SENSOR_TIMEOUT,
@@ -90,6 +91,7 @@ from .logic.opthistory import (
     gateway_ids,
     import_series,
     meter_kind,
+    parse_states,
     register_unique_id,
     retention_start,
 )
@@ -124,7 +126,7 @@ from .logic.optrun import (
     scale_prices,
     should_replan,
 )
-from .logic.fireplace import without_fires
+from .logic.fireplace import FAN_STATES, without_fires
 from .logic.power import PowerNow, meter_watts, power_now
 from .logic.optwatch import ForecastWatch
 from .logic.optstrategy import (
@@ -801,7 +803,8 @@ class OptimizerRuntime:
             now = dt_util.utcnow()
             rows = self.log.snapshot(since=now.timestamp() - BOOTSTRAP_DAYS * 86400)
             # Fires near the indoor sensor are not the house: their hours are left out.
-            rows, fires = without_fires(rows, list(self.rt.systems), self.rt.fireplace.spans_until(now))
+            fan = await self._fan_history(now)
+            rows, fires = without_fires(rows, list(self.rt.systems), self.rt.fireplace.spans_until(now), fan=fan)
             self.fire_spans_fitted = len(fires)
             setups = [self.setup(system) for system in self.rt.systems]
             fits = await self.hass.async_add_executor_job(fit_all, rows, setups, now, self.meter_scope)
@@ -821,6 +824,24 @@ class OptimizerRuntime:
         finally:
             self.fit_running = False
         async_dispatcher_send(self.hass, signal_update(self.rt.entry.entry_id))
+
+    async def _fan_history(self, now: datetime) -> Optional[List[Tuple[float, Optional[float]]]]:
+        """The flue gas fan's recorded states over the fit's window (epoch,
+        1/0 or its number), or None without a fan entity or history."""
+        entity_id = self.rt.opt(OPT_FIRE_ENTITY)
+        if not entity_id:
+            return None
+        from homeassistant.components.recorder import get_instance
+
+        try:
+            raw = await get_instance(self.hass).async_add_executor_job(
+                _fetch_history, self.hass, entity_id, now - timedelta(days=BOOTSTRAP_DAYS), now
+            )
+        except Exception:  # noqa: BLE001 - fit without the fan
+            _LOGGER.exception("NibePi optimiser: could not read the flue gas fan's history")
+            return None
+        series = parse_states(raw, states=FAN_STATES)
+        return series or None
 
     # -- strategy and the live gate -------------------------------------------
 

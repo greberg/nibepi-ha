@@ -372,7 +372,7 @@ class NibePiCard extends HTMLElement {
     const a = s.attributes || {};
     const burning = s.state === "on";
     let text = this.t("fire.label");
-    if (burning) text = `${this.t("fire.burning")}${a.source === "detected" ? ` (${this.t("fire.detected")})` : ""}`;
+    if (burning) text = `${this.t("fire.burning")}${a.source === "detected" ? ` (${this.t("fire.detected")})` : a.source === "fan" ? ` (${this.t("fire.fan")})` : ""}`;
     else if (a.phase === "afterglow") text = this.t("fire.afterglow");
     const base = a.baseline && typeof a.baseline === "object" ? toNumber(a.baseline[this.system] ?? Object.values(a.baseline)[0]) : null;
     const held = a.phase && a.phase !== "off" && base !== null ? ` <span class="muted small">${esc(this.t("fire.held", { value: this.n(base) }))}</span>` : "";

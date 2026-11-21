@@ -88,7 +88,8 @@
           "meter_scope": "The meter measures",
           "optimizer_min_level": "Minimum model confidence to steer",
           "optimizer_learning_steps": "Learning steps at night",
-          "fireplace_detect": "Detect a fire in the fireplace"
+          "fireplace_detect": "Detect a fire in the fireplace",
+          "fireplace_entity": "Flue gas fan"
         },
         "data_description": {
           "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
@@ -99,7 +100,8 @@
           "meter_scope": "The heat pump only: its readings are the heat pump's electricity, calibrate the efficiency directly and give the actual heat pump cost per day. The whole house: the heat pump's share is estimated from its activity, which needs weeks of data.",
           "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do.",
           "optimizer_learning_steps": "While the house model is below that confidence, step the curve offset +2/-2 for a few hours at night (within the comfort band) so the model can learn how the house responds.",
-          "fireplace_detect": "A fire near the indoor sensor makes the house look warm. With this on, a room rising 0.5 °C within 30 minutes counts as a fire, as the Fireplace switch does: the indoor temperature from before it is used for control until the room is back, and those hours are left out of the house model's learning. Turn off if sun on the sensor triggers it."
+          "fireplace_detect": "A fire near the indoor sensor makes the house look warm. With this on, a room rising 0.5 °C within 30 minutes counts as a fire, as the Fireplace switch does: the indoor temperature from before it is used for control until the room is back, and those hours are left out of the house model's learning. Turn off if sun on the sensor triggers it.",
+          "fireplace_entity": "Optional: an entity that is on (or above 0) while the flue gas fan runs. It then replaces the detection above: the fire counts while the fan runs, a stop shorter than 45 minutes is the same fire, and after it the afterglow runs as usual. Before each fit, the fan's recorded history marks the fire hours (with their afterglow) that are left out of the house model's learning."
         }
       }
     },
@@ -238,7 +240,8 @@
           "meter_scope": "The meter measures",
           "optimizer_min_level": "Minimum model confidence to steer",
           "optimizer_learning_steps": "Learning steps at night",
-          "fireplace_detect": "Detect a fire in the fireplace"
+          "fireplace_detect": "Detect a fire in the fireplace",
+          "fireplace_entity": "Flue gas fan"
         },
         "data_description": {
           "house_era": "Sets the starting heat loss. Unknown: a middle value, learned with a wider range.",
@@ -249,7 +252,8 @@
           "meter_scope": "The heat pump only: its readings are the heat pump's electricity, calibrate the efficiency directly and give the actual heat pump cost per day. The whole house: the heat pump's share is estimated from its activity, which needs weeks of data.",
           "optimizer_min_level": "With the heating strategy 'Optimiser' its plan steers only when the house model has at least this confidence; otherwise the rules (indoor, price, forecast) do.",
           "optimizer_learning_steps": "While the house model is below that confidence, step the curve offset +2/-2 for a few hours at night (within the comfort band) so the model can learn how the house responds.",
-          "fireplace_detect": "A fire near the indoor sensor makes the house look warm. With this on, a room rising 0.5 °C within 30 minutes counts as a fire, as the Fireplace switch does: the indoor temperature from before it is used for control until the room is back, and those hours are left out of the house model's learning. Turn off if sun on the sensor triggers it."
+          "fireplace_detect": "A fire near the indoor sensor makes the house look warm. With this on, a room rising 0.5 °C within 30 minutes counts as a fire, as the Fireplace switch does: the indoor temperature from before it is used for control until the room is back, and those hours are left out of the house model's learning. Turn off if sun on the sensor triggers it.",
+          "fireplace_entity": "Optional: an entity that is on (or above 0) while the flue gas fan runs. It then replaces the detection above: the fire counts while the fan runs, a stop shorter than 45 minutes is the same fire, and after it the afterglow runs as usual. Before each fit, the fan's recorded history marks the fire hours (with their afterglow) that are left out of the house model's learning."
         }
       },
       "hotwater": {

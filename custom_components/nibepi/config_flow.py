@@ -99,6 +99,7 @@ from .const import (
     OPT_OPT_MIN_LEVEL,
     OPT_LEARN_STEPS,
     OPT_FIRE_DETECT,
+    OPT_FIRE_ENTITY,
     OPT_PRICE_ENTITY,
     OPT_PRICE_GUARD,
     OPT_PRICE_MIN_SPREAD,
@@ -184,6 +185,7 @@ HW_INT_OPTIONS = (
 AWAY_INT_OPTIONS = (OPT_AWAY_CURVE_OFFSET, OPT_AWAY_RETURN_LEAD)
 TEMPERATURE_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
 METER_SENSOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class=["power", "energy"]))
+FAN_ENTITY = EntitySelector(EntitySelectorConfig(domain=["binary_sensor", "switch", "input_boolean", "fan", "sensor"]))
 
 
 def _choice(options: Any, key: str) -> SelectSelector:
@@ -471,6 +473,8 @@ class _NibePiSteps:
             if not errors:
                 if not meter:
                     self._options.pop(OPT_METER_ENTITY, None)
+                if not user_input.get(OPT_FIRE_ENTITY):
+                    self._options.pop(OPT_FIRE_ENTITY, None)
                 for key, value in user_input.items():
                     self._options[key] = int(value) if key == OPT_HOUSE_SENSORS else value
                 return await self._async_after_house()
@@ -491,6 +495,7 @@ class _NibePiSteps:
             _required(OPT_OPT_MIN_LEVEL, current, SHARED_DEFAULTS): _choice(CONFIDENCE_LEVELS, "confidence_level"),
             _required(OPT_LEARN_STEPS, current, SHARED_DEFAULTS): BOOL,
             _required(OPT_FIRE_DETECT, current, SHARED_DEFAULTS): BOOL,
+            _optional(OPT_FIRE_ENTITY, current): FAN_ENTITY,
         }
         return self.async_show_form(  # type: ignore[attr-defined]
             step_id="house",

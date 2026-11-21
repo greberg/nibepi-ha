@@ -88,7 +88,8 @@
           "meter_scope": "Mätaren mäter",
           "optimizer_min_level": "Lägsta modellsäkerhet för att styra",
           "optimizer_learning_steps": "Inlärningssteg på natten",
-          "fireplace_detect": "Upptäck brasa i kaminen"
+          "fireplace_detect": "Upptäck brasa i kaminen",
+          "fireplace_entity": "Rökgasfläkt"
         },
         "data_description": {
           "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
@@ -99,7 +100,8 @@
           "meter_scope": "Bara värmepumpen: värdena är värmepumpens el, kalibrerar verkningsgraden direkt och ger värmepumpens faktiska kostnad per dag. Hela huset: värmepumpens andel uppskattas från dess aktivitet, vilket kräver veckor av data.",
           "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos).",
           "optimizer_learning_steps": "Så länge husmodellen är under den säkerheten stegas kurvjusteringen +2/-2 några timmar på natten (inom komfortintervallet) så att modellen lär sig hur huset reagerar.",
-          "fireplace_detect": "En brasa nära inomhusgivaren får huset att se varmt ut. Med detta på räknas ett rum som stiger 0,5 °C inom 30 minuter som en brasa, precis som med Brasa-knappen: inomhustemperaturen från före brasan används för styrningen tills rummet är tillbaka, och de timmarna lämnas utanför husmodellens inlärning. Stäng av om sol på givaren utlöser den."
+          "fireplace_detect": "En brasa nära inomhusgivaren får huset att se varmt ut. Med detta på räknas ett rum som stiger 0,5 °C inom 30 minuter som en brasa, precis som med Brasa-knappen: inomhustemperaturen från före brasan används för styrningen tills rummet är tillbaka, och de timmarna lämnas utanför husmodellens inlärning. Stäng av om sol på givaren utlöser den.",
+          "fireplace_entity": "Valfritt: en entitet som är på (eller över 0) när rökgasfläkten går. Den ersätter då upptäckten ovan: brasan räknas medan fläkten går, ett stopp kortare än 45 minuter är samma brasa, och efteråt räknas efterglöden som vanligt. Före varje inlärning markerar fläktens historik brasans timmar (med efterglöd), som lämnas utanför husmodellens inlärning."
         }
       }
     },
@@ -238,7 +240,8 @@
           "meter_scope": "Mätaren mäter",
           "optimizer_min_level": "Lägsta modellsäkerhet för att styra",
           "optimizer_learning_steps": "Inlärningssteg på natten",
-          "fireplace_detect": "Upptäck brasa i kaminen"
+          "fireplace_detect": "Upptäck brasa i kaminen",
+          "fireplace_entity": "Rökgasfläkt"
         },
         "data_description": {
           "house_era": "Ger startvärdet för värmeförlusten. Okänt: ett mellanvärde som lärs in med större spann.",
@@ -249,7 +252,8 @@
           "meter_scope": "Bara värmepumpen: värdena är värmepumpens el, kalibrerar verkningsgraden direkt och ger värmepumpens faktiska kostnad per dag. Hela huset: värmepumpens andel uppskattas från dess aktivitet, vilket kräver veckor av data.",
           "optimizer_min_level": "Med värmestrategin 'Optimerare' styr dess plan bara när husmodellen har minst denna säkerhet; annars styr reglerna (inomhus, elpris, prognos).",
           "optimizer_learning_steps": "Så länge husmodellen är under den säkerheten stegas kurvjusteringen +2/-2 några timmar på natten (inom komfortintervallet) så att modellen lär sig hur huset reagerar.",
-          "fireplace_detect": "En brasa nära inomhusgivaren får huset att se varmt ut. Med detta på räknas ett rum som stiger 0,5 °C inom 30 minuter som en brasa, precis som med Brasa-knappen: inomhustemperaturen från före brasan används för styrningen tills rummet är tillbaka, och de timmarna lämnas utanför husmodellens inlärning. Stäng av om sol på givaren utlöser den."
+          "fireplace_detect": "En brasa nära inomhusgivaren får huset att se varmt ut. Med detta på räknas ett rum som stiger 0,5 °C inom 30 minuter som en brasa, precis som med Brasa-knappen: inomhustemperaturen från före brasan används för styrningen tills rummet är tillbaka, och de timmarna lämnas utanför husmodellens inlärning. Stäng av om sol på givaren utlöser den.",
+          "fireplace_entity": "Valfritt: en entitet som är på (eller över 0) när rökgasfläkten går. Den ersätter då upptäckten ovan: brasan räknas medan fläkten går, ett stopp kortare än 45 minuter är samma brasa, och efteråt räknas efterglöden som vanligt. Före varje inlärning markerar fläktens historik brasans timmar (med efterglöd), som lämnas utanför husmodellens inlärning."
         }
       },
       "hotwater": {
