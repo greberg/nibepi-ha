@@ -517,6 +517,9 @@
       "heat_pump_energy_today": {
         "name": "Värmepumpens energi idag"
       },
+      "heat_pump_power": {
+        "name": "Värmepumpens förbrukning nu"
+      },
       "optimiser_savings_today": {
         "name": "Förväntad besparing idag"
       },
@@ -592,6 +595,15 @@
       },
       "addition_hours": {
         "name": "Eltillsats drifttid"
+      },
+      "compressor_starts": {
+        "name": "Kompressorstarter"
+      },
+      "compressor_hours": {
+        "name": "Kompressorns drifttid"
+      },
+      "compressor_hours_hw": {
+        "name": "Kompressorns drifttid, varmvatten"
       },
       "bus_health": {
         "name": "Bussfel"

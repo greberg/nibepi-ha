@@ -1174,7 +1174,7 @@ class NibePiSavingsCard extends NibePiCard {
 
   watched() {
     const ids = this._ids || {};
-    return [ids.heat_pump_cost_today, ids.optimiser_savings_today, ids.heat_pump_energy_today].filter(Boolean);
+    return [ids.heat_pump_cost_today, ids.optimiser_savings_today, ids.heat_pump_energy_today, ids.heat_pump_power].filter(Boolean);
   }
 
   getCardSize() {
@@ -1221,7 +1221,7 @@ class NibePiSavingsCard extends NibePiCard {
     this._maybeFetchStats(now);
     const cost = this.st("heat_pump_cost_today");
     const savings = this.st("optimiser_savings_today");
-    if (!cost && !savings) {
+    if (!cost && !savings && !this.st("heat_pump_power")) {
       return `<div class="content"><div class="empty">${esc(this.t("sav.no_sensors"))}</div></div>`;
     }
     const energy = this.st("heat_pump_energy_today");
@@ -1261,7 +1261,25 @@ class NibePiSavingsCard extends NibePiCard {
     yesterdayDate.setDate(yesterdayDate.getDate() - 1);
     const isYesterday = savedYesterday && savedYesterday.start === yesterdayDate.getTime();
 
+    const power = this.st("heat_pump_power");
+    const watts = power && !isMissing(power) ? num(power) : null;
+    const powerText = (w) => (w >= 1000 ? `${this.n(w / 1000, 2)}<span class="unit">kW</span>` : `${this.n(w, 0)}<span class="unit">W</span>`);
+    const pAttr = power?.attributes || {};
+    const addW = toNumber(pAttr.addition_w);
+    const powerNote = [
+      pAttr.source === "meter" ? this.t("sav.src_meter") : pAttr.source === "pump" ? this.t("sav.src_pump") : null,
+      addW ? this.t("sav.addition", { value: `${this.n(addW / 1000, 1)} kW` }) : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const powerStat =
+      watts !== null
+        ? `<div class="stat big" data-more="heat_pump_power" role="button" tabindex="0"><span class="label">${esc(this.t("sav.power_now"))}</span><span class="value">${powerText(watts)}</span>${
+            powerNote ? `<span class="muted small">${esc(powerNote)}</span>` : ""
+          }</div>`
+        : "";
     const today = `<div class="grid">
+      ${powerStat}
       ${cost ? this.stat("heat_pump_cost_today", this.t("sav.cost_today"), bigMoney(m.costToday), "big") : ""}
       ${savings ? this.stat("optimiser_savings_today", this.t("sav.savings_today"), bigMoney(m.savingsToday), "big") : ""}
     </div>`;
@@ -1288,6 +1306,119 @@ class NibePiSavingsCard extends NibePiCard {
           )}</div>`
         : "";
     return `<div class="content">${today}${detail}${parts}${savingsNote}${sparks ? `<div class="grid">${sparks}</div>` : ""}${costNote}</div>`;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Heat pump: power now, compressor, degree minutes, addition, counters
+// --------------------------------------------------------------------------
+
+const PUMP_KEYS = [
+  "heat_pump_power",
+  "compressor_frequency",
+  "compressor_power",
+  "degree_minutes",
+  "priority",
+  "addition_power",
+  "addition_steps",
+  "compressor_hours",
+  "compressor_hours_hw",
+  "compressor_starts",
+  "addition_hours",
+];
+
+// The addition's state: 43084 also shows what the controller asks of a
+// blocked addition, so the steps (43091) tell whether it really heats.
+function additionModel(power, steps) {
+  const kw = isMissing(power) ? null : num(power);
+  const on = isMissing(steps) ? null : num(steps);
+  if (kw === null) return null;
+  if (on === null) return { kw, state: kw > 0 ? "unknown" : "off" };
+  if (on > 0) return { kw, steps: on, state: "on" };
+  return { kw, state: kw > 0 ? "blocked" : "off" };
+}
+
+class NibePiPumpCard extends NibePiCard {
+  static cardType = "nibepi-pump-card";
+  static defaultIcon = "mdi:heat-pump-outline";
+  static perSystem = false;
+
+  static getStubConfig() {
+    return {};
+  }
+
+  defaultTitle() {
+    return this.t("pump.title");
+  }
+
+  watched() {
+    const ids = this._ids || {};
+    return PUMP_KEYS.map((k) => ids[k]).filter(Boolean);
+  }
+
+  getCardSize() {
+    return 5;
+  }
+
+  renderBody() {
+    if (!PUMP_KEYS.some((k) => this.st(k))) {
+      return `<div class="content"><div class="empty">${esc(this.t("pump.no_sensors"))}</div></div>`;
+    }
+    const value = (key, digits, unit) => {
+      const s = this.st(key);
+      if (!s || isMissing(s)) return "–";
+      return `${this.n(num(s), digits)}${unit ? `<span class="unit">${esc(unit)}</span>` : ""}`;
+    };
+    const note = (text) => (text ? ` <span class="muted small">${esc(text)}</span>` : "");
+
+    const power = this.st("heat_pump_power");
+    const pa = power?.attributes || {};
+    const watts = power && !isMissing(power) ? num(power) : null;
+    const powerText =
+      watts === null ? "–" : watts >= 1000 ? `${this.n(watts / 1000, 2)}<span class="unit">kW</span>` : `${this.n(watts, 0)}<span class="unit">W</span>`;
+    const source = pa.source === "meter" ? this.t("sav.src_meter") : pa.source === "pump" ? this.t("sav.src_pump") : "";
+
+    const comp = this.st("compressor_power");
+    const compNote = comp && !isMissing(comp) ? `${this.n(num(comp), 0)} W` : "";
+    const prio = this.st("priority");
+
+    const top = `<div class="grid">
+      ${power ? this.stat("heat_pump_power", this.t("pump.power_now"), `${powerText}${note(source)}`, "big") : ""}
+      ${this.stat("compressor_frequency", this.t("pump.compressor"), `${value("compressor_frequency", 0, "Hz")}${note(compNote)}`, "big")}
+      ${this.stat("degree_minutes", this.t("pump.degree_minutes"), value("degree_minutes", 0, ""), "big")}
+    </div>`;
+
+    const add = additionModel(this.st("addition_power"), this.st("addition_steps"));
+    const addText =
+      add === null
+        ? "–"
+        : `${this.n(add.kw, 1)}<span class="unit">kW</span>${note(
+            add.state === "on"
+              ? this.t("pump.addition_on", { steps: add.steps })
+              : add.state === "blocked"
+                ? this.t("pump.addition_blocked")
+                : add.state === "unknown"
+                  ? this.t("pump.addition_asked")
+                  : "",
+          )}`;
+    const now = `<div class="grid">
+      ${this.stat("addition_power", this.t("pump.addition"), addText)}
+      ${prio ? this.stat("priority", this.t("pump.priority"), esc(this.fmt(prio))) : ""}
+    </div>`;
+
+    const hours = this.st("compressor_hours");
+    const hoursHw = this.st("compressor_hours_hw");
+    const starts = this.st("compressor_starts");
+    const h = hours && !isMissing(hours) ? num(hours) : null;
+    const n = starts && !isMissing(starts) ? num(starts) : null;
+    const hwNote = hoursHw && !isMissing(hoursHw) ? this.t("pump.of_which_hw", { value: this.n(num(hoursHw), 0) }) : "";
+    const perStart = h !== null && n ? this.t("pump.per_start", { value: this.n((h * 60) / n, 0) }) : "";
+    const counters = `<div class="grid">
+      ${this.stat("compressor_hours", this.t("pump.compressor_hours"), `${value("compressor_hours", 0, "h")}${note(hwNote)}`)}
+      ${this.stat("compressor_starts", this.t("pump.compressor_starts"), `${value("compressor_starts", 0, "")}${note(perStart)}`)}
+      ${this.stat("addition_hours", this.t("pump.addition_hours"), value("addition_hours", 0, "h"))}
+    </div>`;
+    return `<div class="content">${top}${now}<div class="divider"></div>${counters}</div>`;
   }
 }
 
@@ -1583,7 +1714,7 @@ class NibePiCardEditor extends HTMLElement {
 // Registration
 // --------------------------------------------------------------------------
 
-const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiHotWaterGraphCard, NibePiGatewayCard, NibePiSavingsCard, NibePiSettingsCard];
+const CARDS = [NibePiClimateCard, NibePiPlanCard, NibePiHotWaterCard, NibePiHotWaterGraphCard, NibePiGatewayCard, NibePiSavingsCard, NibePiPumpCard, NibePiSettingsCard];
 
 // The card picker's names and descriptions: there is no hass yet, so the
 // page's (or the browser's) language.

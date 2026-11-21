@@ -52,6 +52,7 @@ from .const import (
     OPT_STORE_SAVE_EVERY,
     OPT_STORE_VERSION,
     REG_ADDITION_POWER,
+    REG_ADDITION_STEPS,
     REG_BRINE_IN,
     REG_COMPRESSOR_FREQ,
     REG_COMPRESSOR_POWER,
@@ -97,7 +98,7 @@ from .logic.applied import HOT_WATER, AppliedLog
 from .logic.texts import code_of, msg
 from .logic.pump import PRIORITY_VALUES, history_sources, own_unique_id, register_owner
 from .logic.optimizer.gate import GateDecision, gate
-from .logic.optimizer.meter import MeterConfig, MeterReading
+from .logic.optimizer.meter import UNIT_TO_KW, UNIT_TO_KWH, MeterConfig, MeterReading
 from .logic.away import HW_NORMAL as AWAY_HW_NORMAL
 from .logic.away import away_comfort
 from .logic.optimizer.planner import ComfortSettings, comfort_at
@@ -124,6 +125,7 @@ from .logic.optrun import (
     should_replan,
 )
 from .logic.fireplace import without_fires
+from .logic.power import PowerNow, meter_watts, power_now
 from .logic.optwatch import ForecastWatch
 from .logic.optstrategy import (
     SOURCE_OPTIMISER,
@@ -535,6 +537,23 @@ class OptimizerRuntime:
     @property
     def measures_heat_pump(self) -> bool:
         return bool(self.meter_entity) and self.meter_scope == METER_SCOPE_HEAT_PUMP
+
+    def power_now(self, now: datetime) -> PowerNow:
+        """The heat pump's electricity use now (logic/power.py)."""
+        meter_w = None
+        config = self.meter_config
+        if config is not None and self.measures_heat_pump:
+            table = UNIT_TO_KW if config.kind == "power" else UNIT_TO_KWH
+            scale = table.get(config.unit.lower())
+            if scale is not None:
+                meter_w = meter_watts(config.kind, scale, self.meter_buffer, now)
+        readings = self.rt.readings
+        return power_now(
+            meter_w,
+            self._fresh(readings.get(REG_COMPRESSOR_POWER), now),
+            self._fresh(readings.get(REG_ADDITION_POWER), now),
+            self._fresh(readings.get(REG_ADDITION_STEPS), now),
+        )
 
     def _local_day(self, when: datetime) -> str:
         return dt_util.as_local(when).date().isoformat()

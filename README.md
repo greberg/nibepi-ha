@@ -919,7 +919,7 @@ but heating mode S1 is shadow: nothing is written to the pump").
 
 ## Cards
 
-The integration ships seven custom cards for your own dashboards; nothing
+The integration ships eight custom cards for your own dashboards; nothing
 to install besides the integration. Edit a dashboard -> **Add card** ->
 search for **NibePi**: each card shows a preview, and its editor has the
 options below (or switch it to YAML). The cards follow your theme, light
@@ -1009,8 +1009,8 @@ type: custom:nibepi-gateway-card
 status_url: http://nibepi.local:8080
 ```
 
-**Cost and savings**: the heat pump's cost today (with a heat pump meter)
-and the optimiser's expected savings today (only while it steers the
+**Cost and savings**: the heat pump's power now (*Heat pump power now*),
+its cost today (with a heat pump meter) and the optimiser's expected savings today (only while it steers the
 pump; otherwise the card says so and shows what its plans would have
 saved), the predicted cost so far and the gap (or that the plan was not
 steering), yesterday's cost and savings, and 7-day sparklines of both from
@@ -1018,6 +1018,18 @@ the long-term statistics (left out until there are two days).
 
 ```yaml
 type: custom:nibepi-savings-card
+```
+
+**Heat pump**: power now (from the meter, else the pump's own estimate;
+the card says which), the compressor's frequency and input power, the
+degree minutes, the electric addition (kW, with "6 steps on", or "asked
+for, blocked" when 43084 asks for power while no step is on), the
+priority, and the counters: compressor hours (of which hot water),
+compressor starts (with the mean minutes per start) and the addition's
+hours. Tap a value for its history.
+
+```yaml
+type: custom:nibepi-pump-card
 ```
 
 **Settings**: the integration's settings (the configuration entities)
@@ -1151,6 +1163,13 @@ receives; the registers are added to the gateway's polling):
   blocked**), Electric addition steps 43091 (steps actually switched on)
   and Electric addition hours 43081 (total hours; grows only while the
   addition heats)
+- `sensor` Compressor starts 43416, Compressor hours 43420 and
+  Compressor hours, hot water 43424 (h)
+- `sensor` Heat pump power now (W): the heat pump meter's power (a power
+  sensor, or an energy sensor's rate over the last 15 minutes) when the
+  meter scope is the heat pump; else compressor power 43141 plus the
+  addition 43084 while its steps (43091) are on. Attributes `source`
+  (`meter` / `pump`), `compressor_w`, `addition_w`
 - diagnostic `sensor` Bus errors (errors per minute from the gateway's
   `<prefix>bus_health`: CHKSUM frames plus reads without a reply;
   attributes ok, chksum, no_respond)

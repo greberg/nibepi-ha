@@ -68,6 +68,16 @@ function makeHass() {
     optimiser_savings_today: "sensor.savings",
     heat_pump_energy_today: "sensor.energy",
     priority: "sensor.prio",
+    heat_pump_power: "sensor.hp_power",
+    compressor_frequency: "sensor.freq",
+    compressor_power: "sensor.comp_w",
+    degree_minutes: "sensor.dm",
+    addition_power: "sensor.add_kw",
+    addition_steps: "sensor.add_steps",
+    compressor_hours: "sensor.comp_h",
+    compressor_hours_hw: "sensor.comp_h_hw",
+    compressor_starts: "sensor.starts",
+    addition_hours: "sensor.add_h",
   };
   const states = {
     "binary_sensor.nibe_gateway": {
@@ -109,6 +119,16 @@ function makeHass() {
     "sensor.cost": { state: "12.34", attributes: { unit_of_measurement: "SEK", predicted_cost: 11.5, cost_vs_predicted_pct: 7.3, plan_applied_share: 0.95, yesterday: { cost: 20.1, kwh: 14.25, cost_vs_predicted_pct: -2, plan_applied_share: 0.4 } } },
     "sensor.energy": { state: "8.37", attributes: { unit_of_measurement: "kWh" } },
     "sensor.prio": { state: "heating", attributes: {} },
+    "sensor.hp_power": { state: "1850", attributes: { unit_of_measurement: "W", source: "meter", compressor_w: 400, addition_w: 0 } },
+    "sensor.freq": { state: "90", attributes: { unit_of_measurement: "Hz" } },
+    "sensor.comp_w": { state: "400", attributes: { unit_of_measurement: "W" } },
+    "sensor.dm": { state: "-812", attributes: {} },
+    "sensor.add_kw": { state: "3.0", attributes: { unit_of_measurement: "kW" } },
+    "sensor.add_steps": { state: "0", attributes: {} },
+    "sensor.comp_h": { state: "55458", attributes: { unit_of_measurement: "h" } },
+    "sensor.comp_h_hw": { state: "9120", attributes: { unit_of_measurement: "h" } },
+    "sensor.starts": { state: "18900", attributes: {} },
+    "sensor.add_h": { state: "412.5", attributes: { unit_of_measurement: "h" } },
     "sensor.savings": { state: "3.5", attributes: { unit_of_measurement: "SEK", s1: 3.0, hot_water: 0.5, day: "x", applied: { s1: true, hot_water: false } } },
   };
   const calls = [];
@@ -136,7 +156,7 @@ function render(type, config, hass = makeHass()) {
 
 test("all cards are registered for the card picker", () => {
   const types = window.customCards.map((c) => c.type);
-  for (const t of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-hotwater-graph-card", "nibepi-gateway-card", "nibepi-savings-card", "nibepi-settings-card"]) {
+  for (const t of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-hotwater-graph-card", "nibepi-gateway-card", "nibepi-savings-card", "nibepi-pump-card", "nibepi-settings-card"]) {
     assert.ok(types.includes(t), t);
     assert.ok(customElements.get(t), t);
     assert.ok(window.customCards.find((c) => c.type === t).preview);
@@ -292,7 +312,7 @@ function swedish(hass = makeHass()) {
 }
 
 test("every card renders in Swedish and in English", () => {
-  for (const type of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-gateway-card", "nibepi-savings-card", "nibepi-settings-card"]) {
+  for (const type of ["nibepi-climate-card", "nibepi-plan-card", "nibepi-hotwater-card", "nibepi-gateway-card", "nibepi-savings-card", "nibepi-pump-card", "nibepi-settings-card"]) {
     for (const hass of [makeHass(), swedish()]) {
       const { html } = render(type, { system: "s1" }, hass);
       assert.match(html, /<ha-card>/, type);
@@ -592,4 +612,26 @@ test("fireplace chip on the climate and settings cards", () => {
   const off = render("nibepi-climate-card", { system: "s1" }, hass).html;
   assert.match(off, />Fireplace<\/button>/);
   assert.doesNotMatch(off, /from before the fire/);
+});
+
+test("pump card: power, compressor, a blocked addition and the counters", () => {
+  const { html } = render("nibepi-pump-card", {});
+  assert.match(html, /Heat pump/);
+  assert.match(html, /1\.85<span class="unit">kW/);
+  assert.match(html, /meter/);
+  assert.match(html, /90<span class="unit">Hz/);
+  assert.match(html, /-812|−812/);
+  assert.match(html, /3\.0<span class="unit">kW<\/span> <span class="muted small">asked for, blocked/);
+  assert.match(html, /55,458|55 458|55458/);
+  assert.match(html, /176 min per start/);
+  const hass = makeHass();
+  hass.states["sensor.add_steps"] = { state: "6", attributes: {} };
+  assert.match(render("nibepi-pump-card", {}, hass).html, /6 steps on/);
+  const empty = makeHass();
+  empty.states["binary_sensor.nibe_gateway"].attributes.entities = { gateway_online: "binary_sensor.nibe_gateway" };
+  assert.match(render("nibepi-pump-card", {}, empty).html, /No NibePi pump sensors found/);
+});
+
+test("savings card shows the power now", () => {
+  assert.match(render("nibepi-savings-card", {}).html, /Power now/);
 });

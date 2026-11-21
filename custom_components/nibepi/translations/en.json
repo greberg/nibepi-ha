@@ -517,6 +517,9 @@
       "heat_pump_energy_today": {
         "name": "Heat pump energy today"
       },
+      "heat_pump_power": {
+        "name": "Heat pump power now"
+      },
       "optimiser_savings_today": {
         "name": "Expected savings today"
       },
@@ -592,6 +595,15 @@
       },
       "addition_hours": {
         "name": "Electric addition hours"
+      },
+      "compressor_starts": {
+        "name": "Compressor starts"
+      },
+      "compressor_hours": {
+        "name": "Compressor hours"
+      },
+      "compressor_hours_hw": {
+        "name": "Compressor hours, hot water"
       },
       "bus_health": {
         "name": "Bus errors"

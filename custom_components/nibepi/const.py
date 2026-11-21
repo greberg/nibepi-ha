@@ -37,6 +37,7 @@ REG_BRINE_IN = 40015  # BT10
 REG_BRINE_OUT = 40016  # BT11
 REG_COMPRESSOR_POWER = 43141  # W
 REG_ADDITION_POWER = 43084  # kW
+REG_ADDITION_STEPS = 43091  # steps switched on
 REG_COMPRESSOR_FREQ = 43136  # Hz
 REG_HEAT_METER = 44300  # kWh, heating (compressor + addition)
 REG_HW_METER = 44298  # kWh, hot water (compressor + addition)

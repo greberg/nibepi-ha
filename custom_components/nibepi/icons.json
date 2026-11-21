@@ -202,6 +202,9 @@
       "heat_pump_cost_today": {
         "default": "mdi:heat-pump"
       },
+      "heat_pump_power": {
+        "default": "mdi:flash"
+      },
       "optimiser_savings_today": {
         "default": "mdi:piggy-bank-outline"
       },
@@ -277,6 +280,15 @@
       },
       "addition_hours": {
         "default": "mdi:timer-outline"
+      },
+      "compressor_starts": {
+        "default": "mdi:counter"
+      },
+      "compressor_hours": {
+        "default": "mdi:timer-outline"
+      },
+      "compressor_hours_hw": {
+        "default": "mdi:water-boiler"
       },
       "bus_health": {
         "default": "mdi:lan-check"

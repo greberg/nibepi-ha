@@ -74,6 +74,7 @@ async def async_setup_entry(
     entities.append(SavingsTodaySensor(runtime))
     entities.append(HeatPumpCostTodaySensor(runtime))
     entities.append(HeatPumpEnergyTodaySensor(runtime))
+    entities.append(HeatPumpPowerSensor(runtime))
     entities.append(HotWaterActionSensor(runtime))
     entities.append(DrawProfileSensor(runtime))
     entities.append(HotWaterOptimiserSensor(runtime))
@@ -811,6 +812,37 @@ class HeatPumpEnergyTodaySensor(NibePiEntity, SensorEntity):
         return round(float(tally.get("kwh") or 0.0), 2)
 
 
+class HeatPumpPowerSensor(NibePiEntity, SensorEntity):
+    """The heat pump's electricity use now (W): the heat pump meter when
+    there is one, else the pump's compressor power plus the addition while
+    its steps are on (logic/power.py)."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, runtime: NibePiRuntime) -> None:
+        super().__init__(runtime, "heat_pump_power")
+
+    def _now(self) -> Any:
+        return self.runtime.optimizer.power_now(dt_util.utcnow())
+
+    @property
+    def native_value(self) -> Optional[float]:
+        watts = self._now().watts
+        return round(watts) if watts is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        now = self._now()
+        return {
+            "source": now.source,
+            "compressor_w": round(now.compressor_w) if now.compressor_w is not None else None,
+            "addition_w": round(now.addition_w) if now.addition_w is not None else None,
+        }
+
+
 class HouseModelSensor(_SystemSensor):
     """The house model's confidence; the fitted figures as attributes."""
 
@@ -957,6 +989,9 @@ PUMP_SENSOR_KINDS: Dict[str, Any] = {
     "addition_power": (SensorDeviceClass.POWER, UnitOfPower.KILO_WATT, SensorStateClass.MEASUREMENT, 1),
     "addition_steps": (None, None, SensorStateClass.MEASUREMENT, 0),
     "addition_hours": (SensorDeviceClass.DURATION, UnitOfTime.HOURS, SensorStateClass.TOTAL_INCREASING, 1),
+    "compressor_starts": (None, None, SensorStateClass.TOTAL_INCREASING, 0),
+    "compressor_hours": (SensorDeviceClass.DURATION, UnitOfTime.HOURS, SensorStateClass.TOTAL_INCREASING, 0),
+    "compressor_hours_hw": (SensorDeviceClass.DURATION, UnitOfTime.HOURS, SensorStateClass.TOTAL_INCREASING, 0),
 }
 
 

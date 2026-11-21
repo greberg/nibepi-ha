@@ -36,6 +36,10 @@ PUMP_SENSORS: Dict[str, int] = {
     "addition_power": 43084,  # kW
     "addition_steps": 43091,
     "addition_hours": 43081,  # h
+    # Compressor counters.
+    "compressor_starts": 43416,
+    "compressor_hours": 43420,  # h
+    "compressor_hours_hw": 43424,  # h, of which hot water
 }
 # Per-system sensors: key -> {system: register}.
 SYSTEM_PUMP_SENSORS: Dict[str, Dict[str, int]] = {
