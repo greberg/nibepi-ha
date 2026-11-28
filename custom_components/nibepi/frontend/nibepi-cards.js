@@ -27,6 +27,7 @@ const {
   formatNumber,
   formatSigned,
   historyPoints,
+  PLAUSIBLE_WATER,
   historyRows,
   hotwaterAlerts,
   hotwaterChart,
@@ -1005,8 +1006,8 @@ class NibePiHotWaterGraphCard extends NibePiCard {
     const width = Math.max(280, Math.min(1200, (this._width || this.clientWidth || 600) - 32));
     const height = width < 420 ? 200 : 230;
     const chart = hotwaterChart({
-      bt7: historyPoints(this._rows("bt7_hw_top"), start, now),
-      bt6: historyPoints(this._rows("bt6_hw_load"), start, now),
+      bt7: historyPoints(this._rows("bt7_hw_top"), start, now, PLAUSIBLE_WATER),
+      bt6: historyPoints(this._rows("bt6_hw_load"), start, now, PLAUSIBLE_WATER),
       producing: stateSpans(this._rows("priority"), start, now, "hot_water"),
       windows,
       refs,

@@ -195,6 +195,18 @@ class Decision:
         return cls(0.0, reason, inputs_ok, dict(details))
 
 
+# The pump's "no value" (the lowest value of a register's type, divided by
+# its factor): BT7 read -3276.8 °C right after a power cut. Never a reading.
+NO_VALUES = frozenset({-32768.0, -3276.8, -327.68, -2147483648.0, -214748364.8, -21474836.48})
+
+
+def pump_value(value: Optional[float]) -> Optional[float]:
+    """A register value from the gateway, None for the pump's no-value."""
+    if value is None or any(abs(value - nv) < 1e-6 for nv in NO_VALUES):
+        return None
+    return value
+
+
 def js_round(value: float) -> int:
     """JavaScript ``Math.round``: half rounds towards +infinity.
 

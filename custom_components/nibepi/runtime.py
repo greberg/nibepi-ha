@@ -161,6 +161,7 @@ from .logic.inputs import (
     state_timestamp,
     state_value,
     to_float,
+    pump_value,
     unusable,
 )
 from .logic.lease import MODE_ACTIVE, MODE_OFF, MODE_SHADOW, LeaseAction, LeaseManager
@@ -544,7 +545,7 @@ class NibePiRuntime:
     def _make_register_cb(self, reg: int) -> Callable[[Any], None]:
         @callback
         def _cb(msg: Any) -> None:
-            value = to_float(msg.payload)
+            value = pump_value(to_float(msg.payload))
             if value is not None:
                 self.readings[reg] = Reading(value, dt_util.utcnow())
                 async_dispatcher_send(self.hass, signal_reading(self.entry.entry_id, reg))

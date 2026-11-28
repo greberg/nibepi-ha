@@ -551,14 +551,21 @@ export function historyRows(raw) {
   return out.sort((a, b) => a.t - b.t);
 }
 
+/** Water temperatures outside this range are not measurements: the
+ * pump's "no value" (BT7 -3276.8 °C right after a power cut) reached the
+ * recorder before the gateway dropped it. */
+export const PLAUSIBLE_WATER = [-40, 110];
+
 /** Numeric points of history rows inside [start, end]; the last value
- * before ``start`` is carried to ``start`` so the line starts at the edge. */
-export function historyPoints(rows, start, end) {
+ * before ``start`` is carried to ``start`` so the line starts at the edge.
+ * Values outside ``range`` ([low, high]) are skipped. */
+export function historyPoints(rows, start, end, range = null) {
   const pts = [];
   let before = null;
   for (const r of rows) {
     const v = toNumber(r.state);
     if (v === null) continue;
+    if (range && (v < range[0] || v > range[1])) continue;
     if (r.t < start) before = v;
     else if (r.t <= end) pts.push({ t: r.t, v });
   }

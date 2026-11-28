@@ -506,3 +506,10 @@ test("hot water chart geometry", () => {
   assert.equal(hotwaterChart({ now, loc: { lang: "en" } }).empty, true);
 });
 
+
+test("historyPoints skips the pump's no-value", async () => {
+  const { historyPoints: hp, PLAUSIBLE_WATER: range } = await import("../../custom_components/nibepi/frontend/nibepi-core.js");
+  const rows = [{ t: 1000, state: "48.2" }, { t: 2000, state: "-3276.8" }, { t: 3000, state: "47.9" }];
+  assert.deepEqual(hp(rows, 0, 5000, range).map((p) => p.v), [48.2, 47.9]);
+  assert.equal(hp(rows, 0, 5000).length, 3);
+});
