@@ -18,10 +18,12 @@ from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_ENABLED,
+    ATTR_FACTOR,
     ATTR_PATH,
     ATTR_SETBACK,
     ATTR_UNTIL,
@@ -30,6 +32,7 @@ from .const import (
     OPT_STORE_VERSION,
     PLATFORMS,
     SERVICE_IMPORT_VV_PROFILE,
+    SERVICE_RESCALE_METER,
     SERVICE_SET_AWAY,
     VV_STORE_VERSION,
     away_store_key,
@@ -56,6 +59,14 @@ SET_AWAY_SCHEMA = vol.Schema(
         vol.Required(ATTR_ENABLED): cv.boolean,
         vol.Optional(ATTR_UNTIL): vol.Any(None, cv.datetime),
         vol.Optional(ATTR_SETBACK): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0, max=10))),
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
+)
+
+RESCALE_METER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_FACTOR): vol.All(vol.Coerce(float), vol.Range(min=0.01, max=100)),
+        vol.Optional(ATTR_UNTIL): vol.Any(None, cv.datetime),
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
 )
@@ -92,7 +103,25 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             until = until.replace(tzinfo=_local_tz())
         await runtime.async_set_away(call.data[ATTR_ENABLED], until, call.data.get(ATTR_SETBACK))
 
+    async def _rescale_meter(call: ServiceCall) -> Dict[str, Any]:
+        runtime = _loaded_runtime(hass, call)
+        until = call.data.get(ATTR_UNTIL)
+        if until is None:
+            until = dt_util.utcnow()
+        elif until.tzinfo is None:
+            until = until.replace(tzinfo=_local_tz())
+        if until > dt_util.utcnow():
+            raise ServiceValidationError("until must not be in the future")
+        return await runtime.optimizer.async_rescale_meter(call.data[ATTR_FACTOR], until)
+
     hass.services.async_register(DOMAIN, SERVICE_SET_AWAY, _set_away, schema=SET_AWAY_SCHEMA)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESCALE_METER,
+        _rescale_meter,
+        schema=RESCALE_METER_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_IMPORT_VV_PROFILE,

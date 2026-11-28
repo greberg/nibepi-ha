@@ -265,6 +265,8 @@ AWAY_DEFAULTS: Dict[str, Any] = {
 # The Away state (helpers.storage) and its action.
 AWAY_STORE_VERSION = 1
 SERVICE_SET_AWAY = "set_away"
+SERVICE_RESCALE_METER = "rescale_meter"
+ATTR_FACTOR = "factor"
 ATTR_ENABLED = "enabled"
 ATTR_UNTIL = "until"
 ATTR_SETBACK = "setback"

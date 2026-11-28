@@ -35,3 +35,24 @@ set_away:
       selector:
         config_entry:
           integration: nibepi
+rescale_meter:
+  fields:
+    factor:
+      required: true
+      example: 2.5
+      selector:
+        number:
+          min: 0.01
+          max: 100
+          step: 0.001
+          mode: box
+    until:
+      required: false
+      example: "2026-11-28 10:00:00"
+      selector:
+        datetime:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: nibepi

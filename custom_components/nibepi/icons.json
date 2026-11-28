@@ -301,6 +301,9 @@
     },
     "set_away": {
       "service": "mdi:home-export-outline"
+    },
+    "rescale_meter": {
+      "service": "mdi:counter"
     }
   }
 }

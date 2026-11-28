@@ -596,6 +596,25 @@ price and indoor components give some movement, often too little: a
 house where the rules hold -1 day after day never learns, and the
 optimiser never steers.
 
+**A meter that counted wrong**: a pulse meter set to the wrong pulses
+per kWh (a Sparsnäs at 1000 imp/kWh on a 400 imp/kWh meter) reports a
+fixed fraction of the energy until it is fixed, and so does the
+recorder's history of it. Call `nibepi.rescale_meter` once with
+`factor` = wrong pulses / right pulses (1000 / 400 = 2.5) and `until` =
+when the setting was fixed: the logged meter energy before then, the
+cost of today and yesterday (scaled whole) and every meter value later
+imported from the recorder for that period are multiplied, and the
+models are refitted. The long-term statistics of *Heat pump energy
+today* and *Heat pump cost today* (the savings card's sparklines) keep
+the old days' figures.
+
+```yaml
+action: nibepi.rescale_meter
+data:
+  factor: 2.5
+  until: "2026-11-28 09:30:00"
+```
+
 **Learning steps** provide it. With the strategy *Optimiser*, while the
 model is below *Minimum model confidence to steer* and the rules steer,
 the offset is stepped at night: +2 for 3 hours from 23:00, then -2 for 3

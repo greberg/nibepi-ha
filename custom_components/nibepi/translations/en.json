@@ -735,6 +735,24 @@
           "description": "Only needed with more than one NibePi integration."
         }
       }
+    },
+    "rescale_meter": {
+      "name": "Rescale the meter's history",
+      "description": "For a meter that counted wrong, e.g. a Sparsnäs set to 1000 pulses per kWh on a 400 pulses per kWh meter (factor 1000/400 = 2.5): multiplies the optimiser's logged meter energy before a time, the cost of today and yesterday, and every meter value it imports from the recorder later for that period, then refits the models.",
+      "fields": {
+        "factor": {
+          "name": "Factor",
+          "description": "Real energy / reported energy: the wrong pulses per kWh divided by the right ones (1000 / 400 = 2.5)."
+        },
+        "until": {
+          "name": "Until",
+          "description": "When the meter was fixed: values before it are rescaled. Empty: now. A time without a zone is Home Assistant's local time."
+        },
+        "config_entry_id": {
+          "name": "NibePi entry",
+          "description": "Only needed with more than one NibePi integration."
+        }
+      }
     }
   }
 }

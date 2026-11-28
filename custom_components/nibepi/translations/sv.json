@@ -735,6 +735,24 @@
           "description": "Behövs bara med mer än en NibePi-integration."
         }
       }
+    },
+    "rescale_meter": {
+      "name": "Skala om mätarens historik",
+      "description": "För en mätare som räknat fel, t.ex. en Sparsnäs inställd på 1000 pulser per kWh på en mätare med 400 pulser per kWh (faktor 1000/400 = 2,5): multiplicerar optimerarens loggade mätarenergi före en tidpunkt, kostnaden idag och igår, och alla mätarvärden som senare importeras från recordern för den perioden, och gör sedan om inlärningen.",
+      "fields": {
+        "factor": {
+          "name": "Faktor",
+          "description": "Verklig energi / rapporterad energi: fel pulser per kWh delat med rätt (1000 / 400 = 2,5)."
+        },
+        "until": {
+          "name": "Till",
+          "description": "När mätaren rättades: värden före detta skalas om. Tomt: nu. En tid utan tidszon är Home Assistants lokala tid."
+        },
+        "config_entry_id": {
+          "name": "NibePi-post",
+          "description": "Behövs bara med mer än en NibePi-integration."
+        }
+      }
     }
   }
 }

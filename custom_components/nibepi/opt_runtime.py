@@ -95,7 +95,7 @@ from .logic.opthistory import (
     register_unique_id,
     retention_start,
 )
-from .logic import optcost
+from .logic import metercorr, optcost
 from .logic.applied import HOT_WATER, AppliedLog
 from .logic.texts import code_of, msg
 from .logic.pump import PRIORITY_VALUES, history_sources, own_unique_id, register_owner
@@ -296,6 +296,8 @@ class OptimizerRuntime:
         self.fire_spans_fitted: Optional[int] = None
         # Heat pump electricity today, measured (heat pump meter) vs planned.
         self.hp_cost: Dict[str, Any] = {}
+        # (until epoch, factor): a meter that counted wrong (logic/metercorr.py).
+        self.meter_corrections: List[Tuple[float, float]] = []
         self.saved_until: Optional[int] = None
 
     # -- lifecycle ----------------------------------------------------------
@@ -364,6 +366,7 @@ class OptimizerRuntime:
         self.watch.load(data.get("watch"))
         self.rt.fireplace.load(data.get("fireplace"))
         self.rt.capacity.load(data.get("capacity"))
+        self.meter_corrections = metercorr.load(data.get("meter_corrections"))
 
     def _store_data(self) -> Dict[str, Any]:
         return {
@@ -376,6 +379,7 @@ class OptimizerRuntime:
             "watch": self.watch.to_dict(),
             "fireplace": self.rt.fireplace.to_dict(),
             "capacity": self.rt.capacity.to_dict(),
+            "meter_corrections": [list(c) for c in self.meter_corrections],
         }
 
     def save_soon(self) -> None:
@@ -619,6 +623,9 @@ class OptimizerRuntime:
                 item.wanted,
                 item.states,
             )
+            if item.column == metercorr.METER_COLUMN:
+                # The recorder keeps what a wrongly set meter reported.
+                series = metercorr.rescale_series(series, self.meter_corrections)
             return series, len(rows)
 
         for entity_id in item.sources:
@@ -824,6 +831,28 @@ class OptimizerRuntime:
         finally:
             self.fit_running = False
         async_dispatcher_send(self.hass, signal_update(self.rt.entry.entry_id))
+
+    async def async_rescale_meter(self, factor: float, until: datetime) -> Dict[str, Any]:
+        """``nibepi.rescale_meter``: the meter counted ``1/factor`` of the
+        real energy until ``until`` (logic/metercorr.py); fix its history,
+        today's cost and refit."""
+        if factor <= 0:
+            raise ValueError("factor must be above 0")
+        edge = until.timestamp()
+        bins = metercorr.rescale_rows(self.log.rows, edge, factor)
+        days: List[str] = []
+        if isinstance(self.hp_cost, dict) and self.hp_cost:
+            days = metercorr.rescale_tally(self.hp_cost, self._local_day(until), factor)
+            optcost.refresh(self.hp_cost)
+        self.meter_corrections.append((edge, factor))
+        _LOGGER.warning(
+            "NibePi optimiser: meter rescaled by %.4g before %s (%d bins, cost days %s); refitting",
+            factor, until.isoformat(), bins, ", ".join(days) or "none",
+        )
+        await self.store.async_save(self._store_data())
+        self.rt.entry.async_create_background_task(self.hass, self.async_fit(), "nibepi optimiser refit")
+        async_dispatcher_send(self.hass, signal_update(self.rt.entry.entry_id))
+        return {"bins": bins, "cost_days": days, "factor": factor, "until": until.isoformat()}
 
     async def _fan_history(self, now: datetime) -> Optional[List[Tuple[float, Optional[float]]]]:
         """The flue gas fan's recorded states over the fit's window (epoch,
